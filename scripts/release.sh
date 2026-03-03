@@ -2,30 +2,48 @@
 set -euo pipefail
 
 # ── Usage ────────────────────────────────────────────────────────
-# ./scripts/release.sh <version>
-#
-# Examples:
-#   ./scripts/release.sh 0.2.0          → stable release
-#   ./scripts/release.sh 0.3.0-beta.1   → beta release
+# ./scripts/release.sh            → interactive bump (patch/minor/major)
+# ./scripts/release.sh 0.2.0     → explicit version
 # ─────────────────────────────────────────────────────────────────
 
-# Auto-install pre-push hook if missing
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+# Auto-install pre-push hook if missing
 if [ ! -f "$ROOT/.git/hooks/pre-push" ]; then
   cp "$ROOT/scripts/pre-push" "$ROOT/.git/hooks/pre-push"
   echo "Installed pre-push hook (version mismatch guard)"
 fi
 
-VERSION="${1:-}"
+# ── Read current version ─────────────────────────────────────────
+CURRENT=$(node -p "require('./package.json').version")
+IFS='.' read -r MAJOR MINOR PATCH <<< "${CURRENT%%-*}"
 
-if [ -z "$VERSION" ]; then
-  echo "Usage: ./scripts/release.sh <version>"
-  echo "  e.g. ./scripts/release.sh 0.2.0"
-  exit 1
+# ── Determine next version ───────────────────────────────────────
+if [ -n "${1:-}" ]; then
+  VERSION="${1#v}"
+else
+  NEXT_PATCH="$MAJOR.$MINOR.$((PATCH + 1))"
+  NEXT_MINOR="$MAJOR.$((MINOR + 1)).0"
+  NEXT_MAJOR="$((MAJOR + 1)).0.0"
+
+  echo "Current version: $CURRENT"
+  echo ""
+  echo "  1) patch  → $NEXT_PATCH"
+  echo "  2) minor  → $NEXT_MINOR"
+  echo "  3) major  → $NEXT_MAJOR"
+  echo "  4) beta   → ${NEXT_PATCH}-beta.1"
+  echo ""
+  read -rp "Select bump type [1-4]: " choice
+
+  case "$choice" in
+    1) VERSION="$NEXT_PATCH" ;;
+    2) VERSION="$NEXT_MINOR" ;;
+    3) VERSION="$NEXT_MAJOR" ;;
+    4) VERSION="${NEXT_PATCH}-beta.1" ;;
+    *) echo "Invalid choice"; exit 1 ;;
+  esac
 fi
-
-# Strip leading 'v' if provided
-VERSION="${VERSION#v}"
 
 # Validate semver-ish format
 if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
@@ -34,16 +52,14 @@ if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
 fi
 
 TAG="v${VERSION}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Check for clean working tree
-if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+# ── Pre-flight checks ───────────────────────────────────────────
+if [ -n "$(git status --porcelain)" ]; then
   echo "Error: Working tree is not clean. Commit or stash changes first."
   exit 1
 fi
 
-# Check we're on main
-BRANCH="$(git -C "$ROOT" branch --show-current)"
+BRANCH="$(git branch --show-current)"
 if [ "$BRANCH" != "main" ]; then
   echo "Warning: You are on branch '$BRANCH', not 'main'."
   read -rp "Continue anyway? [y/N] " confirm
@@ -52,16 +68,16 @@ if [ "$BRANCH" != "main" ]; then
   fi
 fi
 
-# Check tag doesn't already exist
-if git -C "$ROOT" tag -l "$TAG" | grep -q "$TAG"; then
+if git tag -l "$TAG" | grep -q "$TAG"; then
   echo "Error: Tag $TAG already exists."
   exit 1
 fi
 
-echo "Bumping version to $VERSION..."
+echo ""
+echo "Releasing: $CURRENT → $VERSION"
+echo ""
 
-# ── 1. package.json ──────────────────────────────────────────────
-cd "$ROOT"
+# ── Bump versions ────────────────────────────────────────────────
 node -e "
   const fs = require('fs');
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -70,12 +86,10 @@ node -e "
 "
 echo "  Updated package.json"
 
-# ── 2. src-tauri/Cargo.toml ─────────────────────────────────────
 sed -i.bak -E "0,/^version = \".*\"/s//version = \"${VERSION}\"/" src-tauri/Cargo.toml
 rm -f src-tauri/Cargo.toml.bak
 echo "  Updated src-tauri/Cargo.toml"
 
-# ── 3. src-tauri/tauri.conf.json ────────────────────────────────
 node -e "
   const fs = require('fs');
   const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
@@ -84,10 +98,10 @@ node -e "
 "
 echo "  Updated src-tauri/tauri.conf.json"
 
-# ── 4. Commit, tag, push ────────────────────────────────────────
-git -C "$ROOT" add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
-git -C "$ROOT" commit -m "Release ${TAG}"
-git -C "$ROOT" tag "$TAG"
+# ── Commit, tag, push ───────────────────────────────────────────
+git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+git commit -m "Release ${TAG}"
+git tag "$TAG"
 
 echo ""
 echo "Version bumped and tagged as $TAG."
@@ -98,7 +112,7 @@ if [ "$push_confirm" = "n" ] || [ "$push_confirm" = "N" ]; then
   exit 0
 fi
 
-git -C "$ROOT" push origin main --tags
+git push origin main --tags
 
 echo ""
 echo "Pushed $TAG. GitHub Actions will build the release."
