@@ -10,7 +10,6 @@ permissions:
 
 env:
   NODE_VERSION: '20'
-  RUST_TOOLCHAIN: 'stable'
 
 jobs:
   # ── 1. Validate version across all config files ──────────────────
@@ -61,16 +60,37 @@ jobs:
             exit 1
           fi
 
-  # ── 2. Build Linux (DEB) ─────────────────────────────────────────
-  build-linux:
+  # ── 2. Build all platforms (matrix) ─────────────────────────────
+  build:
     needs: validate-version
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            artifact-name: linux-artifacts
+            rust-targets: ''
+            tauri-args: ''
+          - os: windows-latest
+            platform: windows
+            artifact-name: windows-artifacts
+            rust-targets: ''
+            tauri-args: ''
+          - os: macos-latest
+            platform: macos
+            artifact-name: macos-artifacts
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri-args: '--target universal-apple-darwin'
+    runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.validate-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
+      # ── Linux system deps ──────────────────────────────────────
       - name: Install system dependencies
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -80,6 +100,7 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      # ── Common setup (all platforms) ───────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -88,6 +109,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -96,20 +119,25 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
-          restore-keys: linux-cargo-
+          key: ${{ matrix.platform }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: ${{ matrix.platform }}-cargo-
 
       - name: Install npm dependencies
         run: npm ci
 
+      # ── Rust tests (Linux only — tests are platform-agnostic) ──
       - name: Run Rust tests
+        if: matrix.platform == 'linux'
         working-directory: src-tauri
         run: cargo test
 
+      # ── Build ──────────────────────────────────────────────────
       - name: Build Tauri app
-        run: npm run tauri:build
+        run: npm run tauri:build -- ${{ matrix.tauri-args }}
 
-      - name: Prepare artifacts
+      # ── Collect artifacts (Linux) ──────────────────────────────
+      - name: Prepare artifacts (Linux)
+        if: matrix.platform == 'linux'
         run: |
           DEB_FILE=$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -1)
           if [ -z "$DEB_FILE" ]; then
@@ -131,50 +159,9 @@ jobs:
           echo "Built: $DEST ($SIZE_MB MB)"
           echo "SHA256: $SHA256"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-artifacts
-          path: |
-            puru-nucleus-*.deb
-            metadata.txt
-          retention-days: 5
-
-  # ── 3. Build Windows (MSI) ──────────────────────────────────────
-  build-windows:
-    needs: validate-version
-    runs-on: windows-latest
-    env:
-      VERSION: ${{ needs.validate-version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~\.cargo\registry
-            ~\.cargo\git
-            src-tauri\target
-          key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
-          restore-keys: windows-cargo-
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Build Tauri app
-        run: npm run tauri:build
-
-      - name: Prepare artifacts
+      # ── Collect artifacts (Windows) ────────────────────────────
+      - name: Prepare artifacts (Windows)
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $msiFile = Get-ChildItem -Path "src-tauri\target\release\bundle\msi" -Filter "*.msi" | Select-Object -First 1
@@ -197,52 +184,9 @@ jobs:
           Write-Host "Built: $dest ($sizeMB MB)"
           Write-Host "SHA256: $hash"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-artifacts
-          path: |
-            puru-nucleus-*.msi
-            metadata.txt
-          retention-days: 5
-
-  # ── 4. Build macOS (DMG, universal) ─────────────────────────────
-  build-macos:
-    needs: validate-version
-    runs-on: macos-latest
-    env:
-      VERSION: ${{ needs.validate-version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
-          restore-keys: macos-cargo-
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Build Tauri app (universal binary)
-        run: npm run tauri:build -- --target universal-apple-darwin
-
-      - name: Prepare artifacts
+      # ── Collect artifacts (macOS) ──────────────────────────────
+      - name: Prepare artifacts (macOS)
+        if: matrix.platform == 'macos'
         run: |
           DMG_FILE=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
           if [ -z "$DMG_FILE" ]; then
@@ -264,18 +208,19 @@ jobs:
           echo "Built: $DEST ($SIZE_MB MB)"
           echo "SHA256: $SHA256"
 
+      # ── Upload ─────────────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-artifacts
+          name: ${{ matrix.artifact-name }}
           path: |
-            puru-nucleus-*.dmg
+            puru-nucleus-*.*
             metadata.txt
           retention-days: 5
 
-  # ── 5. Create GitHub Release ────────────────────────────────────
+  # ── 3. Create GitHub Release ────────────────────────────────────
   create-release:
-    needs: [validate-version, build-linux, build-windows, build-macos]
+    needs: [validate-version, build]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.validate-version.outputs.version }}
@@ -305,7 +250,7 @@ jobs:
             artifacts/windows-artifacts/puru-nucleus-*.msi \
             artifacts/macos-artifacts/puru-nucleus-*.dmg
 
-  # ── 6. Publish to GCS ──────────────────────────────────────────
+  # ── 4. Publish to GCS ──────────────────────────────────────────
   publish-to-gcs:
     needs: [validate-version, create-release]
     runs-on: ubuntu-latest
@@ -328,7 +273,6 @@ jobs:
 
       - name: Generate latest.json manifest
         run: |
-          # Parse metadata from each platform
           parse_metadata() {
             local file="$1"
             local key="$2"
@@ -391,7 +335,6 @@ jobs:
           cat latest.json
           echo ""
 
-          # Validate JSON
           python3 -c "import json; json.load(open('latest.json'))"
           echo "Manifest JSON is valid"
 
@@ -399,12 +342,10 @@ jobs:
         run: |
           GCS_PATH="gs://puru-releases/nucleus/${CHANNEL}"
 
-          # Upload installers
           gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${GCS_PATH}/"
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${GCS_PATH}/"
           gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${GCS_PATH}/"
 
-          # Upload manifest with no-cache so hospitals always get the latest
           gsutil -h "Cache-Control:no-cache, no-store, must-revalidate" \
             cp latest.json "${GCS_PATH}/latest.json"
 
