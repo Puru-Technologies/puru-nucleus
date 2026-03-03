@@ -18,9 +18,6 @@ Thumbs.db
 # Angular
 .angular/
 
-# Rust
-Cargo.lock
-
 # Logs
 *.log
 npm-debug.log*

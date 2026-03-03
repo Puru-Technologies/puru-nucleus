@@ -113,14 +113,9 @@ jobs:
           targets: ${{ matrix.rust-targets }}
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ matrix.platform }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
-          restore-keys: ${{ matrix.platform }}-cargo-
+          workspaces: src-tauri -> target
 
       - name: Install npm dependencies
         run: npm ci
