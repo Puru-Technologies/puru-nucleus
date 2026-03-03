@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# pre-push hook: block pushing a v* tag if version files don't match
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Only check version tags
+  if echo "$local_ref" | grep -qE '^refs/tags/v[0-9]'; then
+    TAG_VERSION="${local_ref#refs/tags/v}"
+
+    PKG_VERSION=$(node -p "require('./package.json').version" 2>/dev/null)
+    CARGO_VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version" 2>/dev/null)
+
+    MISMATCH=0
+    if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+      echo "ERROR: package.json version ($PKG_VERSION) != tag ($TAG_VERSION)"
+      MISMATCH=1
+    fi
+    if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+      echo "ERROR: Cargo.toml version ($CARGO_VERSION) != tag ($TAG_VERSION)"
+      MISMATCH=1
+    fi
+    if [ "$TAURI_VERSION" != "$TAG_VERSION" ]; then
+      echo "ERROR: tauri.conf.json version ($TAURI_VERSION) != tag ($TAG_VERSION)"
+      MISMATCH=1
+    fi
+
+    if [ "$MISMATCH" -eq 1 ]; then
+      echo ""
+      echo "Use ./scripts/release.sh $TAG_VERSION to bump all files first."
+      exit 1
+    fi
+  fi
+done
+
+exit 0

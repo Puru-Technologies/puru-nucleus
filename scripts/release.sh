@@ -9,6 +9,13 @@ set -euo pipefail
 #   ./scripts/release.sh 0.3.0-beta.1   → beta release
 # ─────────────────────────────────────────────────────────────────
 
+# Auto-install pre-push hook if missing
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ ! -f "$ROOT/.git/hooks/pre-push" ]; then
+  cp "$ROOT/scripts/pre-push" "$ROOT/.git/hooks/pre-push"
+  echo "Installed pre-push hook (version mismatch guard)"
+fi
+
 VERSION="${1:-}"
 
 if [ -z "$VERSION" ]; then
