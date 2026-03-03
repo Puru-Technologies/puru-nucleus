@@ -1,0 +1,425 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '20'
+  RUST_TOOLCHAIN: 'stable'
+
+jobs:
+  # ── 1. Validate version across all config files ──────────────────
+  validate-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      channel: ${{ steps.extract.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version and channel from tag
+        id: extract
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+          if echo "$TAG" | grep -qiE '(alpha|beta|rc)'; then
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Version: $TAG"
+          echo "Channel: $(grep channel "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)"
+
+      - name: Validate version in package.json
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "${{ steps.extract.outputs.version }}" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag (${{ steps.extract.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Validate version in Cargo.toml
+        run: |
+          CARGO_VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$CARGO_VERSION" != "${{ steps.extract.outputs.version }}" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) does not match tag (${{ steps.extract.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Validate version in tauri.conf.json
+        run: |
+          TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$TAURI_VERSION" != "${{ steps.extract.outputs.version }}" ]; then
+            echo "::error::tauri.conf.json version ($TAURI_VERSION) does not match tag (${{ steps.extract.outputs.version }})"
+            exit 1
+          fi
+
+  # ── 2. Build Linux (DEB) ─────────────────────────────────────────
+  build-linux:
+    needs: validate-version
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.validate-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: linux-cargo-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build Tauri app
+        run: npm run tauri:build
+
+      - name: Prepare artifacts
+        run: |
+          DEB_FILE=$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -1)
+          if [ -z "$DEB_FILE" ]; then
+            echo "::error::No .deb file found in bundle output"
+            exit 1
+          fi
+
+          DEST="puru-nucleus-${VERSION}-amd64.deb"
+          cp "$DEB_FILE" "$DEST"
+
+          SHA256=$(sha256sum "$DEST" | awk '{print $1}')
+          SIZE_BYTES=$(stat --format=%s "$DEST")
+          SIZE_MB=$(echo "scale=1; $SIZE_BYTES / 1048576" | bc)
+
+          echo "file=$DEST" > metadata.txt
+          echo "sha256=$SHA256" >> metadata.txt
+          echo "size_mb=$SIZE_MB" >> metadata.txt
+
+          echo "Built: $DEST ($SIZE_MB MB)"
+          echo "SHA256: $SHA256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            puru-nucleus-*.deb
+            metadata.txt
+          retention-days: 5
+
+  # ── 3. Build Windows (MSI) ──────────────────────────────────────
+  build-windows:
+    needs: validate-version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.validate-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            src-tauri\target
+          key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: windows-cargo-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        run: npm run tauri:build
+
+      - name: Prepare artifacts
+        shell: pwsh
+        run: |
+          $msiFile = Get-ChildItem -Path "src-tauri\target\release\bundle\msi" -Filter "*.msi" | Select-Object -First 1
+          if (-not $msiFile) {
+            Write-Error "No .msi file found in bundle output"
+            exit 1
+          }
+
+          $dest = "puru-nucleus-${env:VERSION}-x64.msi"
+          Copy-Item $msiFile.FullName $dest
+
+          $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
+          $sizeBytes = (Get-Item $dest).Length
+          $sizeMB = [math]::Round($sizeBytes / 1MB, 1)
+
+          "file=$dest" | Out-File -FilePath metadata.txt -Encoding utf8
+          "sha256=$hash" | Out-File -FilePath metadata.txt -Append -Encoding utf8
+          "size_mb=$sizeMB" | Out-File -FilePath metadata.txt -Append -Encoding utf8
+
+          Write-Host "Built: $dest ($sizeMB MB)"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: |
+            puru-nucleus-*.msi
+            metadata.txt
+          retention-days: 5
+
+  # ── 4. Build macOS (DMG, universal) ─────────────────────────────
+  build-macos:
+    needs: validate-version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.validate-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: macos-cargo-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri app (universal binary)
+        run: npm run tauri:build -- --target universal-apple-darwin
+
+      - name: Prepare artifacts
+        run: |
+          DMG_FILE=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
+          if [ -z "$DMG_FILE" ]; then
+            echo "::error::No .dmg file found in bundle output"
+            exit 1
+          fi
+
+          DEST="puru-nucleus-${VERSION}-universal.dmg"
+          cp "$DMG_FILE" "$DEST"
+
+          SHA256=$(shasum -a 256 "$DEST" | awk '{print $1}')
+          SIZE_BYTES=$(stat -f%z "$DEST")
+          SIZE_MB=$(echo "scale=1; $SIZE_BYTES / 1048576" | bc)
+
+          echo "file=$DEST" > metadata.txt
+          echo "sha256=$SHA256" >> metadata.txt
+          echo "size_mb=$SIZE_MB" >> metadata.txt
+
+          echo "Built: $DEST ($SIZE_MB MB)"
+          echo "SHA256: $SHA256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            puru-nucleus-*.dmg
+            metadata.txt
+          retention-days: 5
+
+  # ── 5. Create GitHub Release ────────────────────────────────────
+  create-release:
+    needs: [validate-version, build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate-version.outputs.version }}
+      CHANNEL: ${{ needs.validate-version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "$CHANNEL" = "beta" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "v${VERSION}" \
+            --title "Puru Nucleus v${VERSION}" \
+            --generate-notes \
+            $PRERELEASE_FLAG \
+            artifacts/linux-artifacts/puru-nucleus-*.deb \
+            artifacts/windows-artifacts/puru-nucleus-*.msi \
+            artifacts/macos-artifacts/puru-nucleus-*.dmg
+
+  # ── 6. Publish to GCS ──────────────────────────────────────────
+  publish-to-gcs:
+    needs: [validate-version, create-release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate-version.outputs.version }}
+      CHANNEL: ${{ needs.validate-version.outputs.channel }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Generate latest.json manifest
+        run: |
+          # Parse metadata from each platform
+          parse_metadata() {
+            local file="$1"
+            local key="$2"
+            grep "^${key}=" "$file" | cut -d= -f2 | tr -d '\r'
+          }
+
+          LINUX_FILE=$(parse_metadata artifacts/linux-artifacts/metadata.txt file)
+          LINUX_SHA=$(parse_metadata artifacts/linux-artifacts/metadata.txt sha256)
+          LINUX_SIZE=$(parse_metadata artifacts/linux-artifacts/metadata.txt size_mb)
+
+          WINDOWS_FILE=$(parse_metadata artifacts/windows-artifacts/metadata.txt file)
+          WINDOWS_SHA=$(parse_metadata artifacts/windows-artifacts/metadata.txt sha256)
+          WINDOWS_SIZE=$(parse_metadata artifacts/windows-artifacts/metadata.txt size_mb)
+
+          MACOS_FILE=$(parse_metadata artifacts/macos-artifacts/metadata.txt file)
+          MACOS_SHA=$(parse_metadata artifacts/macos-artifacts/metadata.txt sha256)
+          MACOS_SIZE=$(parse_metadata artifacts/macos-artifacts/metadata.txt size_mb)
+
+          RELEASE_DATE=$(date +%Y-%m-%d)
+
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "release_date": "${RELEASE_DATE}",
+            "release_notes": "Release v${VERSION}",
+            "min_supported_version": "0.1.0",
+            "platforms": {
+              "windows": {
+                "x64": {
+                  "msi": {
+                    "file": "${WINDOWS_FILE}",
+                    "sha256": "${WINDOWS_SHA}",
+                    "size_mb": ${WINDOWS_SIZE}
+                  }
+                }
+              },
+              "linux": {
+                "amd64": {
+                  "deb": {
+                    "file": "${LINUX_FILE}",
+                    "sha256": "${LINUX_SHA}",
+                    "size_mb": ${LINUX_SIZE}
+                  }
+                }
+              },
+              "macos": {
+                "universal": {
+                  "dmg": {
+                    "file": "${MACOS_FILE}",
+                    "sha256": "${MACOS_SHA}",
+                    "size_mb": ${MACOS_SIZE}
+                  }
+                }
+              }
+            }
+          }
+          EOF
+
+          echo "Generated manifest:"
+          cat latest.json
+          echo ""
+
+          # Validate JSON
+          python3 -c "import json; json.load(open('latest.json'))"
+          echo "Manifest JSON is valid"
+
+      - name: Upload artifacts to GCS
+        run: |
+          GCS_PATH="gs://puru-releases/nucleus/${CHANNEL}"
+
+          # Upload installers
+          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${GCS_PATH}/"
+          gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${GCS_PATH}/"
+          gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${GCS_PATH}/"
+
+          # Upload manifest with no-cache so hospitals always get the latest
+          gsutil -h "Cache-Control:no-cache, no-store, must-revalidate" \
+            cp latest.json "${GCS_PATH}/latest.json"
+
+          echo "Uploaded all artifacts to ${GCS_PATH}/"
+
+      - name: Verify upload
+        run: |
+          GCS_PATH="gs://puru-releases/nucleus/${CHANNEL}"
+
+          echo "=== Listing uploaded files ==="
+          gsutil ls -l "${GCS_PATH}/"
+
+          echo ""
+          echo "=== Verifying manifest ==="
+          gsutil cat "${GCS_PATH}/latest.json" | python3 -m json.tool
+
+          echo ""
+          echo "Release v${VERSION} published to ${CHANNEL} channel"

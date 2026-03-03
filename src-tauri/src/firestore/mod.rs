@@ -1,0 +1,419 @@
+//! Firestore client facade for puru-nucleus.
+//!
+//! Provides a high-level API for hospital document operations
+//! against the `puru-255206` Firestore project.
+
+pub mod auth;
+pub mod convert;
+pub mod queries;
+pub mod types;
+
+use google_cloud_auth::token_source::TokenSource;
+use reqwest::Client;
+use serde_json::json;
+
+use crate::config::{ConfigSyncStatus, NucleusConfig};
+use crate::error::NucleusError;
+
+use self::convert::*;
+use self::types::FirestoreDocument;
+
+/// Enriched daemon info pushed alongside telemetry.
+pub struct DaemonInfo {
+    pub port: u16,
+    pub uptime_seconds: u64,
+    pub scheduled_backups_enabled: bool,
+    pub last_backup_at: Option<String>,
+    pub last_backup_status: String,
+    pub total_backups: usize,
+}
+
+/// High-level Firestore client backed by a service account token source.
+pub struct FirestoreClient {
+    http: Client,
+    token_source: Box<dyn TokenSource>,
+}
+
+impl FirestoreClient {
+    /// Create a new client from an explicit credentials file path.
+    pub async fn new(credentials_path: &str) -> Result<Self, NucleusError> {
+        let token_source = auth::create_token_source(credentials_path).await?;
+        Ok(Self {
+            http: Client::new(),
+            token_source,
+        })
+    }
+
+    /// Create a new client using the `gcs_credentials_path` from NucleusConfig.
+    pub async fn new_from_config() -> Result<Self, NucleusError> {
+        let config = crate::config::load_config()?;
+        let creds_path = config
+            .gcs_credentials_path
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| {
+                NucleusError::FirestoreAuth("GCS credentials path not configured. Set it in Settings.".into())
+            })?;
+        Self::new(creds_path).await
+    }
+
+    /// Get a fresh bearer token.
+    async fn token(&self) -> Result<String, NucleusError> {
+        auth::get_bearer_token(self.token_source.as_ref()).await
+    }
+
+    // ── Domain methods ──────────────────────────────────────────────────
+
+    /// Find a hospital document by email (queries the `hospital` collection).
+    pub async fn find_hospital_by_email(
+        &self,
+        email: &str,
+    ) -> Result<FirestoreDocument, NucleusError> {
+        let token = self.token().await?;
+        let docs =
+            queries::query_collection(&self.http, &token, "hospital", "email", email).await?;
+
+        docs.into_iter().next().ok_or_else(|| {
+            NucleusError::NotFound(format!("No hospital found with email: {}", email))
+        })
+    }
+
+    /// Get a hospital document by its short code.
+    pub async fn get_hospital(&self, code: &str) -> Result<FirestoreDocument, NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        queries::get_document(&self.http, &token, &path).await
+    }
+
+    /// List all alerts for a hospital.
+    pub async fn list_alerts(
+        &self,
+        code: &str,
+    ) -> Result<Vec<FirestoreDocument>, NucleusError> {
+        let token = self.token().await?;
+        let parent = format!("hospital/{}", code);
+        queries::list_subcollection(&self.http, &token, &parent, "alerts").await
+    }
+
+    /// Acknowledge an alert by setting `acknowledged: true` and `acknowledged_at: now`.
+    pub async fn acknowledge_alert(
+        &self,
+        code: &str,
+        alert_id: &str,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}/alerts/{}", code, alert_id);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let fields = json!({
+            "acknowledged": boolean_value(true),
+            "acknowledged_at": timestamp_value(&now),
+        });
+
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            fields,
+            &["acknowledged", "acknowledged_at"],
+        )
+        .await
+    }
+
+    /// Sync the local nucleus config to the hospital's cloud document.
+    pub async fn sync_config(
+        &self,
+        code: &str,
+        config: &NucleusConfig,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut nucleus_fields = serde_json::Map::new();
+        nucleus_fields.insert("version".into(), string_value(env!("CARGO_PKG_VERSION")));
+        nucleus_fields.insert("last_seen".into(), timestamp_value(&now));
+        nucleus_fields.insert("online".into(), boolean_value(true));
+
+        let mut sync_fields = serde_json::Map::new();
+        sync_fields.insert("pending_count".into(), integer_value(0));
+        sync_fields.insert("last_synced".into(), timestamp_value(&now));
+
+        let fields = json!({
+            "nucleus": map_value(nucleus_fields),
+            "config_sync": map_value(sync_fields),
+            "serverIp": string_value(&config.server_ip),
+        });
+
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            fields,
+            &["nucleus", "config_sync", "serverIp"],
+        )
+        .await
+    }
+
+    /// Push a telemetry snapshot to the hospital's cloud document.
+    pub async fn push_telemetry(
+        &self,
+        code: &str,
+        snapshot: &crate::telemetry::TelemetrySnapshot,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut telemetry_fields = serde_json::Map::new();
+        telemetry_fields.insert(
+            "cpu_percent".into(),
+            convert::string_value(&format!("{:.1}", snapshot.cpu_percent)),
+        );
+        telemetry_fields.insert(
+            "ram_gb".into(),
+            convert::string_value(&format!("{:.2}", snapshot.ram_gb)),
+        );
+        telemetry_fields.insert(
+            "disk_percent".into(),
+            convert::string_value(&format!("{:.1}", snapshot.disk_percent)),
+        );
+        telemetry_fields.insert("last_reported".into(), convert::timestamp_value(&now));
+
+        let fields = json!({
+            "telemetry": convert::map_value(telemetry_fields),
+        });
+
+        queries::patch_document(&self.http, &token, &path, fields, &["telemetry"]).await
+    }
+
+    /// Read the config_sync map from a hospital document.
+    pub async fn get_sync_status(
+        &self,
+        code: &str,
+    ) -> Result<ConfigSyncStatus, NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let doc = queries::get_document(&self.http, &token, &path).await?;
+
+        let Some(config_sync_val) = doc.fields.get("config_sync") else {
+            return Ok(ConfigSyncStatus::default());
+        };
+
+        let map = match get_map_fields(config_sync_val) {
+            Ok(m) => m,
+            Err(_) => return Ok(ConfigSyncStatus::default()),
+        };
+
+        let last_synced = map
+            .get("last_synced")
+            .and_then(get_optional_timestamp)
+            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
+        let pending_count = map
+            .get("pending_count")
+            .and_then(|v| get_integer(v).ok())
+            .unwrap_or(0) as usize;
+
+        Ok(ConfigSyncStatus {
+            last_synced,
+            pending_count,
+        })
+    }
+
+    /// Push enriched status to the hospital document.
+    /// Combines telemetry, nucleus info, services, and backup summary in one PATCH.
+    pub async fn push_status(
+        &self,
+        code: &str,
+        snapshot: &crate::telemetry::TelemetrySnapshot,
+        daemon_info: &DaemonInfo,
+        services: &[crate::services::ServiceInfo],
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Telemetry map
+        let mut telemetry_fields = serde_json::Map::new();
+        telemetry_fields.insert(
+            "cpu_percent".into(),
+            string_value(&format!("{:.1}", snapshot.cpu_percent)),
+        );
+        telemetry_fields.insert(
+            "ram_gb".into(),
+            string_value(&format!("{:.2}", snapshot.ram_gb)),
+        );
+        telemetry_fields.insert(
+            "disk_percent".into(),
+            string_value(&format!("{:.1}", snapshot.disk_percent)),
+        );
+        telemetry_fields.insert("last_reported".into(), timestamp_value(&now));
+
+        // Enriched nucleus map
+        let mut nucleus_fields = serde_json::Map::new();
+        nucleus_fields.insert("version".into(), string_value(env!("CARGO_PKG_VERSION")));
+        nucleus_fields.insert("last_seen".into(), timestamp_value(&now));
+        nucleus_fields.insert("online".into(), boolean_value(true));
+        nucleus_fields.insert("port".into(), integer_value(daemon_info.port as i64));
+        nucleus_fields.insert(
+            "uptime_seconds".into(),
+            integer_value(daemon_info.uptime_seconds as i64),
+        );
+        nucleus_fields.insert(
+            "scheduled_backups_enabled".into(),
+            boolean_value(daemon_info.scheduled_backups_enabled),
+        );
+
+        // Services map: { "Xenon (Backend)": { status: "running", container_name: "backend" } }
+        let mut services_map = serde_json::Map::new();
+        for svc in services {
+            let mut entry = serde_json::Map::new();
+            entry.insert("status".into(), string_value(&format!("{:?}", svc.status).to_lowercase()));
+            entry.insert("container_name".into(), string_value(&svc.container_name));
+            services_map.insert(svc.name.clone(), map_value(entry));
+        }
+
+        // Backup summary map
+        let mut backup_fields = serde_json::Map::new();
+        if let Some(ref ts) = daemon_info.last_backup_at {
+            backup_fields.insert("last_backup_at".into(), string_value(ts));
+        } else {
+            backup_fields.insert("last_backup_at".into(), null_value());
+        }
+        backup_fields.insert(
+            "last_backup_status".into(),
+            string_value(&daemon_info.last_backup_status),
+        );
+        backup_fields.insert(
+            "total_backups".into(),
+            integer_value(daemon_info.total_backups as i64),
+        );
+
+        let fields = json!({
+            "telemetry": map_value(telemetry_fields),
+            "nucleus": map_value(nucleus_fields),
+            "services": map_value(services_map),
+            "backup_summary": map_value(backup_fields),
+        });
+
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            fields,
+            &["telemetry", "nucleus", "services", "backup_summary"],
+        )
+        .await
+    }
+
+    /// Push an alert to the hospital's alerts subcollection.
+    pub async fn push_alert(
+        &self,
+        code: &str,
+        severity: &str,
+        category: &str,
+        title: &str,
+        message: &str,
+    ) -> Result<String, NucleusError> {
+        let token = self.token().await?;
+        let parent = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let fields = json!({
+            "severity": string_value(severity),
+            "category": string_value(category),
+            "title": string_value(title),
+            "message": string_value(message),
+            "acknowledged": boolean_value(false),
+            "created_at": timestamp_value(&now),
+        });
+
+        queries::create_document(&self.http, &token, &parent, "alerts", fields).await
+    }
+
+    /// List messages from the hospital's inbox subcollection, ordered by created_at DESC.
+    pub async fn list_inbox(
+        &self,
+        code: &str,
+        limit: u32,
+    ) -> Result<Vec<FirestoreDocument>, NucleusError> {
+        let token = self.token().await?;
+        let parent = format!("hospital/{}", code);
+        queries::query_subcollection_ordered(
+            &self.http,
+            &token,
+            &parent,
+            "inbox",
+            "created_at",
+            limit,
+        )
+        .await
+    }
+
+    /// Mark an inbox message as read.
+    pub async fn mark_message_read(
+        &self,
+        code: &str,
+        message_id: &str,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}/inbox/{}", code, message_id);
+
+        let fields = json!({
+            "read": boolean_value(true),
+        });
+
+        queries::patch_document(&self.http, &token, &path, fields, &["read"]).await
+    }
+
+    /// Poll pending commands from the hospital's commands subcollection.
+    pub async fn poll_pending_commands(
+        &self,
+        code: &str,
+    ) -> Result<Vec<FirestoreDocument>, NucleusError> {
+        let token = self.token().await?;
+        let parent = format!("hospital/{}", code);
+        queries::query_subcollection(&self.http, &token, &parent, "commands", "status", "pending")
+            .await
+    }
+
+    /// Update a command document's status and result fields.
+    pub async fn update_command_status(
+        &self,
+        code: &str,
+        command_id: &str,
+        status: &str,
+        result: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}/commands/{}", code, command_id);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut fields = serde_json::Map::new();
+        fields.insert("status".into(), string_value(status));
+        fields.insert("executed_at".into(), timestamp_value(&now));
+
+        let mut field_paths = vec!["status", "executed_at"];
+
+        if let Some(r) = result {
+            fields.insert("result".into(), string_value(r));
+            field_paths.push("result");
+        }
+        if let Some(e) = error {
+            fields.insert("error".into(), string_value(e));
+            field_paths.push("error");
+        }
+
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            serde_json::Value::Object(fields),
+            &field_paths,
+        )
+        .await
+    }
+}

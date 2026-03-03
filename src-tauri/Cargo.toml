@@ -1,0 +1,71 @@
+[package]
+name = "puru-nucleus"
+version = "0.1.0"
+description = "Control center for Puru hospital deployments"
+authors = ["Puru Technologies"]
+license = "Proprietary"
+repository = ""
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-dialog = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Google Cloud
+google-cloud-storage = "0.15"
+google-cloud-auth = "0.13"
+
+# Database
+mysql_async = "0.33"
+
+# Compression
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
+# Config
+toml = "0.8"
+directories = "5.0"
+
+# System info
+sysinfo = "0.29"
+
+# Docker
+bollard = "0.15"
+futures-util = "0.3"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+urlencoding = "2.1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+colored = "2"
+
+# HTTP server for daemon mode
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+
+[features]
+# This feature is used for production builds or when `devPath` points to the filesystem
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
