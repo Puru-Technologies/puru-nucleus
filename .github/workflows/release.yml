@@ -71,17 +71,17 @@ jobs:
             platform: linux
             artifact-name: linux-artifacts
             rust-targets: ''
-            tauri-args: ''
+            tauri-args: '--bundles deb'
           - os: windows-latest
             platform: windows
             artifact-name: windows-artifacts
             rust-targets: ''
-            tauri-args: ''
+            tauri-args: '--bundles msi'
           - os: macos-latest
             platform: macos
             artifact-name: macos-artifacts
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            tauri-args: '--target universal-apple-darwin'
+            tauri-args: '--target universal-apple-darwin --bundles dmg'
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.validate-version.outputs.version }}
