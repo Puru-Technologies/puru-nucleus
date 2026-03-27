@@ -37,6 +37,8 @@ pub struct ScheduleInput {
 #[derive(Deserialize)]
 pub struct LogsQuery {
     pub tail: Option<u64>,
+    pub since: Option<i64>,
+    pub until: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -117,13 +119,13 @@ pub async fn restart_service(
         .map_err(|e| internal_err(e.user_message()))
 }
 
-/// GET /api/services/:name/logs?tail=N
+/// GET /api/services/:name/logs?tail=N&since=X&until=Y
 pub async fn service_logs(
     Path(name): Path<String>,
     Query(params): Query<LogsQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let tail = params.tail.unwrap_or(200);
-    crate::services::get_container_logs(&name, tail)
+    crate::services::get_container_logs(&name, tail, params.since, params.until)
         .await
         .map(|logs| Json(serde_json::json!({"logs": logs})))
         .map_err(|e| internal_err(e.user_message()))
@@ -363,4 +365,134 @@ pub async fn trigger_restore(
         .map_err(|e| internal_err(e.user_message()))?;
 
     Ok(Json(serde_json::json!({"ok": true, "backup_id": backup_id})))
+}
+
+// ── Log File Reader ──────────────────────────────────────────────────────────
+
+/// GET /api/logs/sources — list known log source directories
+pub async fn log_sources() -> Json<Vec<crate::logs::LogSource>> {
+    Json(crate::logs::get_known_log_paths())
+}
+
+#[derive(Deserialize)]
+pub struct LogFilesQuery {
+    pub path: Option<String>,
+}
+
+/// GET /api/logs/files?path=... — list log files
+pub async fn log_files(
+    Query(params): Query<LogFilesQuery>,
+) -> Result<Json<Vec<crate::logs::LogFileInfo>>, (StatusCode, String)> {
+    if let Some(ref p) = params.path {
+        crate::logs::list_log_files(p)
+            .map(Json)
+            .map_err(|e| internal_err(e.user_message()))
+    } else {
+        // Aggregate all sources
+        let sources = crate::logs::get_known_log_paths();
+        let mut all = Vec::new();
+        for source in &sources {
+            if let Ok(files) = crate::logs::list_log_files(&source.path) {
+                all.extend(files);
+            }
+        }
+        all.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        Ok(Json(all))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LogFileReadQuery {
+    pub path: String,
+    pub tail: Option<usize>,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+/// GET /api/logs/file?path=...&tail=100 — read a log file
+pub async fn log_file_read(
+    Query(params): Query<LogFileReadQuery>,
+) -> Result<Json<crate::logs::LogFileContent>, (StatusCode, String)> {
+    crate::logs::read_log_file(&params.path, params.tail, params.offset, params.limit)
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
+/// POST /api/pull — pull hospital settings from Firestore
+pub async fn pull_settings() -> Result<Json<crate::commands::PullSettingsResult>, (StatusCode, String)> {
+    let config = crate::config::load_config().map_err(|e| internal_err(e.user_message()))?;
+    if config.hospital_code.is_empty() {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            "Hospital code not configured".to_string(),
+        ));
+    }
+
+    let client = crate::firestore::FirestoreClient::new_from_config()
+        .await
+        .map_err(|e| internal_err(e.user_message()))?;
+
+    let (hospital_info, pulled_license) = client
+        .pull_hospital_settings(&config.hospital_code)
+        .await
+        .map_err(|e| internal_err(e.user_message()))?;
+
+    let current_license = crate::licensing::load_license()
+        .map_err(|e| internal_err(e.user_message()))?;
+
+    let license_changed = match &current_license {
+        Some(current) => {
+            current.valid_till != pulled_license.valid_till
+                || current.features.binlog_shipping != pulled_license.features.binlog_shipping
+                || current.features.point_in_time_recovery != pulled_license.features.point_in_time_recovery
+                || current.features.priority_support != pulled_license.features.priority_support
+                || current.limits.backup_retention_days != pulled_license.limits.backup_retention_days
+                || current.limits.max_storage_gb != pulled_license.limits.max_storage_gb
+        }
+        None => true,
+    };
+
+    if license_changed {
+        crate::licensing::save_license(&pulled_license)
+            .map_err(|e| internal_err(e.user_message()))?;
+    }
+
+    Ok(Json(crate::commands::PullSettingsResult {
+        hospital_info,
+        license: pulled_license,
+        license_changed,
+    }))
+}
+
+/// GET /api/network — quick connectivity check
+pub async fn network_check() -> Result<Json<crate::network::NetworkStatus>, (StatusCode, String)> {
+    crate::network::check_network()
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
+/// POST /api/network/speedtest — full speed test
+pub async fn network_speed_test() -> Result<Json<crate::network::SpeedTestResult>, (StatusCode, String)> {
+    crate::network::run_speed_test()
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
+/// POST /api/lan/binlog/ship — ship binlog files to LAN
+pub async fn ship_binlogs_lan() -> Result<Json<crate::backup::binlog::BinlogShipResult>, (StatusCode, String)> {
+    let license = crate::licensing::load_license()
+        .map_err(|e| internal_err(e.user_message()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::PRECONDITION_FAILED,
+                "No license found. Activate a license first.".to_string(),
+            )
+        })?;
+
+    crate::backup::binlog::ship_binlogs_to_lan(&license)
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
 }

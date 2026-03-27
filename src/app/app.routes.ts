@@ -22,6 +22,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/services/services.component').then(m => m.ServicesComponent)
   },
   {
+    path: 'logs',
+    canActivate: [initGuard],
+    loadComponent: () => import('./features/logs/logs.component').then(m => m.LogsComponent)
+  },
+  {
     path: 'backups',
     canActivate: [initGuard],
     loadComponent: () => import('./features/backups/backups.component').then(m => m.BackupsComponent)
@@ -55,5 +60,10 @@ export const routes: Routes = [
     path: 'setup',
     canActivate: [initGuard],
     loadComponent: () => import('./features/setup/setup.component').then(m => m.SetupComponent)
+  },
+  {
+    path: 'compose',
+    canActivate: [initGuard],
+    loadComponent: () => import('./features/compose/compose.component').then(m => m.ComposeComponent)
   }
 ];

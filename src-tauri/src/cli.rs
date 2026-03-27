@@ -56,6 +56,14 @@ pub enum Commands {
         /// Number of lines to show
         #[arg(short = 'n', long, default_value = "100")]
         lines: u64,
+
+        /// Show logs since (e.g. "2h", "1d", "2026-03-04T10:00:00", or Unix timestamp)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Show logs until (e.g. "2h", "1d", "2026-03-04T10:00:00", or Unix timestamp)
+        #[arg(long)]
+        until: Option<String>,
     },
 
     /// Check health of services
@@ -70,6 +78,9 @@ pub enum Commands {
     /// Restore from a backup
     Restore(RestoreArgs),
 
+    /// Binlog shipping operations
+    Binlog(BinlogArgs),
+
     /// Show nucleus configuration info
     Info,
 
@@ -78,6 +89,23 @@ pub enum Commands {
 
     /// Manage the puru-nucleus system service (install/uninstall/start/stop/status)
     Service(ServiceArgs),
+
+    /// Read host log files (not Docker container logs)
+    LogFile(LogFileArgs),
+
+    /// Check internet connectivity and speed
+    Network {
+        /// Run full speed test (download + upload)
+        #[arg(long)]
+        speed: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Pull hospital settings from cloud
+    Pull,
 
     /// Run in daemon mode (background service)
     Daemon,
@@ -138,6 +166,21 @@ pub enum ServiceCommands {
 }
 
 #[derive(Args)]
+pub struct BinlogArgs {
+    #[command(subcommand)]
+    pub command: BinlogCommands,
+}
+
+#[derive(Subcommand)]
+pub enum BinlogCommands {
+    /// Ship binlog files to LAN network share
+    LanShip,
+
+    /// Show binlog shipping status
+    Status,
+}
+
+#[derive(Args)]
 pub struct RestoreArgs {
     /// Backup ID to restore
     pub backup_id: Option<String>,
@@ -149,4 +192,41 @@ pub struct RestoreArgs {
     /// Restore only databases
     #[arg(long)]
     pub db_only: bool,
+}
+
+#[derive(Args)]
+pub struct LogFileArgs {
+    #[command(subcommand)]
+    pub command: LogFileCommands,
+}
+
+#[derive(Subcommand)]
+pub enum LogFileCommands {
+    /// List known log source directories
+    Sources,
+
+    /// List log files in a directory
+    List {
+        /// Directory path to scan (omit to scan all known sources)
+        #[arg(long)]
+        path: Option<String>,
+    },
+
+    /// Read a log file
+    Read {
+        /// Path to the log file
+        path: String,
+
+        /// Number of lines to show from the end
+        #[arg(short = 'n', long)]
+        tail: Option<usize>,
+
+        /// Line offset for pagination
+        #[arg(long)]
+        offset: Option<usize>,
+
+        /// Number of lines per page
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }

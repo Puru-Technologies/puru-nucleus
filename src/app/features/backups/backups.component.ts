@@ -7,7 +7,7 @@ import { MatTableModule } from '@angular/material/table';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { TauriService, BackupRecord, BackupResult } from '../../core/services/tauri.service';
+import { TauriService, BackupRecord, BackupResult, BinlogStatus, BinlogShipResult } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
 @Component({
@@ -144,6 +144,15 @@ import { NotificationService } from '../../core/services/notification.service';
                 </td>
               </ng-container>
 
+              <ng-container matColumnDef="lan">
+                <th mat-header-cell *matHeaderCellDef>LAN</th>
+                <td mat-cell *matCellDef="let backup">
+                  <mat-icon [class]="backup.lan_copied ? 'text-success' : 'text-muted'">
+                    {{ backup.lan_copied ? 'lan' : 'lan' }}
+                  </mat-icon>
+                </td>
+              </ng-container>
+
               <ng-container matColumnDef="actions">
                 <th mat-header-cell *matHeaderCellDef>Actions</th>
                 <td mat-cell *matCellDef="let backup">
@@ -159,6 +168,44 @@ import { NotificationService } from '../../core/services/notification.service';
           }
         </mat-card-content>
       </mat-card>
+
+      @if (binlogStatus?.lan_enabled) {
+        <mat-card class="binlog-card">
+          <mat-card-header>
+            <mat-card-title>LAN Binlog Shipping</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="binlog-info">
+              <div class="binlog-stat">
+                <span class="label">Last Shipped:</span>
+                <span>{{ binlogStatus?.lan_last_shipped_file || 'None' }}</span>
+              </div>
+              <div class="binlog-stat">
+                <span class="label">Total Shipped:</span>
+                <span>{{ binlogStatus?.lan_total_shipped }}</span>
+              </div>
+              <div class="binlog-stat">
+                <span class="label">Pending:</span>
+                <span>{{ binlogStatus?.files_pending }}</span>
+              </div>
+              @if (binlogStatus?.lan_last_error) {
+                <div class="binlog-stat error">
+                  <span class="label">Last Error:</span>
+                  <span>{{ binlogStatus?.lan_last_error }}</span>
+                </div>
+              }
+            </div>
+            <button mat-stroked-button (click)="shipBinlogsLanNow()" [disabled]="lanBinlogShipping">
+              @if (lanBinlogShipping) {
+                <mat-spinner diameter="18"></mat-spinner>
+              } @else {
+                <mat-icon>send</mat-icon>
+              }
+              Ship to LAN Now
+            </button>
+          </mat-card-content>
+        </mat-card>
+      }
     </div>
   `,
   styles: [`
@@ -277,6 +324,33 @@ import { NotificationService } from '../../core/services/notification.service';
     .text-muted {
       color: #999;
     }
+
+    .binlog-card {
+      margin-top: 1.5rem;
+
+      mat-card-header {
+        margin-bottom: 1rem;
+      }
+    }
+
+    .binlog-info {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .binlog-stat {
+      .label {
+        color: #666;
+        margin-right: 0.5rem;
+      }
+
+      &.error {
+        color: #f44336;
+        width: 100%;
+      }
+    }
   `]
 })
 export class BackupsComponent implements OnInit {
@@ -288,7 +362,10 @@ export class BackupsComponent implements OnInit {
   backupInProgress = false;
   currentBackupType: 'full' | 'partial' = 'full';
 
-  displayedColumns = ['type', 'status', 'size', 'created_at', 'uploaded', 'actions'];
+  displayedColumns = ['type', 'status', 'size', 'created_at', 'uploaded', 'lan', 'actions'];
+
+  binlogStatus: BinlogStatus | null = null;
+  lanBinlogShipping = false;
 
   get totalBackups(): number {
     return this.backups.filter(b => b.status === 'completed').length;
@@ -314,6 +391,7 @@ export class BackupsComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadBackups();
+    this.loadBinlogStatus();
   }
 
   async loadBackups(): Promise<void> {
@@ -339,6 +417,29 @@ export class BackupsComponent implements OnInit {
       await this.loadBackups();
     } finally {
       this.backupInProgress = false;
+    }
+  }
+
+  async loadBinlogStatus(): Promise<void> {
+    try {
+      this.binlogStatus = await this.tauri.invokeSilent<BinlogStatus>('get_binlog_status');
+    } catch {
+      this.binlogStatus = null;
+    }
+  }
+
+  async shipBinlogsLanNow(): Promise<void> {
+    this.lanBinlogShipping = true;
+    try {
+      const result = await this.tauri.invoke<BinlogShipResult>('ship_binlogs_lan');
+      this.notification.success(
+        `Shipped ${result.files_shipped} binlog files to LAN`
+      );
+      await this.loadBinlogStatus();
+    } catch (error) {
+      // Error handled by TauriService
+    } finally {
+      this.lanBinlogShipping = false;
     }
   }
 

@@ -1,4 +1,4 @@
-//! File actions — applying config files and installing certificates.
+//! File actions — copying config/data files and installing certificates.
 
 use std::path::Path;
 
@@ -6,10 +6,9 @@ use crate::error::NucleusError;
 
 use super::types::FileActionResult;
 
-/// Apply a downloaded config file to the nucleus configuration.
+/// Copy a downloaded file (JSON, SQL, etc.) to the config directory.
 ///
-/// - `.toml` files are merged into the existing `NucleusConfig`
-/// - `.json` files are copied to the config directory as service-specific config
+/// Validates JSON syntax for `.json` files; other supported types are copied as-is.
 pub async fn apply_config_file(file_path: &str) -> Result<FileActionResult, NucleusError> {
     let path = Path::new(file_path);
 
@@ -26,12 +25,12 @@ pub async fn apply_config_file(file_path: &str) -> Result<FileActionResult, Nucl
         .unwrap_or("");
 
     match ext {
-        "toml" => apply_toml_config(path).await,
-        "json" => copy_json_config(path).await,
+        "json" => copy_validated_json(path).await,
+        "sql" => copy_file_to_config_dir(path).await,
         _ => Ok(FileActionResult {
             success: false,
             message: format!(
-                "Unsupported config file extension: .{}. Expected .toml or .json",
+                "Unsupported file extension: .{}. Expected .json or .sql",
                 ext
             ),
         }),
@@ -83,50 +82,16 @@ pub async fn install_certificate(file_path: &str) -> Result<FileActionResult, Nu
     })
 }
 
-/// Merge a TOML config file into the existing NucleusConfig.
-async fn apply_toml_config(path: &Path) -> Result<FileActionResult, NucleusError> {
-    let content = std::fs::read_to_string(path)?;
-
-    // Parse the incoming TOML to validate it
-    let incoming: toml::Value = toml::from_str(&content).map_err(|e| {
-        NucleusError::InvalidConfig(format!("Invalid TOML config: {}", e))
-    })?;
-
-    // Load existing config, serialize to TOML value, merge, deserialize back
-    let existing = crate::config::load_config()?;
-    let mut existing_value: toml::Value =
-        toml::Value::try_from(&existing).map_err(|e| {
-            NucleusError::InvalidConfig(format!("Failed to serialize existing config: {}", e))
-        })?;
-
-    // Merge incoming into existing (top-level keys only)
-    if let (toml::Value::Table(ref mut base), toml::Value::Table(ref overlay)) =
-        (&mut existing_value, &incoming)
-    {
-        for (key, value) in overlay {
-            base.insert(key.clone(), value.clone());
-        }
-    }
-
-    // Deserialize the merged config back
-    let merged: crate::config::NucleusConfig = existing_value.try_into().map_err(|e| {
-        NucleusError::InvalidConfig(format!("Merged config is invalid: {}", e))
-    })?;
-
-    crate::config::save_config(&merged)?;
-
-    Ok(FileActionResult {
-        success: true,
-        message: "Configuration file applied and merged successfully.".into(),
-    })
-}
-
-/// Copy a JSON config file to the config directory as service-specific config.
-async fn copy_json_config(path: &Path) -> Result<FileActionResult, NucleusError> {
-    // Validate JSON
+/// Copy a JSON file to the config directory after validating its syntax.
+async fn copy_validated_json(path: &Path) -> Result<FileActionResult, NucleusError> {
     let content = std::fs::read_to_string(path)?;
     let _: serde_json::Value = serde_json::from_str(&content)?;
 
+    copy_file_to_config_dir(path).await
+}
+
+/// Copy a file as-is to the config directory.
+async fn copy_file_to_config_dir(path: &Path) -> Result<FileActionResult, NucleusError> {
     let filename = path
         .file_name()
         .ok_or_else(|| NucleusError::Validation("Invalid file path".into()))?;
@@ -136,6 +101,6 @@ async fn copy_json_config(path: &Path) -> Result<FileActionResult, NucleusError>
 
     Ok(FileActionResult {
         success: true,
-        message: format!("Config file copied to {}", dest.to_string_lossy()),
+        message: format!("File copied to {}", dest.to_string_lossy()),
     })
 }

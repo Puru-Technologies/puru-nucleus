@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 /// Year that represents "unlimited" license
 const MAX_LICENSE_YEAR: i32 = 2055;
 
+/// Hospital info pulled from Firestore (displayed in UI, not persisted to nucleus.toml).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HospitalInfo {
+    pub name: String,
+    pub short_name: Option<String>,
+    pub city: Option<String>,
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct License {
     pub hospital_name: String,
@@ -140,6 +149,123 @@ pub fn validate_license(license: &License) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Default "valid_till" for hospitals without a license field in Firestore.
+/// Returns a far-future date so the license is effectively unlimited.
+pub fn default_valid_till() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2055-12-31T23:59:59Z")
+        .expect("hardcoded date must parse")
+        .with_timezone(&Utc)
+}
+
+/// Extract a [`License`] from Firestore document fields.
+///
+/// Reads the `license` map (valid_till, features, limits) from the given fields.
+/// Falls back to defaults when the map or individual keys are missing.
+pub fn extract_license_from_firestore(
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+    hospital_name: &str,
+) -> License {
+    use crate::firestore::convert;
+
+    if let Some(license_val) = fields.get("license") {
+        let empty_map = serde_json::Map::new();
+        let license_map = convert::get_map_fields(license_val).unwrap_or(&empty_map);
+
+        let valid_till = license_map
+            .get("valid_till")
+            .and_then(|v| convert::get_optional_timestamp(v))
+            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(default_valid_till);
+
+        let features_map = license_map
+            .get("features")
+            .and_then(|v| convert::get_map_fields(v).ok());
+
+        let features = LicenseFeatures {
+            binlog_shipping: features_map
+                .as_ref()
+                .and_then(|m| m.get("binlog_shipping"))
+                .and_then(|v| convert::get_bool(v).ok())
+                .unwrap_or(false),
+            point_in_time_recovery: features_map
+                .as_ref()
+                .and_then(|m| m.get("point_in_time_recovery"))
+                .and_then(|v| convert::get_bool(v).ok())
+                .unwrap_or(false),
+            priority_support: features_map
+                .as_ref()
+                .and_then(|m| m.get("priority_support"))
+                .and_then(|v| convert::get_bool(v).ok())
+                .unwrap_or(false),
+        };
+
+        let limits_map = license_map
+            .get("limits")
+            .and_then(|v| convert::get_map_fields(v).ok());
+
+        let limits = LicenseLimits {
+            backup_retention_days: limits_map
+                .as_ref()
+                .and_then(|m| m.get("backup_retention_days"))
+                .and_then(|v| convert::get_u32(v).ok())
+                .unwrap_or(30),
+            max_storage_gb: limits_map
+                .as_ref()
+                .and_then(|m| m.get("max_storage_gb"))
+                .and_then(|v| convert::get_u32(v).ok())
+                .unwrap_or(100),
+        };
+
+        License {
+            hospital_name: hospital_name.to_string(),
+            valid_till,
+            features,
+            limits,
+            activated_at: Some(Utc::now()),
+        }
+    } else {
+        // No license field in Firestore — create default (unlimited, standard features)
+        License {
+            hospital_name: hospital_name.to_string(),
+            valid_till: default_valid_till(),
+            features: LicenseFeatures {
+                binlog_shipping: false,
+                point_in_time_recovery: false,
+                priority_support: false,
+            },
+            limits: LicenseLimits {
+                backup_retention_days: 30,
+                max_storage_gb: 100,
+            },
+            activated_at: Some(Utc::now()),
+        }
+    }
+}
+
+/// Extract [`HospitalInfo`] from Firestore document fields.
+pub fn extract_hospital_info(
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+) -> HospitalInfo {
+    use crate::firestore::convert;
+
+    HospitalInfo {
+        name: fields
+            .get("name")
+            .and_then(|v| convert::get_optional_string(v))
+            .unwrap_or_default(),
+        short_name: fields
+            .get("shortName")
+            .and_then(|v| convert::get_optional_string(v)),
+        city: fields
+            .get("city")
+            .and_then(|v| convert::get_optional_string(v)),
+        email: fields
+            .get("email")
+            .and_then(|v| convert::get_optional_string(v)),
+    }
 }
 
 #[cfg(test)]

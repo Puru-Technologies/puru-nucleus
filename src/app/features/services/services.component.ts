@@ -7,6 +7,7 @@ import { MatTableModule } from '@angular/material/table';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { TauriService, ServiceInfo } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
@@ -23,7 +24,8 @@ import { NotificationService } from '../../core/services/notification.service';
     MatTableModule,
     MatChipsModule,
     MatMenuModule,
-    MatProgressSpinnerModule
+    MatProgressSpinnerModule,
+    FormsModule
   ],
   template: `
     <div class="page">
@@ -78,6 +80,14 @@ import { NotificationService } from '../../core/services/notification.service';
                 <span>Logs: {{ logContainer }}</span>
               </div>
               <div class="log-actions">
+                <select class="log-time-select" [(ngModel)]="logTimeFilter" (ngModelChange)="refreshLogs()">
+                  <option value="tail">Last 200 lines</option>
+                  <option value="1h">Last 1 hour</option>
+                  <option value="6h">Last 6 hours</option>
+                  <option value="24h">Last 24 hours</option>
+                  <option value="3d">Last 3 days</option>
+                  <option value="7d">Last 7 days</option>
+                </select>
                 <button mat-icon-button (click)="refreshLogs()" [disabled]="logsLoading">
                   <mat-icon>refresh</mat-icon>
                 </button>
@@ -384,10 +394,35 @@ import { NotificationService } from '../../core/services/notification.service';
 
     .log-actions {
       display: flex;
-      gap: 2px;
+      align-items: center;
+      gap: 6px;
 
       button {
         color: #94a3b8;
+      }
+    }
+
+    .log-time-select {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 0.75rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      cursor: pointer;
+      outline: none;
+
+      &:hover {
+        border-color: #475569;
+      }
+      &:focus {
+        border-color: #6366f1;
+      }
+
+      option {
+        background: #1e293b;
+        color: #e2e8f0;
       }
     }
 
@@ -422,6 +457,7 @@ export class ServicesComponent implements OnInit {
   logContainer: string | null = null;
   logOutput = '';
   logsLoading = false;
+  logTimeFilter: 'tail' | '1h' | '6h' | '24h' | '3d' | '7d' = 'tail';
 
   displayedColumns = ['name', 'image', 'status', 'health', 'ports', 'uptime', 'actions'];
 
@@ -509,13 +545,11 @@ export class ServicesComponent implements OnInit {
 
   async viewLogs(service: ServiceInfo): Promise<void> {
     this.logContainer = service.container_name;
+    this.logTimeFilter = 'tail';
     this.logsLoading = true;
     this.logOutput = '';
     try {
-      this.logOutput = await this.tauri.invoke<string>('get_container_logs', {
-        containerName: service.container_name,
-        tail: 200
-      });
+      this.logOutput = await this.tauri.invoke<string>('get_container_logs', this.buildLogArgs());
     } catch {
       this.logOutput = `Failed to fetch logs for ${service.container_name}.`;
     } finally {
@@ -527,14 +561,34 @@ export class ServicesComponent implements OnInit {
     if (!this.logContainer) return;
     this.logsLoading = true;
     try {
-      this.logOutput = await this.tauri.invoke<string>('get_container_logs', {
-        containerName: this.logContainer,
-        tail: 200
-      });
+      this.logOutput = await this.tauri.invoke<string>('get_container_logs', this.buildLogArgs());
     } catch {
       this.logOutput = 'Failed to refresh logs.';
     } finally {
       this.logsLoading = false;
+    }
+  }
+
+  private buildLogArgs(): Record<string, unknown> {
+    const args: Record<string, unknown> = { containerName: this.logContainer };
+    if (this.logTimeFilter === 'tail') {
+      args['tail'] = 200;
+    } else {
+      args['tail'] = 0;
+      args['since'] = this.getLogSinceTimestamp();
+    }
+    return args;
+  }
+
+  private getLogSinceTimestamp(): number {
+    const now = Math.floor(Date.now() / 1000);
+    switch (this.logTimeFilter) {
+      case '1h': return now - 3600;
+      case '6h': return now - 21600;
+      case '24h': return now - 86400;
+      case '3d': return now - 259200;
+      case '7d': return now - 604800;
+      default: return 0;
     }
   }
 

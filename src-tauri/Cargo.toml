@@ -33,6 +33,7 @@ mysql_async = "0.33"
 
 # Compression
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+flate2 = "1"
 
 # Config
 toml = "0.8"
@@ -57,6 +58,9 @@ colored = "2"
 # HTTP server for daemon mode
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 # This feature is used for production builds or when `devPath` points to the filesystem

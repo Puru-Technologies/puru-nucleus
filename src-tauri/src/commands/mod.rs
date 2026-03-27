@@ -1,6 +1,10 @@
 //! Tauri command handlers
 
 use crate::backup::{BackupRecord, BackupResult, BackupType};
+use crate::compose_template::{
+    ComposeUploadResult, EnvDownloadResult, EnvFileEntry, EnvUploadResult,
+    FragmentDownloadResult, ServiceModules, TemplateVariables,
+};
 use crate::config::{ConfigSyncStatus, NucleusConfig};
 use crate::docker_update::{DockerUpdateResult, UpdateRecord};
 use crate::licensing::License;
@@ -89,14 +93,6 @@ pub async fn get_license() -> Result<Option<License>, String> {
     crate::licensing::load_license().map_err(|e| e.to_string())
 }
 
-/// Default "valid_till" for hospitals without a license field in Firestore.
-/// Returns a far-future date so the license is effectively unlimited.
-fn default_valid_till() -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::parse_from_rfc3339("2055-12-31T23:59:59Z")
-        .expect("hardcoded date must parse")
-        .with_timezone(&chrono::Utc)
-}
-
 /// Activate license with email — queries Firestore, extracts license, saves locally
 #[tauri::command]
 pub async fn activate_license(email: String) -> Result<(), String> {
@@ -138,78 +134,8 @@ pub async fn activate_license(email: String) -> Result<(), String> {
         .and_then(|v| crate::firestore::convert::get_optional_string(v))
         .unwrap_or_else(|| hospital_code.clone());
 
-    // Build license — use `license` map from Firestore if present, otherwise defaults
-    let license = if let Some(license_val) = doc.fields.get("license") {
-        let empty_map = serde_json::Map::new();
-        let license_map = crate::firestore::convert::get_map_fields(license_val)
-            .unwrap_or(&empty_map);
-
-        let valid_till = license_map
-            .get("valid_till")
-            .and_then(|v| crate::firestore::convert::get_optional_timestamp(v))
-            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| default_valid_till());
-
-        let features_map = license_map
-            .get("features")
-            .and_then(|v| crate::firestore::convert::get_map_fields(v).ok());
-
-        let features = crate::licensing::LicenseFeatures {
-            binlog_shipping: features_map.as_ref()
-                .and_then(|m| m.get("binlog_shipping"))
-                .and_then(|v| crate::firestore::convert::get_bool(v).ok())
-                .unwrap_or(false),
-            point_in_time_recovery: features_map.as_ref()
-                .and_then(|m| m.get("point_in_time_recovery"))
-                .and_then(|v| crate::firestore::convert::get_bool(v).ok())
-                .unwrap_or(false),
-            priority_support: features_map.as_ref()
-                .and_then(|m| m.get("priority_support"))
-                .and_then(|v| crate::firestore::convert::get_bool(v).ok())
-                .unwrap_or(false),
-        };
-
-        let limits_map = license_map
-            .get("limits")
-            .and_then(|v| crate::firestore::convert::get_map_fields(v).ok());
-
-        let limits = crate::licensing::LicenseLimits {
-            backup_retention_days: limits_map.as_ref()
-                .and_then(|m| m.get("backup_retention_days"))
-                .and_then(|v| crate::firestore::convert::get_u32(v).ok())
-                .unwrap_or(30),
-            max_storage_gb: limits_map.as_ref()
-                .and_then(|m| m.get("max_storage_gb"))
-                .and_then(|v| crate::firestore::convert::get_u32(v).ok())
-                .unwrap_or(100),
-        };
-
-        License {
-            hospital_name,
-            valid_till,
-            features,
-            limits,
-            activated_at: Some(chrono::Utc::now()),
-        }
-    } else {
-        // No license field in Firestore — create default (unlimited, standard features)
-        tracing::info!("No license field in Firestore for {}; using defaults", hospital_code);
-        License {
-            hospital_name,
-            valid_till: default_valid_till(),
-            features: crate::licensing::LicenseFeatures {
-                binlog_shipping: false,
-                point_in_time_recovery: false,
-                priority_support: false,
-            },
-            limits: crate::licensing::LicenseLimits {
-                backup_retention_days: 30,
-                max_storage_gb: 100,
-            },
-            activated_at: Some(chrono::Utc::now()),
-        }
-    };
+    // Build license using shared helper
+    let license = crate::licensing::extract_license_from_firestore(&doc.fields, &hospital_name);
 
     // Validate license is not expired
     crate::licensing::validate_license(&license)?;
@@ -224,6 +150,58 @@ pub async fn activate_license(email: String) -> Result<(), String> {
 
     tracing::info!("License activated for hospital: {} ({})", license.hospital_name, hospital_code);
     Ok(())
+}
+
+/// Result of pulling hospital settings from cloud.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullSettingsResult {
+    pub hospital_info: crate::licensing::HospitalInfo,
+    pub license: License,
+    pub license_changed: bool,
+}
+
+/// Pull hospital settings (info + license) from Firestore.
+#[tauri::command]
+pub async fn pull_settings() -> Result<PullSettingsResult, String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.hospital_code.is_empty() {
+        return Err("Hospital code not configured. Activate a license first.".to_string());
+    }
+
+    let client = crate::firestore::FirestoreClient::new_from_config()
+        .await
+        .map_err(|e| e.user_message())?;
+
+    let (hospital_info, pulled_license) = client
+        .pull_hospital_settings(&config.hospital_code)
+        .await
+        .map_err(|e| e.user_message())?;
+
+    // Compare pulled license with current local license
+    let current_license = crate::licensing::load_license().map_err(|e| e.user_message())?;
+    let license_changed = match &current_license {
+        Some(current) => {
+            current.valid_till != pulled_license.valid_till
+                || current.features.binlog_shipping != pulled_license.features.binlog_shipping
+                || current.features.point_in_time_recovery != pulled_license.features.point_in_time_recovery
+                || current.features.priority_support != pulled_license.features.priority_support
+                || current.limits.backup_retention_days != pulled_license.limits.backup_retention_days
+                || current.limits.max_storage_gb != pulled_license.limits.max_storage_gb
+        }
+        None => true,
+    };
+
+    // If license changed, save the new license
+    if license_changed {
+        crate::licensing::save_license(&pulled_license).map_err(|e| e.user_message())?;
+        tracing::info!("License updated from cloud for hospital: {}", config.hospital_code);
+    }
+
+    Ok(PullSettingsResult {
+        hospital_info,
+        license: pulled_license,
+        license_changed,
+    })
 }
 
 /// Start backup
@@ -556,10 +534,54 @@ pub async fn log_error(command: String, message: String, timestamp: i64) -> Resu
 
 /// Get container logs
 #[tauri::command]
-pub async fn get_container_logs(container_name: String, tail: Option<u64>) -> Result<String, String> {
-    crate::services::get_container_logs(&container_name, tail.unwrap_or(200))
+pub async fn get_container_logs(
+    container_name: String,
+    tail: Option<u64>,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> Result<String, String> {
+    crate::services::get_container_logs(&container_name, tail.unwrap_or(200), since, until)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ── Log File Reader ──────────────────────────────────────────────────────────
+
+/// Get known log source directories
+#[tauri::command]
+pub fn get_log_sources() -> Vec<crate::logs::LogSource> {
+    crate::logs::get_known_log_paths()
+}
+
+/// List log files under a path (or aggregate all known sources if no path given)
+#[tauri::command]
+pub fn list_log_files(path: Option<String>) -> Result<Vec<crate::logs::LogFileInfo>, String> {
+    if let Some(p) = path {
+        crate::logs::list_log_files(&p).map_err(|e| e.to_string())
+    } else {
+        // Aggregate all known sources
+        let sources = crate::logs::get_known_log_paths();
+        let mut all_files = Vec::new();
+        for source in &sources {
+            if let Ok(files) = crate::logs::list_log_files(&source.path) {
+                all_files.extend(files);
+            }
+        }
+        // Sort by modified_at descending
+        all_files.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        Ok(all_files)
+    }
+}
+
+/// Read a log file with optional tail or offset+limit pagination
+#[tauri::command]
+pub fn read_log_file(
+    path: String,
+    tail: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<crate::logs::LogFileContent, String> {
+    crate::logs::read_log_file(&path, tail, offset, limit).map_err(|e| e.to_string())
 }
 
 /// Get a telemetry snapshot (current system + service metrics)
@@ -1395,6 +1417,177 @@ pub async fn apply_config_file(file_path: String) -> Result<FileActionResult, St
 #[tauri::command]
 pub async fn install_certificate(file_path: String) -> Result<FileActionResult, String> {
     crate::messaging::file_actions::install_certificate(&file_path)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+// ── LAN Backup ──────────────────────────────────────────────────────────────
+
+/// Validate a LAN backup path — checks it exists, is a directory, and is writable
+#[tauri::command]
+pub async fn validate_lan_path(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+
+    if !p.exists() {
+        return Err("Path does not exist".into());
+    }
+    if !p.is_dir() {
+        return Err("Path is not a directory".into());
+    }
+
+    // Write + delete probe file to verify write access
+    let probe = p.join(".puru-probe");
+    std::fs::write(&probe, b"puru-nucleus write test")
+        .map_err(|e| format!("Path is not writable: {}", e))?;
+    let _ = std::fs::remove_file(&probe);
+
+    Ok(())
+}
+
+/// Ship binlog files to LAN network share
+#[tauri::command]
+pub async fn ship_binlogs_lan() -> Result<crate::backup::binlog::BinlogShipResult, String> {
+    let license = crate::licensing::load_license()
+        .map_err(|e| e.user_message())?
+        .ok_or_else(|| "No license found. Activate a license first.".to_string())?;
+
+    crate::backup::binlog::ship_binlogs_to_lan(&license)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Get binlog shipping status
+#[tauri::command]
+pub async fn get_binlog_status() -> Result<crate::backup::binlog::BinlogStatus, String> {
+    crate::backup::binlog::get_binlog_status()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+// ── Network ─────────────────────────────────────────────────────────────────
+
+/// Quick connectivity + latency check
+#[tauri::command]
+pub async fn check_network() -> Result<crate::network::NetworkStatus, String> {
+    crate::network::check_network()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Full speed test (download + upload)
+#[tauri::command]
+pub async fn run_speed_test() -> Result<crate::network::SpeedTestResult, String> {
+    crate::network::run_speed_test()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+// ── Compose Template ─────────────────────────────────────────────────────────
+
+/// Download compose fragment files from GCS (skips files that already exist)
+#[tauri::command]
+pub async fn download_compose_template() -> Result<FragmentDownloadResult, String> {
+    crate::compose_template::download_fragments()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Read the local compose file content for editing
+#[tauri::command]
+pub async fn get_compose_content() -> Result<String, String> {
+    crate::compose_template::read_compose_file()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Substitute template variables into compose content
+#[tauri::command]
+pub async fn substitute_compose_variables(
+    content: String,
+    variables: TemplateVariables,
+) -> Result<String, String> {
+    Ok(crate::compose_template::substitute_variables(&content, &variables))
+}
+
+/// Save compose content to disk
+#[tauri::command]
+pub async fn save_compose_content(content: String) -> Result<String, String> {
+    crate::compose_template::save_compose_file(&content)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Upload finalized compose file to GCS
+#[tauri::command]
+pub async fn upload_compose_to_cloud() -> Result<ComposeUploadResult, String> {
+    let cfg = crate::config::load_config().map_err(|e| e.user_message())?;
+    if cfg.hospital_code.is_empty() {
+        return Err("Hospital code not configured. Set it in Settings first.".into());
+    }
+    crate::compose_template::upload_compose_to_gcs(&cfg.hospital_code)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Fetch service modules config from Firestore (hospital/{code}.modules)
+#[tauri::command]
+pub async fn get_service_modules() -> Result<ServiceModules, String> {
+    let cfg = crate::config::load_config().map_err(|e| e.user_message())?;
+    if cfg.hospital_code.is_empty() {
+        return Err("Hospital code not configured. Set it in Settings first.".into());
+    }
+    let client = crate::firestore::FirestoreClient::new_from_config()
+        .await
+        .map_err(|e| e.user_message())?;
+    client
+        .fetch_modules(&cfg.hospital_code)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Assemble docker-compose.yml from fragment files based on enabled modules
+#[tauri::command]
+pub async fn assemble_compose_file(
+    modules: ServiceModules,
+) -> Result<String, String> {
+    crate::compose_template::assemble_compose(&modules)
+        .map_err(|e| e.user_message())
+}
+
+// ── Env File Templates ───────────────────────────────────────────────────────
+
+/// Download env file templates from GCS (skips files that already exist)
+#[tauri::command]
+pub async fn download_env_templates() -> Result<EnvDownloadResult, String> {
+    crate::compose_template::download_env_templates()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Read all local env files
+#[tauri::command]
+pub async fn get_env_files() -> Result<Vec<EnvFileEntry>, String> {
+    crate::compose_template::read_env_files()
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Save a single env file by name
+#[tauri::command]
+pub async fn save_env_file(name: String, content: String) -> Result<String, String> {
+    crate::compose_template::save_env_file(&name, &content)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+/// Upload all env files to GCS
+#[tauri::command]
+pub async fn upload_env_files_to_cloud() -> Result<EnvUploadResult, String> {
+    let cfg = crate::config::load_config().map_err(|e| e.user_message())?;
+    if cfg.hospital_code.is_empty() {
+        return Err("Hospital code not configured. Set it in Settings first.".into());
+    }
+    crate::compose_template::upload_env_files_to_gcs(&cfg.hospital_code)
         .await
         .map_err(|e| e.user_message())
 }

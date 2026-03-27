@@ -110,10 +110,18 @@ export interface TauriCommands {
   activate_license: (args: { email: string }) => Promise<void>;
 
   // Logs
-  get_container_logs: (args: { containerName: string; tail?: number }) => Promise<string>;
+  get_container_logs: (args: { containerName: string; tail?: number; since?: number; until?: number }) => Promise<string>;
+
+  // Log file reader
+  get_log_sources: () => Promise<LogSource[]>;
+  list_log_files: (args: { path?: string }) => Promise<LogFileInfo[]>;
+  read_log_file: (args: { path: string; tail?: number; offset?: number; limit?: number }) => Promise<LogFileContent>;
 
   // Telemetry
   get_telemetry_snapshot: () => Promise<TelemetrySnapshot>;
+
+  // Pull settings
+  pull_settings: () => Promise<PullSettingsResult>;
 
   // Logging
   log_error: (args: { command: string; message: string; timestamp: number }) => Promise<void>;
@@ -179,6 +187,13 @@ export interface BackupRecord {
   size_mb: number;
   created_at: string;
   uploaded: boolean;
+  lan_copied: boolean;
+}
+
+export interface LanConfig {
+  enabled: boolean;
+  path: string;
+  binlog_enabled: boolean;
 }
 
 export interface NucleusConfig {
@@ -195,6 +210,7 @@ export interface NucleusConfig {
   auto_update_enabled: boolean;
   release_channel: string;
   daemon?: DaemonConfig;
+  lan: LanConfig;
 }
 
 export interface DaemonStatus {
@@ -308,4 +324,149 @@ export interface ShellAuditEntry {
   duration_ms: number;
   timestamp: string;
   success: boolean;
+}
+
+// Binlog types
+export interface BinlogStatus {
+  lan_enabled: boolean;
+  lan_last_shipped_file?: string;
+  lan_last_shipped_at?: string;
+  lan_total_shipped: number;
+  lan_last_error?: string;
+  current_master_file?: string;
+  current_master_position?: number;
+  files_pending: number;
+}
+
+export interface BinlogShipResult {
+  files_shipped: number;
+  bytes_shipped: number;
+  duration_seconds: number;
+  errors: string[];
+}
+
+// Log file reader types
+export interface LogSource {
+  name: string;
+  path: string;
+  source_type: string;
+}
+
+export interface LogFileInfo {
+  name: string;
+  path: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface LogFileContent {
+  path: string;
+  content: string;
+  total_lines: number;
+  offset: number;
+  lines_returned: number;
+}
+
+// Compose template types
+export interface FragmentDownloadResult {
+  downloaded: string[];
+  skipped: string[];
+  fragments_dir: string;
+}
+
+export interface TemplateVariables {
+  hospital_code: string;
+  hospital_name: string;
+  hospital_line2: string;
+  hospital_line3: string;
+  hospital_reg_no: string;
+  hospital_logo_url: string;
+  barcode_prefix_inventory: string;
+  barcode_prefix_ppin: string;
+  barcode_prefix_pathology: string;
+  employee_prefix: string;
+  barcode_prefix_sale: string;
+  barcode_prefix_return: string;
+  server_ip: string;
+  mysql_password: string;
+  rabbitmq_password: string;
+  auth_tag: string;
+  xenon_tag: string;
+  has_tag: string;
+  pacs_tag: string;
+  argon_tag: string;
+  comm_tag: string;
+  realtime_tag: string;
+  neon_tag: string;
+  bridge_tag: string;
+  hydrogen_tag: string;
+}
+
+export interface ServiceModules {
+  auth: boolean;
+  xenon: boolean;
+  has: boolean;
+  pacs: boolean;
+  argon: boolean;
+  comm: boolean;
+  realtime: boolean;
+  neon: boolean;
+  bridge: boolean;
+  hydrogen: boolean;
+}
+
+export interface ComposeUploadResult {
+  success: boolean;
+  gcs_path: string;
+}
+
+export interface EnvFileEntry {
+  name: string;
+  content: string;
+}
+
+export interface EnvDownloadResult {
+  files_downloaded: string[];
+  files_skipped: string[];
+  env_dir: string;
+}
+
+export interface EnvUploadResult {
+  success: boolean;
+  files_uploaded: string[];
+}
+
+export interface HospitalInfo {
+  name: string;
+  short_name?: string;
+  city?: string;
+  email?: string;
+}
+
+export interface PullSettingsResult {
+  hospital_info: HospitalInfo;
+  license: import('../models/license.model').License;
+  license_changed: boolean;
+}
+
+// Network types
+export interface NetworkStatus {
+  connected: boolean;
+  latency_ms: number | null;
+  gcp_reachable: boolean;
+  gcp_latency_ms: number | null;
+  checked_at: string;
+}
+
+export interface SpeedTestResult {
+  connected: boolean;
+  latency_ms: number | null;
+  gcp_reachable: boolean;
+  gcp_latency_ms: number | null;
+  download_mbps: number | null;
+  upload_mbps: number | null;
+  download_bytes: number;
+  upload_bytes: number;
+  duration_ms: number;
+  tested_at: string;
 }

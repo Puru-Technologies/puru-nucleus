@@ -9,7 +9,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { TauriService, NucleusConfig, DaemonStatus, DaemonConfig } from '../../core/services/tauri.service';
+import { TauriService, NucleusConfig, DaemonStatus, DaemonConfig, PullSettingsResult } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -109,6 +109,65 @@ import { open } from '@tauri-apps/plugin-dialog';
             </mat-card-content>
           </mat-card>
 
+          <!-- LAN Backup Settings -->
+          <mat-card class="settings-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>lan</mat-icon>
+              <mat-card-title>LAN Backup</mat-card-title>
+              <mat-card-subtitle>Copy backups to network share (NFS/SMB)</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="toggle-row">
+                <mat-slide-toggle [(ngModel)]="config.lan.enabled">
+                  Enable LAN Backup
+                </mat-slide-toggle>
+                <p class="toggle-description">
+                  Copy backup files to a local network share
+                </p>
+              </div>
+
+              @if (config.lan.enabled) {
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>LAN Path</mat-label>
+                  <input matInput [(ngModel)]="config.lan.path"
+                         placeholder="/mnt/nas/backups or Z:\\backups">
+                </mat-form-field>
+
+                <div class="lan-validate-row">
+                  <button mat-stroked-button (click)="validateLanPath()" [disabled]="lanValidating || !config.lan.path">
+                    @if (lanValidating) {
+                      <mat-spinner diameter="18"></mat-spinner>
+                    } @else {
+                      <mat-icon>verified</mat-icon>
+                    }
+                    Validate
+                  </button>
+                  @if (lanValidationResult) {
+                    <span class="lan-validation ok">
+                      <mat-icon>check_circle</mat-icon> Path is writable
+                    </span>
+                  }
+                  @if (lanValidationError) {
+                    <span class="lan-validation error">
+                      <mat-icon>error</mat-icon> {{ lanValidationError }}
+                    </span>
+                  }
+                </div>
+
+                <mat-divider></mat-divider>
+
+                <div class="toggle-row">
+                  <mat-slide-toggle [(ngModel)]="config.lan.binlog_enabled">
+                    Enable LAN Binlog Shipping
+                  </mat-slide-toggle>
+                  <p class="toggle-description">
+                    Ship MySQL binary logs to the LAN path for point-in-time recovery
+                  </p>
+                </div>
+              }
+            </mat-card-content>
+          </mat-card>
+
           <!-- Database Settings -->
           <mat-card class="settings-card">
             <mat-card-header>
@@ -138,12 +197,12 @@ import { open } from '@tauri-apps/plugin-dialog';
             </mat-card-content>
           </mat-card>
 
-          <!-- Config Sync -->
+          <!-- Cloud Sync -->
           <mat-card class="settings-card">
             <mat-card-header>
               <mat-icon mat-card-avatar>sync</mat-icon>
-              <mat-card-title>Config Sync</mat-card-title>
-              <mat-card-subtitle>Sync local configuration to cloud</mat-card-subtitle>
+              <mat-card-title>Cloud Sync</mat-card-title>
+              <mat-card-subtitle>Push config to cloud / Pull settings from cloud</mat-card-subtitle>
             </mat-card-header>
             <mat-card-content>
               @if (syncStatus) {
@@ -160,14 +219,48 @@ import { open } from '@tauri-apps/plugin-dialog';
                   }
                 </div>
               }
-              <button mat-stroked-button (click)="syncConfig()" [disabled]="syncing">
-                @if (syncing) {
-                  <mat-spinner diameter="18"></mat-spinner>
-                } @else {
-                  <mat-icon>cloud_sync</mat-icon>
-                }
-                Sync to Cloud
-              </button>
+              <div class="sync-actions">
+                <button mat-stroked-button (click)="syncConfig()" [disabled]="syncing">
+                  @if (syncing) {
+                    <mat-spinner diameter="18"></mat-spinner>
+                  } @else {
+                    <mat-icon>cloud_upload</mat-icon>
+                  }
+                  Sync to Cloud
+                </button>
+                <button mat-stroked-button (click)="pullSettings()" [disabled]="pulling">
+                  @if (pulling) {
+                    <mat-spinner diameter="18"></mat-spinner>
+                  } @else {
+                    <mat-icon>cloud_download</mat-icon>
+                  }
+                  Pull from Cloud
+                </button>
+              </div>
+              @if (pullResult) {
+                <div class="pull-result">
+                  <div class="pull-info">
+                    <span class="label">Hospital:</span>
+                    <span>{{ pullResult.hospital_info.name }}</span>
+                  </div>
+                  @if (pullResult.hospital_info.city) {
+                    <div class="pull-info">
+                      <span class="label">City:</span>
+                      <span>{{ pullResult.hospital_info.city }}</span>
+                    </div>
+                  }
+                  @if (pullResult.license_changed) {
+                    <div class="pull-updated">
+                      <mat-icon>check_circle</mat-icon>
+                      <span>License updated from cloud</span>
+                    </div>
+                  } @else {
+                    <div class="pull-info">
+                      <span>License is up to date</span>
+                    </div>
+                  }
+                </div>
+              }
             </mat-card-content>
           </mat-card>
 
@@ -335,6 +428,45 @@ import { open } from '@tauri-apps/plugin-dialog';
       }
     }
 
+    .sync-actions {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .pull-result {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: #f5f5f5;
+      border-radius: 8px;
+
+      .pull-info {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 0.25rem;
+        font-size: 0.875rem;
+
+        .label {
+          color: #666;
+        }
+      }
+
+      .pull-updated {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: #4caf50;
+        font-size: 0.875rem;
+        margin-top: 0.5rem;
+
+        mat-icon {
+          font-size: 18px;
+          width: 18px;
+          height: 18px;
+        }
+      }
+    }
+
     .daemon-status {
       .status-indicator {
         display: flex;
@@ -416,6 +548,34 @@ import { open } from '@tauri-apps/plugin-dialog';
       }
     }
 
+    .lan-validate-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .lan-validation {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.85rem;
+
+      mat-icon {
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+      }
+
+      &.ok {
+        color: #4caf50;
+      }
+
+      &.error {
+        color: #f44336;
+      }
+    }
+
     .actions {
       display: flex;
       gap: 0.75rem;
@@ -447,6 +607,13 @@ export class SettingsComponent implements OnInit {
   daemonTelemetryMinutes = 15;
 
   syncStatus: { lastSynced: Date; pendingChanges: number } | null = null;
+  pulling = false;
+  pullResult: PullSettingsResult | null = null;
+
+  // LAN validation
+  lanValidating = false;
+  lanValidationResult = false;
+  lanValidationError = '';
 
   ngOnInit(): void {
     this.loadConfig();
@@ -534,6 +701,23 @@ export class SettingsComponent implements OnInit {
     }
   }
 
+  async pullSettings(): Promise<void> {
+    this.pulling = true;
+    this.pullResult = null;
+    try {
+      this.pullResult = await this.tauri.invoke<PullSettingsResult>('pull_settings');
+      if (this.pullResult.license_changed) {
+        this.notification.success('License updated from cloud');
+      } else {
+        this.notification.success('Settings pulled — license is up to date');
+      }
+    } catch (error) {
+      // Error handled by TauriService
+    } finally {
+      this.pulling = false;
+    }
+  }
+
   async loadSyncStatus(): Promise<void> {
     try {
       const status = await this.tauri.invokeSilent<{ last_synced: string; pending_count: number }>('get_sync_status');
@@ -574,6 +758,22 @@ export class SettingsComponent implements OnInit {
       this.notification.success('Daemon stopped');
     } catch (error) {
       // Error handled by TauriService
+    }
+  }
+
+  async validateLanPath(): Promise<void> {
+    if (!this.config?.lan.path) return;
+    this.lanValidating = true;
+    this.lanValidationResult = false;
+    this.lanValidationError = '';
+
+    try {
+      await this.tauri.invoke('validate_lan_path', { path: this.config.lan.path });
+      this.lanValidationResult = true;
+    } catch (error) {
+      this.lanValidationError = error as string;
+    } finally {
+      this.lanValidating = false;
     }
   }
 

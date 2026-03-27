@@ -1,5 +1,7 @@
 //! Backup management — Per-object structured MySQL dump, GCS upload, history tracking
 
+pub mod binlog;
+
 use chrono::{DateTime, Datelike, Utc};
 use mysql_async::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,8 @@ pub struct BackupRecord {
     pub size_mb: u64,
     pub created_at: DateTime<Utc>,
     pub uploaded: bool,
+    #[serde(default)]
+    pub lan_copied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -132,12 +136,14 @@ fn update_record(
     status: BackupStatus,
     size_mb: u64,
     uploaded: bool,
+    lan_copied: bool,
 ) -> Result<(), NucleusError> {
     let mut records = load_history()?;
     if let Some(rec) = records.iter_mut().find(|r| r.id == id) {
         rec.status = status;
         rec.size_mb = size_mb;
         rec.uploaded = uploaded;
+        rec.lan_copied = lan_copied;
     }
     save_history(&records)
 }
@@ -1012,6 +1018,31 @@ async fn download_from_gcs(
     Ok(())
 }
 
+// ── LAN copy ─────────────────────────────────────────────────────────────────
+
+/// Copy a backup zip to a LAN network share (NFS/SMB mount).
+/// Uses atomic write: `.tmp` → rename to prevent partial files.
+fn copy_zip_to_lan(
+    zip_path: &Path,
+    lan_path: &str,
+    hospital_code: &str,
+    backup_name: &str,
+) -> Result<(), NucleusError> {
+    let dest_dir = PathBuf::from(lan_path)
+        .join(hospital_code)
+        .join("backups");
+    std::fs::create_dir_all(&dest_dir)?;
+
+    let dest_file = dest_dir.join(backup_zip_filename(backup_name));
+    let tmp_file = dest_dir.join(format!("{}.zip.tmp", backup_name));
+
+    std::fs::copy(zip_path, &tmp_file)?;
+    std::fs::rename(&tmp_file, &dest_file)?;
+
+    tracing::info!("Backup copied to LAN: {}", dest_file.display());
+    Ok(())
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Start a backup: dump per-object, zip, upload to GCS.
@@ -1054,6 +1085,7 @@ pub async fn start_backup(
         size_mb: 0,
         created_at: Utc::now(),
         uploaded: false,
+        lan_copied: false,
     })?;
 
     // 5. Dump all databases into a structured temp directory
@@ -1061,7 +1093,7 @@ pub async fn start_backup(
         match dump_all_databases(&cfg, &backup_type, &backup_name).await {
             Ok(result) => result,
             Err(e) => {
-                let _ = update_record(&backup_name, BackupStatus::Failed, 0, false);
+                let _ = update_record(&backup_name, BackupStatus::Failed, 0, false, false);
                 return Err(e);
             }
         };
@@ -1074,7 +1106,7 @@ pub async fn start_backup(
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            let _ = update_record(&backup_name, BackupStatus::Failed, 0, false);
+            let _ = update_record(&backup_name, BackupStatus::Failed, 0, false, false);
             return Err(e);
         }
     };
@@ -1101,8 +1133,17 @@ pub async fn start_backup(
         }
     }
 
+    // 7b. Copy to LAN if configured
+    let mut lan_copied = false;
+    if cfg.lan.enabled && !cfg.lan.path.is_empty() {
+        match copy_zip_to_lan(&zip_path, &cfg.lan.path, &cfg.hospital_code, &backup_name) {
+            Ok(()) => lan_copied = true,
+            Err(e) => tracing::warn!("LAN copy failed (backup saved locally): {}", e),
+        }
+    }
+
     // 8. Update record to completed
-    update_record(&backup_name, BackupStatus::Completed, size_mb, uploaded)?;
+    update_record(&backup_name, BackupStatus::Completed, size_mb, uploaded, lan_copied)?;
 
     let duration = start.elapsed().as_secs();
     tracing::info!(
@@ -1150,22 +1191,40 @@ pub async fn restore_backup(backup_id: &str) -> Result<(), NucleusError> {
     let zip_path = backups_dir().join(backup_zip_filename(backup_id));
 
     if !zip_path.exists() {
-        // 3. Download .zip from GCS if not local
-        let cred_path = cfg
-            .gcs_credentials_path
-            .as_deref()
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| {
-                NucleusError::InvalidConfig(
-                    "Backup file not found locally and no GCS credentials configured.".into(),
-                )
-            })?;
+        // 3. Try downloading from GCS
+        let mut downloaded = false;
+        if let Some(ref cred_path) = cfg.gcs_credentials_path {
+            if !cred_path.is_empty() {
+                let object_path = gcs_object_path(&cfg.hospital_code, backup_id);
+                tracing::info!("Downloading backup from GCS: {}", object_path);
+                match create_gcs_client(cred_path).await {
+                    Ok(client) => match download_from_gcs(&client, &object_path, &zip_path).await {
+                        Ok(()) => downloaded = true,
+                        Err(e) => tracing::warn!("GCS download failed: {}", e),
+                    },
+                    Err(e) => tracing::warn!("GCS client init failed: {}", e),
+                }
+            }
+        }
 
-        let object_path = gcs_object_path(&cfg.hospital_code, backup_id);
-        tracing::info!("Downloading backup from GCS: {}", object_path);
+        // 3b. Fallback: try LAN path
+        if !downloaded && cfg.lan.enabled && !cfg.lan.path.is_empty() {
+            let lan_src = PathBuf::from(&cfg.lan.path)
+                .join(&cfg.hospital_code)
+                .join("backups")
+                .join(backup_zip_filename(backup_id));
+            if lan_src.exists() {
+                tracing::info!("Restoring backup from LAN: {}", lan_src.display());
+                std::fs::copy(&lan_src, &zip_path)?;
+                downloaded = true;
+            }
+        }
 
-        let client = create_gcs_client(cred_path).await?;
-        download_from_gcs(&client, &object_path, &zip_path).await?;
+        if !downloaded {
+            return Err(NucleusError::InvalidConfig(
+                "Backup file not found locally, on GCS, or on LAN path.".into(),
+            ));
+        }
     }
 
     // 4. Extract zip to a temp directory

@@ -284,18 +284,19 @@ fn extract_version(output: &str) -> Option<String> {
 /// Search common paths for docker-compose.yml
 async fn find_compose_path() -> Option<String> {
     let mut candidates: Vec<std::path::PathBuf> = vec![
-        "/home/puru/docker-compose.yml".into(),
-        "/home/puru/docker-compose.yaml".into(),
         "/opt/puru/docker-compose.yml".into(),
         "/opt/puru/docker-compose.yaml".into(),
     ];
 
     if let Some(base_dirs) = directories::BaseDirs::new() {
         let home = base_dirs.home_dir();
+        let puru_dir = home.join("puru");
+        candidates.push(puru_dir.join("docker").join("docker-compose.yml"));
+        candidates.push(puru_dir.join("docker").join("docker-compose.yaml"));
+        candidates.push(puru_dir.join("docker-compose.yml"));
+        candidates.push(puru_dir.join("docker-compose.yaml"));
         candidates.push(home.join("docker-compose.yml"));
         candidates.push(home.join("docker-compose.yaml"));
-        candidates.push(home.join("puru").join("docker-compose.yml"));
-        candidates.push(home.join("puru").join("docker-compose.yaml"));
     }
 
     for path in &candidates {
@@ -517,6 +518,8 @@ pub async fn restart_service(name: &str) -> Result<(), crate::error::NucleusErro
 pub async fn get_container_logs(
     container_name: &str,
     tail: u64,
+    since: Option<i64>,
+    until: Option<i64>,
 ) -> Result<String, crate::error::NucleusError> {
     use bollard::container::LogsOptions;
     use futures_util::StreamExt;
@@ -530,6 +533,8 @@ pub async fn get_container_logs(
             stderr: true,
             tail: tail.to_string(),
             timestamps: true,
+            since: since.unwrap_or(0),
+            until: until.unwrap_or(0),
             ..Default::default()
         }),
     );

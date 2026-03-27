@@ -49,6 +49,12 @@ pub fn start_all(daemon_cfg: &DaemonConfig, telemetry_enabled: bool) -> Vec<Join
         watchdog_loop().await;
     }));
 
+    // LAN binlog shipping loop
+    let ship_interval = daemon_cfg.backup_schedule.interval_hours.max(1);
+    handles.push(tokio::spawn(async move {
+        lan_binlog_shipping_loop(ship_interval).await;
+    }));
+
     handles
 }
 
@@ -401,6 +407,69 @@ async fn message_poller() {
             messages.len(),
             messages.iter().filter(|m| !m.read).count()
         );
+    }
+}
+
+// ── LAN binlog shipping ─────────────────────────────────────────────────────
+
+/// Periodic LAN binlog shipping — ships binlog files to LAN network share
+async fn lan_binlog_shipping_loop(interval_hours: u32) {
+    let interval = Duration::from_secs(interval_hours as u64 * 3600);
+    tracing::info!("LAN binlog shipping loop started: every {}h", interval_hours);
+
+    let mut tick = tokio::time::interval(interval);
+    // Skip the first immediate tick
+    tick.tick().await;
+
+    loop {
+        tick.tick().await;
+
+        // Re-read config each cycle to check if LAN binlog is enabled
+        let cfg = match crate::config::load_config() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("LAN binlog shipping: failed to load config: {}", e);
+                continue;
+            }
+        };
+
+        if !cfg.lan.enabled || !cfg.lan.binlog_enabled || cfg.lan.path.is_empty() {
+            tracing::debug!("LAN binlog shipping: disabled, skipping");
+            continue;
+        }
+
+        // Check license
+        let license = match crate::licensing::load_license() {
+            Ok(Some(l)) if l.is_valid() => l,
+            Ok(Some(_)) => {
+                tracing::warn!("LAN binlog shipping: license expired, skipping");
+                continue;
+            }
+            Ok(None) => {
+                tracing::warn!("LAN binlog shipping: no license found, skipping");
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("LAN binlog shipping: failed to load license: {}", e);
+                continue;
+            }
+        };
+
+        match crate::backup::binlog::ship_binlogs_to_lan(&license).await {
+            Ok(result) => {
+                if result.files_shipped > 0 {
+                    tracing::info!(
+                        "LAN binlog shipping: shipped {} files ({} bytes) in {}s",
+                        result.files_shipped,
+                        result.bytes_shipped,
+                        result.duration_seconds
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("LAN binlog shipping: failed: {}", e);
+            }
+        }
     }
 }
 

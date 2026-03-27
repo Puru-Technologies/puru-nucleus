@@ -592,7 +592,7 @@ export class InboxComponent implements OnInit {
   }
 
   isConfigFile(filename: string): boolean {
-    return filename.endsWith('.toml') || filename.endsWith('.json');
+    return filename.endsWith('.json') || filename.endsWith('.sql');
   }
 
   isCertFile(filename: string): boolean {

@@ -70,6 +70,17 @@ pub async fn run_daemon() {
         .route("/api/alerts/:id/ack", post(routes::acknowledge_alert))
         // Restore
         .route("/api/restore", post(routes::trigger_restore))
+        // Log file reader
+        .route("/api/logs/sources", get(routes::log_sources))
+        .route("/api/logs/files", get(routes::log_files))
+        .route("/api/logs/file", get(routes::log_file_read))
+        // Pull settings
+        .route("/api/pull", post(routes::pull_settings))
+        // Network
+        .route("/api/network", get(routes::network_check))
+        .route("/api/network/speedtest", post(routes::network_speed_test))
+        // LAN binlog
+        .route("/api/lan/binlog/ship", post(routes::ship_binlogs_lan))
         // Middleware
         .layer(middleware::from_fn_with_state(
             state.clone(),

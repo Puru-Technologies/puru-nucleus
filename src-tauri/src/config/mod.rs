@@ -20,6 +20,7 @@ pub struct NucleusConfig {
     pub auto_update_enabled: bool,
     pub release_channel: String,
     pub daemon: Option<DaemonConfig>,
+    pub lan: LanConfig,
 }
 
 /// Daemon mode configuration
@@ -62,6 +63,25 @@ impl Default for BackupSchedule {
     }
 }
 
+/// LAN backup configuration — copies backups/binlogs to a network share (NFS/SMB mount)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanConfig {
+    pub enabled: bool,
+    pub path: String,
+    pub binlog_enabled: bool,
+}
+
+impl Default for LanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: String::new(),
+            binlog_enabled: false,
+        }
+    }
+}
+
 impl Default for NucleusConfig {
     fn default() -> Self {
         Self {
@@ -78,6 +98,7 @@ impl Default for NucleusConfig {
             auto_update_enabled: true,
             release_channel: "stable".to_string(),
             daemon: None,
+            lan: LanConfig::default(),
         }
     }
 }
@@ -100,6 +121,13 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+/// Resolve `{home}/puru/` using the real OS home directory.
+pub fn home_puru_dir() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|b| b.home_dir().join("puru"))
+        .unwrap_or_else(|| PathBuf::from("puru"))
+}
+
 /// Get default docker compose path
 fn default_docker_compose_path() -> String {
     #[cfg(target_os = "windows")]
@@ -107,14 +135,13 @@ fn default_docker_compose_path() -> String {
         "C:\\PuruDocker\\docker-compose.yml".to_string()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
-        "/home/puru/docker/docker-compose.yml".to_string()
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        "/Users/puru/docker/docker-compose.yml".to_string()
+        home_puru_dir()
+            .join("docker")
+            .join("docker-compose.yml")
+            .to_string_lossy()
+            .to_string()
     }
 }
 
@@ -218,6 +245,33 @@ backup_type = "partial"
         assert!(!daemon.backup_schedule.enabled);
         assert_eq!(daemon.backup_schedule.interval_hours, 12);
         assert_eq!(daemon.backup_schedule.backup_type, "partial");
+    }
+
+    #[test]
+    fn test_config_with_lan_section() {
+        let toml_str = r#"
+hospital_code = "TEST"
+
+[lan]
+enabled = true
+path = "/mnt/nas/backups"
+binlog_enabled = true
+"#;
+        let config: NucleusConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.lan.enabled);
+        assert_eq!(config.lan.path, "/mnt/nas/backups");
+        assert!(config.lan.binlog_enabled);
+    }
+
+    #[test]
+    fn test_config_without_lan_section() {
+        let toml_str = r#"
+hospital_code = "TEST"
+"#;
+        let config: NucleusConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.lan.enabled);
+        assert!(config.lan.path.is_empty());
+        assert!(!config.lan.binlog_enabled);
     }
 
     #[test]

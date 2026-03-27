@@ -6,7 +6,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
-import { TauriService, ServiceInfo, SystemInfo, DaemonStatus } from '../../core/services/tauri.service';
+import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult } from '../../core/services/tauri.service';
 import { License, getLicenseStatus, LicenseStatus } from '../../core/models/license.model';
 import { interval, Subscription } from 'rxjs';
 
@@ -89,8 +89,17 @@ import { interval, Subscription } from 'rxjs';
               <span class="stat-label">Daemon</span>
             </div>
           </div>
+          <div class="stat-card">
+            <div class="stat-icon" [class]="networkStatClass">
+              <mat-icon>{{ networkStatus?.connected ? 'wifi' : 'wifi_off' }}</mat-icon>
+            </div>
+            <div class="stat-body">
+              <span class="stat-value">{{ networkStatValue }}</span>
+              <span class="stat-label">Network</span>
+            </div>
+          </div>
         } @else {
-          @for (_ of [1,2,3,4,5]; track $index) {
+          @for (_ of [1,2,3,4,5,6]; track $index) {
             <div class="stat-card stat-skeleton">
               <div class="skeleton-circle"></div>
               <div class="skeleton-lines">
@@ -178,6 +187,61 @@ import { interval, Subscription } from 'rxjs';
             }
           </mat-card>
 
+          <!-- Network Card -->
+          <mat-card class="dash-card">
+            <div class="card-top">
+              <h3>Network</h3>
+              <button mat-stroked-button class="btn-sm" (click)="runSpeedTest()" [disabled]="speedTestRunning">
+                @if (speedTestRunning) {
+                  <mat-spinner diameter="16"></mat-spinner>
+                } @else {
+                  <mat-icon>speed</mat-icon>
+                }
+                Speed Test
+              </button>
+            </div>
+            <div class="network-rows">
+              <div class="net-row">
+                <span class="net-label">Internet</span>
+                <span class="net-value" [class]="networkStatus?.connected ? 'nv-green' : 'nv-red'">
+                  {{ networkStatus?.connected ? 'Connected' : (networkStatus ? 'Offline' : '—') }}
+                </span>
+              </div>
+              <div class="net-row">
+                <span class="net-label">Latency</span>
+                <span class="net-value" [class]="latencyClass">
+                  {{ networkStatus?.latency_ms != null ? networkStatus!.latency_ms + ' ms' : '—' }}
+                </span>
+              </div>
+              <div class="net-row">
+                <span class="net-label">DICOM Server</span>
+                <span class="net-value" [class]="gcpClass">
+                  @if (!networkStatus) {
+                    —
+                  } @else if (networkStatus.gcp_reachable) {
+                    Reachable{{ networkStatus.gcp_latency_ms != null ? ' (' + networkStatus.gcp_latency_ms + ' ms)' : '' }}
+                  } @else {
+                    Unreachable
+                  }
+                </span>
+              </div>
+              @if (speedTestResult) {
+                <div class="net-row">
+                  <span class="net-label">Download</span>
+                  <span class="net-value" [class]="downloadClass">
+                    {{ speedTestResult.download_mbps != null ? (speedTestResult.download_mbps | number:'1.1-1') + ' Mbps' : '—' }}
+                  </span>
+                </div>
+                <div class="net-row">
+                  <span class="net-label">Upload</span>
+                  <span class="net-value" [class]="uploadClass">
+                    {{ speedTestResult.upload_mbps != null ? (speedTestResult.upload_mbps | number:'1.1-1') + ' Mbps' : '—' }}
+                  </span>
+                </div>
+              }
+            </div>
+          </mat-card>
+
           <!-- Quick Actions -->
           <mat-card class="dash-card">
             <div class="card-top">
@@ -248,7 +312,7 @@ import { interval, Subscription } from 'rxjs';
     /* ── Stats Row ──────────────────────────────── */
     .stats-row {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 16px;
       margin-bottom: 20px;
     }
@@ -283,6 +347,7 @@ import { interval, Subscription } from 'rxjs';
       &.si-blue { background: linear-gradient(135deg, #3b82f6, #6366f1); }
       &.si-purple { background: linear-gradient(135deg, #8b5cf6, #a855f7); }
       &.si-green { background: linear-gradient(135deg, #22c55e, #16a34a); }
+      &.si-orange { background: linear-gradient(135deg, #f59e0b, #d97706); }
       &.si-muted { background: #cbd5e1; }
     }
 
@@ -549,6 +614,36 @@ import { interval, Subscription } from 'rxjs';
       }
     }
 
+    /* ── Network Card ──────────────────────────── */
+    .network-rows {
+      padding: 0 20px 16px;
+    }
+
+    .net-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-card);
+      font-size: 0.825rem;
+
+      &:last-child { border-bottom: none; }
+    }
+
+    .net-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .net-value {
+      font-weight: 600;
+      color: var(--text-primary);
+
+      &.nv-green { color: var(--status-green); }
+      &.nv-red { color: var(--status-red); }
+      &.nv-orange { color: var(--status-orange); }
+    }
+
     /* ── Quick Actions ──────────────────────────── */
     .actions-grid {
       display: grid;
@@ -613,24 +708,74 @@ export class DashboardComponent implements OnInit, OnDestroy {
   license: License | null = null;
   licenseStatus: LicenseStatus | null = null;
   daemonRunning = false;
+  networkStatus: NetworkStatus | null = null;
+  speedTestResult: SpeedTestResult | null = null;
+  speedTestRunning = false;
 
   private refreshSub?: Subscription;
+  private networkSub?: Subscription;
 
   get runningCount(): number {
     return this.services.filter(s => s.status === 'running').length;
   }
 
+  get networkStatValue(): string {
+    if (!this.networkStatus) return '—';
+    if (!this.networkStatus.connected) return 'Offline';
+    return this.networkStatus.latency_ms != null ? `${this.networkStatus.latency_ms} ms` : 'Online';
+  }
+
+  get networkStatClass(): string {
+    if (!this.networkStatus) return 'si-muted';
+    if (!this.networkStatus.connected) return 'si-orange';
+    if (this.networkStatus.latency_ms != null && this.networkStatus.latency_ms > 200) return 'si-orange';
+    return 'si-green';
+  }
+
+  get latencyClass(): string {
+    if (!this.networkStatus?.latency_ms) return '';
+    if (this.networkStatus.latency_ms < 100) return 'nv-green';
+    if (this.networkStatus.latency_ms < 300) return 'nv-orange';
+    return 'nv-red';
+  }
+
+  get gcpClass(): string {
+    if (!this.networkStatus) return '';
+    return this.networkStatus.gcp_reachable ? 'nv-green' : 'nv-red';
+  }
+
+  get downloadClass(): string {
+    if (!this.speedTestResult?.download_mbps) return '';
+    if (this.speedTestResult.download_mbps > 10) return 'nv-green';
+    if (this.speedTestResult.download_mbps > 2) return 'nv-orange';
+    return 'nv-red';
+  }
+
+  get uploadClass(): string {
+    if (!this.speedTestResult?.upload_mbps) return '';
+    if (this.speedTestResult.upload_mbps > 5) return 'nv-green';
+    if (this.speedTestResult.upload_mbps > 1) return 'nv-orange';
+    return 'nv-red';
+  }
+
   ngOnInit(): void {
     this.loadData();
+    this.checkNetwork();
 
-    // Refresh every 30 seconds
+    // Refresh dashboard data every 30 seconds
     this.refreshSub = interval(30000).subscribe(() => {
       this.loadData();
+    });
+
+    // Network connectivity poll every 60 seconds
+    this.networkSub = interval(60000).subscribe(() => {
+      this.checkNetwork();
     });
   }
 
   ngOnDestroy(): void {
     this.refreshSub?.unsubscribe();
+    this.networkSub?.unsubscribe();
   }
 
   private async loadData(): Promise<void> {
@@ -680,6 +825,35 @@ export class DashboardComponent implements OnInit, OnDestroy {
       await this.tauri.invoke('sync_config_to_cloud');
     } catch (error) {
       // Error handled by TauriService
+    }
+  }
+
+  private async checkNetwork(): Promise<void> {
+    try {
+      this.networkStatus = await this.tauri.invokeSilent<NetworkStatus>('check_network');
+    } catch {
+      // Silently ignore — will show as unknown
+    }
+  }
+
+  async runSpeedTest(): Promise<void> {
+    this.speedTestRunning = true;
+    try {
+      this.speedTestResult = await this.tauri.invoke<SpeedTestResult>('run_speed_test');
+      // Also update network status from speed test result
+      if (this.speedTestResult) {
+        this.networkStatus = {
+          connected: this.speedTestResult.connected,
+          latency_ms: this.speedTestResult.latency_ms,
+          gcp_reachable: this.speedTestResult.gcp_reachable,
+          gcp_latency_ms: this.speedTestResult.gcp_latency_ms,
+          checked_at: this.speedTestResult.tested_at
+        };
+      }
+    } catch {
+      // Error handled by TauriService
+    } finally {
+      this.speedTestRunning = false;
     }
   }
 }

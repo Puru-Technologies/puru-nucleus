@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo check                           # Type-check without building
 cargo build                           # Debug build
 cargo build --release                 # Production build (optimized, stripped)
-cargo test                            # Run all tests (31 tests)
+cargo test                            # Run all tests (33 tests)
 cargo test config::tests              # Run specific test module
 cargo test test_default_daemon_config # Run single test
 
@@ -55,7 +55,8 @@ cli.rs                      Clap argument parser (Commands enum)
 cli_runner.rs               CLI command dispatcher with colored tables
 error.rs                    NucleusError enum with severity levels
 
-backup/mod.rs               MySQL dump → ZIP → optional GCS upload
+backup/mod.rs               MySQL dump → ZIP → GCS upload → LAN copy
+  backup/binlog.rs            Binlog shipping to LAN (MySQL binary log replication)
 config/mod.rs               NucleusConfig (TOML), DaemonConfig, BackupSchedule
 detection/mod.rs            Detect existing Puru Docker deployments
 docker_update/mod.rs        Docker image update + rollback
@@ -84,7 +85,7 @@ daemon/
   mod.rs                    Axum HTTP server setup with graceful shutdown
   auth.rs                   API key middleware
   routes.rs                 REST API route handlers
-  scheduler.rs              Background tasks (backup, telemetry, commands, messages, watchdog)
+  scheduler.rs              Background tasks (backup, telemetry, commands, messages, watchdog, LAN binlog)
   commands.rs               Command queue processor
 commands/mod.rs             ~45 Tauri IPC command handlers
 ```
@@ -144,6 +145,7 @@ features/
 | GET | `/api/alerts` | List alerts |
 | POST | `/api/alerts/:id/ack` | Acknowledge alert |
 | POST | `/api/restore` | Trigger restore |
+| POST | `/api/lan/binlog/ship` | Ship binlogs to LAN |
 
 All endpoints except `/api/health` require `X-API-Key` header.
 
@@ -160,6 +162,8 @@ puru health [service]       Health check
 puru backup [full|partial]  Run backup
 puru backup list            Show backup history
 puru restore <id|--latest>  Restore from backup
+puru binlog lan-ship        Ship binlogs to LAN
+puru binlog status          Binlog shipping status
 puru service install        Install as system service
 puru service uninstall      Remove system service
 puru service start          Start system service
@@ -177,6 +181,7 @@ puru daemon                 Run daemon mode
 3. **Command Listener** — Poll `hospital/{code}/commands` for pending commands
 4. **Message Poller** — Poll `hospital/{code}/inbox` for new messages
 5. **Watchdog** — 60s health check loop monitoring services, disk, RAM
+6. **LAN Binlog Shipper** — Ship MySQL binlog files to LAN network share
 
 ### Firestore Collections
 
@@ -217,18 +222,29 @@ telemetry_interval_minutes = 15
 enabled = true
 interval_hours = 24
 backup_type = "full"
+
+[lan]
+enabled = false
+path = ""
+binlog_enabled = false
 ```
+
+## Documentation
+
+- `TUTORIALS.md` — User tutorials (setup, CLI, backup/restore, LAN, binlog, updates, etc.)
+- `RELEASE.md` — Release pipeline guide (tagging, CI/CD, GCS publishing)
+- `docs/backup-technical-document.md` — Deep technical reference for the backup system
 
 ## Key Dependencies
 
-**Rust:** tauri 2.0, axum 0.7, bollard 0.15, mysql_async 0.33, reqwest 0.11, clap 4, serde, tokio, chrono, sysinfo 0.29
+**Rust:** tauri 2.0, axum 0.7, bollard 0.15, mysql_async 0.33, reqwest 0.11, clap 4, serde, tokio, chrono, flate2, sysinfo 0.29
 **Angular:** Angular 19, @angular/material, @tauri-apps/api 2.0, rxjs 7.8
 **Runtime:** Rust 1.70+, Node 18+, Docker (on target machines)
 
 ## Testing
 
 ```bash
-# Rust tests (31 tests covering config, detection, docker_update, licensing, messaging, releases, remote_shell)
+# Rust tests (33 tests covering config, detection, docker_update, licensing, messaging, releases, remote_shell)
 cargo test
 
 # Angular tests

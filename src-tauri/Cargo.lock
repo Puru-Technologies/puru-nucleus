@@ -3720,7 +3720,7 @@ dependencies = [
 
 [[package]]
 name = "puru-nucleus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3730,6 +3730,7 @@ dependencies = [
  "colored",
  "comfy-table",
  "directories",
+ "flate2",
  "futures-util",
  "google-cloud-auth",
  "google-cloud-storage",
@@ -3742,6 +3743,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-shell",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "toml 0.8.2",

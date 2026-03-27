@@ -43,6 +43,10 @@ import { filter, map } from 'rxjs/operators';
               <mat-icon>dns</mat-icon>
               <span>Services</span>
             </a>
+            <a class="nav-item" routerLink="/logs" routerLinkActive="active">
+              <mat-icon>description</mat-icon>
+              <span>Logs</span>
+            </a>
             <a class="nav-item" routerLink="/backups" routerLinkActive="active">
               <mat-icon>backup</mat-icon>
               <span>Backups</span>
@@ -65,6 +69,10 @@ import { filter, map } from 'rxjs/operators';
             <a class="nav-item" routerLink="/settings" routerLinkActive="active">
               <mat-icon>tune</mat-icon>
               <span>Settings</span>
+            </a>
+            <a class="nav-item" routerLink="/compose" routerLinkActive="active">
+              <mat-icon>description</mat-icon>
+              <span>Compose</span>
             </a>
             <a class="nav-item" routerLink="/setup" routerLinkActive="active">
               <mat-icon>build</mat-icon>

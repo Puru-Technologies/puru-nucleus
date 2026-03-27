@@ -14,6 +14,7 @@ mod backup;
 mod cli;
 mod cli_runner;
 mod commands;
+mod compose_template;
 mod config;
 mod daemon;
 mod detection;
@@ -25,6 +26,8 @@ mod releases;
 mod telemetry;
 mod docker_update;
 mod messaging;
+mod network;
+mod logs;
 mod platform;
 mod remote_shell;
 
@@ -81,6 +84,8 @@ fn run_gui() {
             // License
             commands::get_license,
             commands::activate_license,
+            // Pull settings
+            commands::pull_settings,
             // Backup
             commands::start_backup,
             commands::get_backup_history,
@@ -105,6 +110,9 @@ fn run_gui() {
             commands::restart_daemon,
             // Logs
             commands::get_container_logs,
+            commands::get_log_sources,
+            commands::list_log_files,
+            commands::read_log_file,
             // Telemetry
             commands::get_telemetry_snapshot,
             // Releases
@@ -137,6 +145,13 @@ fn run_gui() {
             commands::execute_shell_command,
             commands::get_shell_audit_log,
             commands::get_allowed_shell_commands,
+            // LAN Backup
+            commands::validate_lan_path,
+            commands::ship_binlogs_lan,
+            commands::get_binlog_status,
+            // Network
+            commands::check_network,
+            commands::run_speed_test,
             // Messaging
             commands::get_messages,
             commands::get_unread_count,
@@ -144,6 +159,19 @@ fn run_gui() {
             commands::download_attachment,
             commands::apply_config_file,
             commands::install_certificate,
+            // Compose Template
+            commands::download_compose_template,
+            commands::get_compose_content,
+            commands::substitute_compose_variables,
+            commands::save_compose_content,
+            commands::upload_compose_to_cloud,
+            commands::get_service_modules,
+            commands::assemble_compose_file,
+            // Env File Templates
+            commands::download_env_templates,
+            commands::get_env_files,
+            commands::save_env_file,
+            commands::upload_env_files_to_cloud,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

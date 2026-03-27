@@ -333,6 +333,29 @@ impl FirestoreClient {
         queries::create_document(&self.http, &token, &parent, "alerts", fields).await
     }
 
+    /// Pull hospital settings (info + license) from Firestore.
+    ///
+    /// Fetches `hospital/{code}` and extracts:
+    /// - `name`, `shortName`, `city`, `email` → `HospitalInfo`
+    /// - `license` map → `License` (via shared `extract_license_from_firestore`)
+    pub async fn pull_hospital_settings(
+        &self,
+        code: &str,
+    ) -> Result<(crate::licensing::HospitalInfo, crate::licensing::License), NucleusError> {
+        let doc = self.get_hospital(code).await?;
+
+        let hospital_name = doc
+            .fields
+            .get("name")
+            .and_then(|v| convert::get_optional_string(v))
+            .unwrap_or_else(|| code.to_string());
+
+        let hospital_info = crate::licensing::extract_hospital_info(&doc.fields);
+        let license = crate::licensing::extract_license_from_firestore(&doc.fields, &hospital_name);
+
+        Ok((hospital_info, license))
+    }
+
     /// List messages from the hospital's inbox subcollection, ordered by created_at DESC.
     pub async fn list_inbox(
         &self,
@@ -366,6 +389,38 @@ impl FirestoreClient {
         });
 
         queries::patch_document(&self.http, &token, &path, fields, &["read"]).await
+    }
+
+    /// Fetch the `modules` map from a hospital document.
+    /// Returns a `ServiceModules` with defaults for any missing fields.
+    pub async fn fetch_modules(
+        &self,
+        code: &str,
+    ) -> Result<crate::compose_template::ServiceModules, NucleusError> {
+        let doc = self.get_hospital(code).await?;
+
+        let modules_val = doc.fields.get("modules");
+        let map = modules_val.and_then(|v| get_map_fields(v).ok());
+
+        let read_bool = |key: &str, default: bool| -> bool {
+            map.and_then(|m| m.get(key))
+                .and_then(|v| v.get("booleanValue"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default)
+        };
+
+        Ok(crate::compose_template::ServiceModules {
+            auth: read_bool("auth", true),
+            xenon: read_bool("xenon", true),
+            has: read_bool("has", true),
+            pacs: read_bool("pacs", true),
+            argon: read_bool("argon", true),
+            comm: read_bool("comm", true),
+            realtime: read_bool("realtime", true),
+            neon: read_bool("neon", true),
+            bridge: read_bool("bridge", true),
+            hydrogen: read_bool("hydrogen", true),
+        })
     }
 
     /// Poll pending commands from the hospital's commands subcollection.
