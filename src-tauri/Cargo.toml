@@ -50,10 +50,6 @@ mac_address = "1.1"
 bollard = "0.15"
 futures-util = "0.3"
 
-# Process management (native mode)
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # HTTP client
 reqwest = { version = "0.11", features = ["json"] }
 urlencoding = "2.1"
@@ -66,6 +62,10 @@ colored = "2"
 # HTTP server for daemon mode
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
+
+# Process management (native mode — unix only)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

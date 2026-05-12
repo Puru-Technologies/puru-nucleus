@@ -68,7 +68,7 @@ fn is_process_alive(pid: u32) -> bool {
     #[cfg(not(unix))]
     {
         // Use sysinfo to check process existence on Windows
-        use sysinfo::{Pid, System};
+        use sysinfo::{Pid, ProcessExt, System, SystemExt};
         let mut sys = System::new();
         sys.refresh_process(Pid::from(pid as usize));
         sys.process(Pid::from(pid as usize)).is_some()
