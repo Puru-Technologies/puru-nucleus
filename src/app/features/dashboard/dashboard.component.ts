@@ -798,12 +798,16 @@ export class DashboardComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
-    this.loadData();
+    // Load fast data first (license, system info) — renders immediately
+    this.loadFastData();
+    // Then load slow data (services, daemon status) — renders when ready
+    this.loadSlowData();
     this.checkNetwork();
 
-    // Refresh dashboard data every 30 seconds
+    // Refresh every 30 seconds
     this.refreshSub = interval(30000).subscribe(() => {
-      this.loadData();
+      this.loadFastData();
+      this.loadSlowData();
     });
 
     // Network connectivity poll every 60 seconds
@@ -817,26 +821,34 @@ export class DashboardComponent implements OnInit, OnDestroy {
     this.networkSub?.unsubscribe();
   }
 
-  private async loadData(): Promise<void> {
-    const results = await Promise.allSettled([
-      this.tauri.invokeSilent<SystemInfo>('get_system_info'),
-      this.tauri.invokeSilent<ServiceInfo[]>('get_services'),
+  /** Fast calls — license + system info. Renders in <100ms. */
+  private async loadFastData(): Promise<void> {
+    const [licenseResult, sysResult] = await Promise.allSettled([
       this.tauri.invokeSilent<License>('get_license'),
-      this.tauri.invokeSilent<DaemonStatus>('get_daemon_status')
+      this.tauri.invokeSilent<SystemInfo>('get_system_info'),
     ]);
 
-    if (results[0].status === 'fulfilled') {
-      this.systemInfo = results[0].value;
+    if (licenseResult.status === 'fulfilled' && licenseResult.value) {
+      this.license = licenseResult.value;
+      this.licenseStatus = getLicenseStatus(licenseResult.value);
     }
-    if (results[1].status === 'fulfilled') {
-      this.services = results[1].value;
+    if (sysResult.status === 'fulfilled') {
+      this.systemInfo = sysResult.value;
     }
-    if (results[2].status === 'fulfilled' && results[2].value) {
-      this.license = results[2].value;
-      this.licenseStatus = getLicenseStatus(results[2].value);
+  }
+
+  /** Slow calls — Docker services + daemon probe. Can take seconds. */
+  private async loadSlowData(): Promise<void> {
+    const [servicesResult, daemonResult] = await Promise.allSettled([
+      this.tauri.invokeSilent<ServiceInfo[]>('get_services'),
+      this.tauri.invokeSilent<DaemonStatus>('get_daemon_status'),
+    ]);
+
+    if (servicesResult.status === 'fulfilled') {
+      this.services = servicesResult.value;
     }
-    if (results[3].status === 'fulfilled') {
-      this.daemonRunning = results[3].value.running;
+    if (daemonResult.status === 'fulfilled') {
+      this.daemonRunning = daemonResult.value.running;
     }
   }
 
@@ -856,7 +868,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
         // Continue with other services
       }
     }
-    await this.loadData();
+    await this.loadSlowData();
   }
 
   async syncConfig(): Promise<void> {
