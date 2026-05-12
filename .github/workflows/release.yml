@@ -346,6 +346,17 @@ jobs:
 
           echo "Uploaded all artifacts to ${GCS_PATH}/"
 
+      - name: Copy to public download bucket
+        if: env.CHANNEL == 'stable'
+        run: |
+          PUBLIC_PATH="gs://puru-pacs-ace-artifact/nucleus"
+
+          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/"
+          gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/"
+          gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${PUBLIC_PATH}/"
+
+          echo "Copied installers to public bucket: ${PUBLIC_PATH}/"
+
       - name: Verify upload
         run: |
           GCS_PATH="gs://puru-releases/nucleus/${CHANNEL}"
