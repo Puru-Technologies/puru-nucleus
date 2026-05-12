@@ -394,6 +394,36 @@ import { open } from '@tauri-apps/plugin-dialog';
             Reset
           </button>
         </div>
+
+        <!-- Danger Zone -->
+        <mat-card class="settings-card danger-zone-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar style="color:#c62828">warning</mat-icon>
+            <mat-card-title>Danger Zone</mat-card-title>
+            <mat-card-subtitle>Actions that cannot be easily undone</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="danger-item">
+              <div class="danger-info">
+                <strong>Reset Activation</strong>
+                <span>Removes license, clears hospital code, and logs deactivation to Firestore. You will need to re-activate with an email.</span>
+              </div>
+              @if (!confirmingReset) {
+                <button mat-stroked-button color="warn" (click)="confirmingReset = true">
+                  <mat-icon>restart_alt</mat-icon> Reset
+                </button>
+              } @else {
+                <div class="confirm-actions">
+                  <button mat-raised-button color="warn" (click)="resetActivation()" [disabled]="resetting">
+                    @if (resetting) { <mat-spinner diameter="18"></mat-spinner> }
+                    Confirm Reset
+                  </button>
+                  <button mat-stroked-button (click)="confirmingReset = false">Cancel</button>
+                </div>
+              }
+            </div>
+          </mat-card-content>
+        </mat-card>
       }
     </div>
   `,
@@ -672,6 +702,29 @@ import { open } from '@tauri-apps/plugin-dialog';
       padding-top: 1rem;
       border-top: 1px solid #eee;
     }
+
+    .danger-zone-card {
+      margin-top: 2rem;
+      border: 1px solid #ffcdd2;
+    }
+
+    .danger-item {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .danger-info {
+      flex: 1;
+
+      strong { display: block; margin-bottom: 2px; }
+      span { font-size: 0.85rem; color: #666; }
+    }
+
+    .confirm-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
   `]
 })
 export class SettingsComponent implements OnInit {
@@ -707,6 +760,10 @@ export class SettingsComponent implements OnInit {
   // TLS
   tlsStatus: { configured: boolean; ca_download_url?: string; cert_path?: string; key_path?: string } | null = null;
   tlsSettingUp = false;
+
+  // Danger zone
+  confirmingReset = false;
+  resetting = false;
 
   ngOnInit(): void {
     this.loadConfig();
@@ -927,6 +984,20 @@ export class SettingsComponent implements OnInit {
       this.notification.success('Nginx HTTPS config copied to clipboard');
     } catch {
       // Error handled by TauriService
+    }
+  }
+
+  async resetActivation(): Promise<void> {
+    this.resetting = true;
+    try {
+      await this.tauri.invoke('reset_activation');
+      this.notification.success('Activation reset. Redirecting to activation...');
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (error) {
+      this.notification.error('Reset failed: ' + String(error));
+    } finally {
+      this.resetting = false;
+      this.confirmingReset = false;
     }
   }
 }

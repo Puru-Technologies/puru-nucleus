@@ -96,6 +96,46 @@ pub async fn get_license() -> Result<Option<License>, String> {
     crate::licensing::load_license().map_err(|e| e.to_string())
 }
 
+/// Reset activation — audit log to Firestore, delete license, clear config.
+#[tauri::command]
+pub async fn reset_activation() -> Result<(), String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    let hospital_code = config.hospital_code.clone();
+    let fingerprint = crate::licensing::fingerprint::get_cached_fingerprint()
+        .unwrap_or_default();
+
+    // Log deactivation to Firestore (best-effort)
+    if !hospital_code.is_empty() {
+        match crate::firestore::FirestoreClient::new_from_config().await {
+            Ok(client) => {
+                if let Err(e) = client.log_deactivation(&hospital_code, &fingerprint).await {
+                    tracing::warn!("Firestore deactivation log failed (non-fatal): {:?}", e);
+                } else {
+                    tracing::info!("Deactivation logged to Firestore for {}", hospital_code);
+                }
+            }
+            Err(_) => {
+                tracing::warn!("Could not connect to Firestore for deactivation audit (non-fatal)");
+            }
+        }
+    }
+
+    // Delete license file
+    let license_path = crate::config::config_dir().join("license.toml");
+    if license_path.exists() {
+        std::fs::remove_file(&license_path)
+            .map_err(|e| format!("Failed to delete license: {}", e))?;
+    }
+
+    // Clear hospital_code from config
+    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+    config.hospital_code = String::new();
+    crate::config::save_config(&config).map_err(|e| e.user_message())?;
+
+    tracing::info!("Activation reset — license removed, hospital_code cleared");
+    Ok(())
+}
+
 /// Get the hardware fingerprint for this machine.
 #[tauri::command]
 pub async fn get_machine_fingerprint() -> Result<String, String> {

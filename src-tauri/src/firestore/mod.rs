@@ -343,6 +343,36 @@ impl FirestoreClient {
         queries::create_document(&self.http, &token, &parent, "alerts", fields).await
     }
 
+    /// Log deactivation event and clear nucleus heartbeat from hospital doc.
+    pub async fn log_deactivation(
+        &self,
+        code: &str,
+        fingerprint: &str,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Write audit log entry
+        let parent = format!("hospital/{}", code);
+        let fields = json!({
+            "action": string_value("nucleus_deactivated"),
+            "machine_fingerprint": string_value(fingerprint),
+            "timestamp": timestamp_value(&now),
+        });
+        let _ = queries::create_document(&self.http, &token, &parent, "audit_log", fields).await;
+
+        // Clear nucleus heartbeat from hospital doc
+        let path = format!("hospital/{}", code);
+        let clear_fields = json!({
+            "nucleus": {"nullValue": null},
+        });
+        let _ = queries::patch_document(
+            &self.http, &token, &path, clear_fields, &["nucleus"]
+        ).await;
+
+        Ok(())
+    }
+
     /// Register a machine in the hospital's `nucleus_machines` array.
     ///
     /// Reads the hospital doc, checks if the fingerprint already exists in the array,

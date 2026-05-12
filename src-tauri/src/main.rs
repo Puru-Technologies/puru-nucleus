@@ -85,6 +85,7 @@ fn run_gui() {
             // License
             commands::get_license,
             commands::get_machine_fingerprint,
+            commands::reset_activation,
             commands::activate_license,
             // Pull settings
             commands::pull_settings,
