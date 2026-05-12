@@ -1,30 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
-     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
   <Fragment>
-    <ComponentGroup Id="PuruNucleusService">
-      <Component Id="ServiceComponent" Directory="INSTALLDIR" Guid="a1b2c3d4-e5f6-7890-abcd-ef1234567890">
-        <ServiceInstall
-          Id="PuruNucleusServiceInstall"
-          Name="PuruNucleus"
-          DisplayName="Puru Nucleus"
-          Description="Puru Nucleus - Hospital Deployment Manager daemon (backups, telemetry, watchdog)"
-          Type="ownProcess"
-          Start="auto"
-          ErrorControl="normal"
-          Arguments="daemon"
-          Account="LocalSystem" />
+    <!-- Custom actions to register/start/stop/remove the daemon service -->
+    <CustomAction Id="RegisterService"
+                  Directory="INSTALLDIR"
+                  ExeCommand="&quot;[INSTALLDIR]puru-nucleus.exe&quot; service install"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
 
-        <ServiceControl
-          Id="PuruNucleusServiceStart"
-          Name="PuruNucleus"
-          Start="install"
-          Stop="both"
-          Remove="uninstall"
-          Wait="yes" />
-      </Component>
-    </ComponentGroup>
+    <CustomAction Id="StartService"
+                  Directory="INSTALLDIR"
+                  ExeCommand="sc.exe start PuruNucleus"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="StopService"
+                  Directory="INSTALLDIR"
+                  ExeCommand="sc.exe stop PuruNucleus"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="RemoveService"
+                  Directory="INSTALLDIR"
+                  ExeCommand="sc.exe delete PuruNucleus"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StopService" Before="RemoveService">
+        REMOVE="ALL"
+      </Custom>
+      <Custom Action="RemoveService" Before="RemoveFiles">
+        REMOVE="ALL"
+      </Custom>
+      <Custom Action="RegisterService" After="InstallFiles">
+        NOT REMOVE
+      </Custom>
+      <Custom Action="StartService" After="RegisterService">
+        NOT REMOVE
+      </Custom>
+    </InstallExecuteSequence>
+
+    <!-- Empty component group to satisfy the componentGroupRefs -->
+    <ComponentGroup Id="PuruNucleusService" />
   </Fragment>
 
 </Wix>
