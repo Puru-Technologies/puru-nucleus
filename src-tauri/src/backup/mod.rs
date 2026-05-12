@@ -417,9 +417,14 @@ async fn discover_events(
 
 // ── Per-object dump ──────────────────────────────────────────────────────────
 
-/// Find the MySQL container name by checking common names.
+/// Find a running MySQL container by checking known names, then falling back
+/// to scanning all running containers for a mysql image.
 async fn find_mysql_container() -> Option<String> {
-    let candidates = ["mysql", "puru-mysql", "db", "puru-db"];
+    // Check known container names first
+    let candidates = [
+        "mysql", "puru-mysql", "db", "puru-db",
+        "database", "purusql", "puru-database",
+    ];
     for name in &candidates {
         let output = crate::process::silent_cmd("docker")
             .args(["inspect", "--format", "{{.State.Running}}", name])
@@ -431,17 +436,60 @@ async fn find_mysql_container() -> Option<String> {
             }
         }
     }
+
+    // Fallback: find any running container with mysql in its image name
+    let output = crate::process::silent_cmd("docker")
+        .args(["ps", "--filter", "ancestor=mysql", "--format", "{{.Names}}"])
+        .output()
+        .await
+        .ok()?;
+
+    if output.status.success() {
+        let names = String::from_utf8_lossy(&output.stdout);
+        if let Some(name) = names.lines().next() {
+            let name = name.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    // Try broader filter — any container with "mysql" in image
+    let output = crate::process::silent_cmd("docker")
+        .args(["ps", "--format", "{{.Names}} {{.Image}}"])
+        .output()
+        .await
+        .ok()?;
+
+    if output.status.success() {
+        let lines = String::from_utf8_lossy(&output.stdout);
+        for line in lines.lines() {
+            if line.to_lowercase().contains("mysql") {
+                if let Some(name) = line.split_whitespace().next() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
     None
 }
 
-/// Check if mysqldump is available locally.
+/// Check if mysqldump is available locally (cached after first check).
 async fn has_local_mysqldump() -> bool {
-    crate::process::silent_cmd("mysqldump")
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    if let Some(&val) = CACHED.get() {
+        return val;
+    }
+    let result = crate::process::silent_cmd("mysqldump")
         .arg("--version")
         .output()
         .await
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    let _ = CACHED.set(result);
+    result
 }
 
 /// Dump a single table via `mysqldump` — tries local binary first,
@@ -491,16 +539,16 @@ async fn dump_table(
             )
         })?;
 
+        tracing::info!("Using docker exec on container '{}' for mysqldump", container);
+
         // Run mysqldump inside the container, capture stdout to file
         let mut docker_args = vec![
             "exec".to_string(),
             container,
             "mysqldump".to_string(),
         ];
-        // Inside container, connect to localhost
+        // Inside container, connect to localhost (no -h flag = socket connection)
         let mut inner_args = vec![
-            "-h127.0.0.1".to_string(),
-            format!("-P{}", config.mysql_port),
             format!("-u{}", config.mysql_user),
             format!("-p{}", config.mysql_password),
             "--skip-triggers".to_string(),
@@ -911,22 +959,17 @@ async fn run_mysql_restore(
 ) -> Result<(), NucleusError> {
     let sql_data = tokio::fs::read(sql_path).await?;
 
-    let mut mysql_args = vec![
-        format!("-h127.0.0.1"),
-        format!("-P{}", config.mysql_port),
-        format!("-u{}", config.mysql_user),
-        format!("-p{}", config.mysql_password),
-    ];
-    if let Some(db) = database {
-        mysql_args.push(db.to_string());
-    }
-
     let use_local = has_local_mysql().await;
 
     let mut child = if use_local {
-        let mut args = mysql_args.clone();
-        args.retain(|a| !a.starts_with("-p") || a.starts_with("-P"));
-        args[0] = format!("-h{}", config.mysql_host);
+        let mut args = vec![
+            format!("-h{}", config.mysql_host),
+            format!("-P{}", config.mysql_port),
+            format!("-u{}", config.mysql_user),
+        ];
+        if let Some(db) = database {
+            args.push(db.to_string());
+        }
         crate::process::silent_cmd("mysql")
             .env("MYSQL_PWD", &config.mysql_password)
             .args(&args)
@@ -941,8 +984,14 @@ async fn run_mysql_restore(
                 "mysql client not found locally and no running MySQL Docker container found.".to_string()
             )
         })?;
-        let mut docker_args = vec!["exec".to_string(), "-i".to_string(), container, "mysql".to_string()];
-        docker_args.extend(mysql_args);
+        let mut docker_args = vec![
+            "exec".to_string(), "-i".to_string(), container, "mysql".to_string(),
+            format!("-u{}", config.mysql_user),
+            format!("-p{}", config.mysql_password),
+        ];
+        if let Some(db) = database {
+            docker_args.push(db.to_string());
+        }
         crate::process::silent_cmd("docker")
             .args(&docker_args)
             .stdin(std::process::Stdio::piped())
@@ -969,14 +1018,21 @@ async fn run_mysql_restore(
     Ok(())
 }
 
-/// Check if mysql client is available locally.
+/// Check if mysql client is available locally (cached after first check).
 async fn has_local_mysql() -> bool {
-    crate::process::silent_cmd("mysql")
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    if let Some(&val) = CACHED.get() {
+        return val;
+    }
+    let result = crate::process::silent_cmd("mysql")
         .arg("--version")
         .output()
         .await
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    let _ = CACHED.set(result);
+    result
 }
 
 /// Execute a single SQL statement via the `mysql` CLI.
@@ -1007,8 +1063,6 @@ async fn run_mysql_command(
         crate::process::silent_cmd("docker")
             .args([
                 "exec", &container, "mysql",
-                &format!("-h127.0.0.1"),
-                &format!("-P{}", config.mysql_port),
                 &format!("-u{}", config.mysql_user),
                 &format!("-p{}", config.mysql_password),
                 "-e", sql,
