@@ -27,6 +27,13 @@ pub async fn install() -> Result<ServiceResult, String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}{}", stdout, stderr);
         if !combined.contains("already exists") {
+            if combined.contains("Access is denied") || combined.contains("FAILED 5") {
+                return Err(
+                    "Administrator privileges required to install the service. \
+                     Right-click Puru Nucleus and select 'Run as Administrator', then try again."
+                        .to_string(),
+                );
+            }
             return Err(format!("Service registration failed: {}", combined.trim()));
         }
     }
@@ -104,7 +111,11 @@ pub async fn start() -> Result<ServiceResult, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("Service start failed: {}{}", stdout.trim(), stderr.trim()));
+        let combined = format!("{}{}", stdout.trim(), stderr.trim());
+        if combined.contains("Access is denied") || combined.contains("FAILED 5") {
+            return Err("Administrator privileges required. Run as Administrator and try again.".to_string());
+        }
+        return Err(format!("Service start failed: {}", combined));
     }
 
     Ok(ServiceResult {
@@ -124,7 +135,11 @@ pub async fn stop() -> Result<ServiceResult, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("Service stop failed: {}{}", stdout.trim(), stderr.trim()));
+        let combined = format!("{}{}", stdout.trim(), stderr.trim());
+        if combined.contains("Access is denied") || combined.contains("FAILED 5") {
+            return Err("Administrator privileges required. Run as Administrator and try again.".to_string());
+        }
+        return Err(format!("Service stop failed: {}", combined));
     }
 
     Ok(ServiceResult {

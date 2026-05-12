@@ -38,7 +38,11 @@
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
-      "timestampUrl": ""
+      "timestampUrl": "",
+      "wix": {
+        "fragmentPaths": ["wix/service.wxs"],
+        "componentGroupRefs": ["PuruNucleusService"]
+      }
     }
   }
 }
