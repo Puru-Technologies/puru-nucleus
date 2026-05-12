@@ -85,11 +85,27 @@ interface SetupStep {
                     </mat-form-field>
                   </div>
 
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Docker Compose Path</mat-label>
-                    <input matInput [(ngModel)]="config.docker_compose_path">
-                    <mat-hint>Where to write the generated docker-compose.yml</mat-hint>
-                  </mat-form-field>
+                  <div class="browse-row">
+                    <mat-form-field appearance="outline" class="flex-1">
+                      <mat-label>Docker Compose Path</mat-label>
+                      <input matInput [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
+                      <mat-hint>Path to docker-compose.yml</mat-hint>
+                    </mat-form-field>
+                    <button mat-stroked-button type="button" (click)="browseComposePath()">
+                      <mat-icon>folder_open</mat-icon> Browse
+                    </button>
+                  </div>
+
+                  <div class="browse-row">
+                    <mat-form-field appearance="outline" class="flex-1">
+                      <mat-label>Puru Data Directory</mat-label>
+                      <input matInput [(ngModel)]="puruDataPath" placeholder="/home/puru/puru-data">
+                      <mat-hint>Root directory for hospital data, documents, and uploads</mat-hint>
+                    </mat-form-field>
+                    <button mat-stroked-button type="button" (click)="browsePuruDataPath()">
+                      <mat-icon>folder_open</mat-icon> Browse
+                    </button>
+                  </div>
 
                   <mat-form-field appearance="outline" class="full-width">
                     <mat-label>Server IP (local network)</mat-label>
@@ -378,6 +394,18 @@ interface SetupStep {
 
     .full-width {
       width: 100%;
+    }
+
+    .flex-1 {
+      flex: 1;
+    }
+
+    .browse-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+
+      button { margin-top: 4px; }
     }
 
     .config-error {
@@ -745,6 +773,7 @@ export class SetupComponent implements OnInit {
   configSaving = false;
   configError: string | null = null;
   credsExists = false;
+  puruDataPath = '';
 
   prerequisites: PrerequisiteStatus[] = [];
   detectionResult: DetectionResult | null = null;
@@ -802,6 +831,34 @@ export class SetupComponent implements OnInit {
       this.credsExists = status.exists;
     } catch {
       // Ignore
+    }
+  }
+
+  async browseComposePath(): Promise<void> {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'Docker Compose', extensions: ['yml', 'yaml'] }],
+        title: 'Select docker-compose.yml'
+      });
+      if (!selected || !this.config) return;
+      this.config.docker_compose_path = typeof selected === 'string' ? selected : String(selected);
+    } catch {
+      // User cancelled
+    }
+  }
+
+  async browsePuruDataPath(): Promise<void> {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: true,
+        title: 'Select Puru Data Directory'
+      });
+      if (!selected) return;
+      this.puruDataPath = typeof selected === 'string' ? selected : String(selected);
+    } catch {
+      // User cancelled
     }
   }
 
@@ -926,11 +983,19 @@ export class SetupComponent implements OnInit {
   }
 
   private proceedWithAdopt(): void {
-    this.steps[0].status = 'completed';
-    this.steps[1].status = 'completed';
-    this.steps[2].status = 'completed';
-    this.notification.success('Adopting existing setup');
-    this.startSetup();
+    // Skip all setup steps that would modify the existing installation:
+    // 0: Check prerequisites — skip (already running)
+    // 1: Create databases — skip (already exist)
+    // 2: Configure RabbitMQ — skip (already configured)
+    // 3: Generate config files — skip (already have env files)
+    // 4: Pull Docker images — skip (DO NOT pull/update)
+    // 5: Start services — skip (already running)
+    // 6: Health check — skip (already running)
+    for (let i = 0; i <= 6; i++) {
+      this.steps[i].status = 'completed';
+    }
+    this.notification.success('Adopting existing setup — skipping pull/update steps');
+    this.startSetup(); // Will run: Configure backups → Install daemon → TLS
   }
 
   freshInstall(): void {
