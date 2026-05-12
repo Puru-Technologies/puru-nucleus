@@ -287,10 +287,20 @@ fn extract_version(output: &str) -> Option<String> {
 
 /// Search common paths for docker-compose.yml
 async fn find_compose_path() -> Option<String> {
-    let mut candidates: Vec<std::path::PathBuf> = vec![
-        "/opt/puru/docker-compose.yml".into(),
-        "/opt/puru/docker-compose.yaml".into(),
-    ];
+    let mut candidates: Vec<std::path::PathBuf> = vec![];
+
+    // Linux common paths
+    candidates.push("/opt/puru/docker-compose.yml".into());
+    candidates.push("/opt/puru/docker-compose.yaml".into());
+    candidates.push("/home/puru/docker/docker-compose.yml".into());
+    candidates.push("/home/puru/docker/docker-compose.yaml".into());
+    candidates.push("/home/puru/docker-compose.yml".into());
+
+    // Windows common paths
+    candidates.push("C:\\puru\\docker-compose.yml".into());
+    candidates.push("C:\\puru\\docker\\docker-compose.yml".into());
+    candidates.push("C:\\Users\\puru\\docker\\docker-compose.yml".into());
+    candidates.push("C:\\Users\\puru\\docker-compose.yml".into());
 
     if let Some(base_dirs) = directories::BaseDirs::new() {
         let home = base_dirs.home_dir();
@@ -299,8 +309,20 @@ async fn find_compose_path() -> Option<String> {
         candidates.push(puru_dir.join("docker").join("docker-compose.yaml"));
         candidates.push(puru_dir.join("docker-compose.yml"));
         candidates.push(puru_dir.join("docker-compose.yaml"));
+        candidates.push(home.join("docker").join("docker-compose.yml"));
+        candidates.push(home.join("docker").join("docker-compose.yaml"));
         candidates.push(home.join("docker-compose.yml"));
         candidates.push(home.join("docker-compose.yaml"));
+    }
+
+    // Also check config — user may have already set the path
+    if let Ok(config) = crate::config::load_config() {
+        if !config.docker_compose_path.is_empty() {
+            let p = std::path::PathBuf::from(&config.docker_compose_path);
+            if !candidates.contains(&p) {
+                candidates.insert(0, p); // check configured path first
+            }
+        }
     }
 
     for path in &candidates {

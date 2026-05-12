@@ -214,6 +214,66 @@ fn detect_network_mode(compose_path: &Path) -> NetworkMode {
     NetworkMode::Unknown
 }
 
+// ── Compose inline environment parsing ──────────────────────────────────
+
+/// Parse environment variables directly from docker-compose.yml.
+/// Handles both `KEY=VALUE` list format and `env_file:` references.
+/// This is the fallback when no `env/` directory exists.
+fn parse_compose_inline_env(compose_path: &Path) -> HashMap<String, String> {
+    let content = match std::fs::read_to_string(compose_path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut vars = HashMap::new();
+    let mut in_environment = false;
+    let mut env_indent = 0;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect `environment:` block
+        if trimmed == "environment:" || trimmed.starts_with("environment:") {
+            in_environment = true;
+            // Calculate indentation of the environment key
+            env_indent = line.len() - line.trim_start().len();
+            continue;
+        }
+
+        if in_environment {
+            let current_indent = line.len() - line.trim_start().len();
+
+            // If we hit a line at same or lesser indent, we've left the environment block
+            if !trimmed.is_empty() && current_indent <= env_indent && !trimmed.starts_with('-') {
+                in_environment = false;
+                continue;
+            }
+
+            // Parse `- KEY=VALUE` or `KEY: VALUE` or `- KEY: VALUE`
+            let entry = trimmed.trim_start_matches('-').trim();
+            if entry.is_empty() || entry.starts_with('#') {
+                continue;
+            }
+
+            if let Some(pos) = entry.find('=') {
+                let key = entry[..pos].trim().to_string();
+                let value = entry[pos + 1..].trim().to_string();
+                // Remove surrounding quotes
+                let value = value
+                    .strip_prefix('"').and_then(|v| v.strip_suffix('"'))
+                    .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                    .unwrap_or(&value)
+                    .to_string();
+                if !key.is_empty() {
+                    vars.insert(key, value);
+                }
+            }
+        }
+    }
+
+    vars
+}
+
 // ── Env directory discovery ─────────────────────────────────────────────────
 
 /// Find the env/ directory relative to a docker-compose.yml file.
@@ -313,7 +373,22 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
                 files,
             )
         }
-        None => (None, None, None, None, vec![]),
+        None => {
+            // Fallback: parse inline environment variables from docker-compose.yml
+            let inline_vars = parse_compose_inline_env(compose);
+            if inline_vars.is_empty() {
+                (None, None, None, None, vec![])
+            } else {
+                tracing::info!(
+                    "No env/ directory found, parsed {} inline variables from docker-compose.yml",
+                    inline_vars.len()
+                );
+                let hospital = Some(extract_hospital_info(&inline_vars));
+                let db = Some(extract_database_credentials(&inline_vars));
+                let rmq = Some(extract_rabbitmq_credentials(&inline_vars));
+                (None, hospital, db, rmq, vec!["(inline in docker-compose.yml)".to_string()])
+            }
+        }
     };
 
     Ok(EnvDetectionResult {
@@ -498,6 +573,37 @@ mod tests {
         .unwrap();
 
         assert_eq!(detect_network_mode(&path), NetworkMode::Bridge);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_compose_inline_env() {
+        let dir = std::env::temp_dir().join("puru-test-compose-inline");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("docker-compose.yml");
+        std::fs::write(
+            &path,
+            r#"services:
+  puru-has:
+    image: puru-has:2.0
+    environment:
+      - hospital.short.code=BTCT
+      - puru.server.ip=192.168.1.100
+      - spring.datasource.username=puru_admin
+      - spring.datasource.password=secret123
+      - spring.rabbitmq.host=localhost
+    ports:
+      - '8082:8082'
+"#,
+        )
+        .unwrap();
+
+        let vars = parse_compose_inline_env(&path);
+        assert_eq!(vars.get("hospital.short.code").unwrap(), "BTCT");
+        assert_eq!(vars.get("puru.server.ip").unwrap(), "192.168.1.100");
+        assert_eq!(vars.get("spring.datasource.username").unwrap(), "puru_admin");
+        assert_eq!(vars.get("spring.datasource.password").unwrap(), "secret123");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

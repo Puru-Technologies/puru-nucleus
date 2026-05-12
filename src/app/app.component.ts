@@ -4,6 +4,8 @@ import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
 import { filter, map } from 'rxjs/operators';
+// @ts-ignore
+import packageJson from '../../package.json';
 
 @Component({
   selector: 'app-root',
@@ -86,7 +88,7 @@ import { filter, map } from 'rxjs/operators';
 
           <!-- Footer -->
           <div class="sidebar-footer">
-            <div class="version">v0.1.0</div>
+            <div class="version">v{{ version }}</div>
           </div>
         </mat-sidenav>
 
@@ -229,6 +231,7 @@ import { filter, map } from 'rxjs/operators';
 })
 export class AppComponent {
   title = 'puru-nucleus';
+  version = packageJson.version;
   showShell = true;
 
   private router = inject(Router);
