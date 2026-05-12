@@ -222,6 +222,11 @@ export interface DaemonStatus {
   backup_schedule_enabled: boolean;
   backup_interval_hours: number;
   telemetry_interval_minutes: number;
+  service_installed: boolean;
+  service_enabled: boolean;
+  service_pid?: number;
+  service_detail: string;
+  platform: string;
 }
 
 export interface DaemonConfig {

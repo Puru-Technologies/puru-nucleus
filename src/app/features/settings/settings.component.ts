@@ -269,26 +269,97 @@ import { open } from '@tauri-apps/plugin-dialog';
             <mat-card-header>
               <mat-icon mat-card-avatar>memory</mat-icon>
               <mat-card-title>Daemon</mat-card-title>
-              <mat-card-subtitle>REST API server &amp; background tasks</mat-card-subtitle>
+              <mat-card-subtitle>{{ daemonStatusInfo?.platform || 'Background service' }}</mat-card-subtitle>
             </mat-card-header>
             <mat-card-content>
-              <div class="daemon-status">
-                <div class="status-indicator" [class.running]="daemonRunning">
-                  <mat-icon>{{ daemonRunning ? 'check_circle' : 'error' }}</mat-icon>
-                  <span>{{ daemonRunning ? 'Running' : 'Stopped' }}</span>
-                  @if (daemonRunning && daemonStatusInfo?.api_url) {
-                    <span class="daemon-url">{{ daemonStatusInfo?.api_url }}</span>
-                  }
-                </div>
-                <div class="daemon-actions">
-                  @if (daemonRunning) {
-                    <button mat-stroked-button (click)="stopDaemon()">Stop</button>
+              <!-- Service Installation Status -->
+              <div class="service-status-panel">
+                <div class="service-row">
+                  <div class="service-label">
+                    <mat-icon [class]="daemonStatusInfo?.service_installed ? 'status-ok' : 'status-warn'">
+                      {{ daemonStatusInfo?.service_installed ? 'check_circle' : 'cancel' }}
+                    </mat-icon>
+                    <span>Service {{ daemonStatusInfo?.service_installed ? 'Installed' : 'Not Installed' }}</span>
+                  </div>
+                  @if (!daemonStatusInfo?.service_installed) {
+                    <button mat-raised-button color="primary" (click)="installDaemon()" [disabled]="daemonAction">
+                      @if (daemonAction === 'installing') { <mat-spinner diameter="18"></mat-spinner> }
+                      <mat-icon>download</mat-icon> Install Service
+                    </button>
                   } @else {
-                    <button mat-raised-button color="primary" (click)="startDaemon()">Start</button>
+                    <button mat-stroked-button color="warn" (click)="uninstallDaemon()" [disabled]="daemonAction">
+                      Uninstall
+                    </button>
                   }
-                  <button mat-stroked-button (click)="restartDaemon()">Restart</button>
                 </div>
+
+                @if (daemonStatusInfo?.service_installed) {
+                  <div class="service-row">
+                    <div class="service-label">
+                      <mat-icon [class]="daemonRunning ? 'status-ok' : 'status-warn'">
+                        {{ daemonRunning ? 'play_circle' : 'stop_circle' }}
+                      </mat-icon>
+                      <span>{{ daemonRunning ? 'Running' : 'Stopped' }}</span>
+                      @if (daemonStatusInfo?.service_pid) {
+                        <span class="daemon-pid">PID {{ daemonStatusInfo?.service_pid }}</span>
+                      }
+                      @if (daemonRunning && daemonStatusInfo?.api_url) {
+                        <span class="daemon-url">{{ daemonStatusInfo?.api_url }}</span>
+                      }
+                    </div>
+                    <div class="daemon-actions">
+                      @if (daemonRunning) {
+                        <button mat-stroked-button (click)="stopDaemon()" [disabled]="daemonAction">
+                          @if (daemonAction === 'stopping') { <mat-spinner diameter="18"></mat-spinner> }
+                          Stop
+                        </button>
+                      } @else {
+                        <button mat-raised-button color="primary" (click)="startDaemon()" [disabled]="daemonAction">
+                          @if (daemonAction === 'starting') { <mat-spinner diameter="18"></mat-spinner> }
+                          Start
+                        </button>
+                      }
+                      <button mat-stroked-button (click)="restartDaemon()" [disabled]="daemonAction">
+                        @if (daemonAction === 'restarting') { <mat-spinner diameter="18"></mat-spinner> }
+                        Restart
+                      </button>
+                      <button mat-icon-button (click)="checkDaemonStatus()" [disabled]="daemonAction">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="service-row">
+                    <div class="service-label">
+                      <mat-icon [class]="daemonStatusInfo?.service_enabled ? 'status-ok' : 'status-muted'">
+                        {{ daemonStatusInfo?.service_enabled ? 'autorenew' : 'block' }}
+                      </mat-icon>
+                      <span>Auto-start on boot: {{ daemonStatusInfo?.service_enabled ? 'Yes' : 'No' }}</span>
+                    </div>
+                  </div>
+
+                  <div class="service-row">
+                    <div class="service-label">
+                      <mat-icon [class]="daemonStatusInfo?.docker_connected ? 'status-ok' : 'status-warn'">
+                        {{ daemonStatusInfo?.docker_connected ? 'check_circle' : 'warning' }}
+                      </mat-icon>
+                      <span>Docker: {{ daemonStatusInfo?.docker_connected ? 'Connected' : 'Not connected' }}</span>
+                    </div>
+                  </div>
+                }
+
+                @if (daemonStatusInfo?.service_detail) {
+                  <div class="service-detail">{{ daemonStatusInfo?.service_detail }}</div>
+                }
               </div>
+
+              @if (daemonError) {
+                <div class="daemon-error">
+                  <mat-icon>error</mat-icon>
+                  <span>{{ daemonError }}</span>
+                  <button mat-icon-button (click)="daemonError = null"><mat-icon>close</mat-icon></button>
+                </div>
+              }
 
               <mat-divider></mat-divider>
 
@@ -703,6 +774,73 @@ import { open } from '@tauri-apps/plugin-dialog';
       border-top: 1px solid #eee;
     }
 
+    .service-status-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .service-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.5rem 0;
+    }
+
+    .service-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .status-ok { color: #4caf50; }
+    .status-warn { color: #ff9800; }
+    .status-muted { color: #999; }
+
+    .daemon-pid {
+      font-size: 0.75rem;
+      color: #999;
+      font-family: monospace;
+    }
+
+    .daemon-url {
+      font-size: 0.75rem;
+      color: #666;
+      font-family: monospace;
+    }
+
+    .daemon-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .service-detail {
+      font-size: 0.75rem;
+      color: #999;
+      font-family: monospace;
+      padding: 0.25rem 0;
+    }
+
+    .daemon-error {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      padding: 0.75rem;
+      background: #ffebee;
+      border-radius: 8px;
+      color: #c62828;
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+
+      mat-icon:first-child { font-size: 18px; width: 18px; height: 18px; margin-top: 2px; }
+      span { flex: 1; word-break: break-word; }
+      button { margin-left: auto; flex-shrink: 0; }
+    }
+
     .danger-zone-card {
       margin-top: 2rem;
       border: 1px solid #ffcdd2;
@@ -760,6 +898,10 @@ export class SettingsComponent implements OnInit {
   // TLS
   tlsStatus: { configured: boolean; ca_download_url?: string; cert_path?: string; key_path?: string } | null = null;
   tlsSettingUp = false;
+
+  // Daemon management
+  daemonAction: string | null = null; // 'installing' | 'starting' | 'stopping' | 'restarting' | null
+  daemonError: string | null = null;
 
   // Danger zone
   confirmingReset = false;
@@ -892,23 +1034,60 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async startDaemon(): Promise<void> {
+  async installDaemon(): Promise<void> {
+    this.daemonAction = 'installing';
+    this.daemonError = null;
     try {
-      await this.tauri.invoke('start_daemon');
-      this.daemonRunning = true;
-      this.notification.success('Daemon started');
+      const msg = await this.tauri.invoke<string>('install_daemon_service');
+      this.notification.success(msg);
+      await this.checkDaemonStatus();
     } catch (error) {
-      // Error handled by TauriService
+      this.daemonError = String(error);
+    } finally {
+      this.daemonAction = null;
+    }
+  }
+
+  async uninstallDaemon(): Promise<void> {
+    if (!confirm('Uninstall the daemon service? Backups, telemetry, and watchdog will stop.')) return;
+    this.daemonAction = 'uninstalling';
+    this.daemonError = null;
+    try {
+      const msg = await this.tauri.invoke<string>('uninstall_daemon_service');
+      this.notification.success(msg);
+      await this.checkDaemonStatus();
+    } catch (error) {
+      this.daemonError = String(error);
+    } finally {
+      this.daemonAction = null;
+    }
+  }
+
+  async startDaemon(): Promise<void> {
+    this.daemonAction = 'starting';
+    this.daemonError = null;
+    try {
+      const msg = await this.tauri.invoke<string>('start_daemon');
+      this.notification.success(msg);
+      await this.checkDaemonStatus();
+    } catch (error) {
+      this.daemonError = String(error);
+    } finally {
+      this.daemonAction = null;
     }
   }
 
   async stopDaemon(): Promise<void> {
+    this.daemonAction = 'stopping';
+    this.daemonError = null;
     try {
-      await this.tauri.invoke('stop_daemon');
-      this.daemonRunning = false;
-      this.notification.success('Daemon stopped');
+      const msg = await this.tauri.invoke<string>('stop_daemon');
+      this.notification.success(msg);
+      await this.checkDaemonStatus();
     } catch (error) {
-      // Error handled by TauriService
+      this.daemonError = String(error);
+    } finally {
+      this.daemonAction = null;
     }
   }
 
@@ -929,12 +1108,16 @@ export class SettingsComponent implements OnInit {
   }
 
   async restartDaemon(): Promise<void> {
+    this.daemonAction = 'restarting';
+    this.daemonError = null;
     try {
-      await this.tauri.invoke('restart_daemon');
-      this.daemonRunning = true;
-      this.notification.success('Daemon restarted');
+      const msg = await this.tauri.invoke<string>('restart_daemon');
+      this.notification.success(msg);
+      await this.checkDaemonStatus();
     } catch (error) {
-      // Error handled by TauriService
+      this.daemonError = String(error);
+    } finally {
+      this.daemonAction = null;
     }
   }
 

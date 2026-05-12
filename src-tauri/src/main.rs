@@ -108,6 +108,8 @@ fn run_gui() {
             commands::acknowledge_alert,
             // Daemon
             commands::get_daemon_status,
+            commands::install_daemon_service,
+            commands::uninstall_daemon_service,
             commands::start_daemon,
             commands::stop_daemon,
             commands::restart_daemon,

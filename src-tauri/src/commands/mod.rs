@@ -585,9 +585,14 @@ pub struct DaemonStatus {
     pub backup_schedule_enabled: bool,
     pub backup_interval_hours: u32,
     pub telemetry_interval_minutes: u32,
+    pub service_installed: bool,
+    pub service_enabled: bool,
+    pub service_pid: Option<u32>,
+    pub service_detail: String,
+    pub platform: String,
 }
 
-/// Get daemon status — checks Docker, loads config, probes daemon API
+/// Get daemon status — checks Docker, service status, probes daemon API
 #[tauri::command]
 pub async fn get_daemon_status() -> Result<DaemonStatus, String> {
     let docker_connected = match bollard::Docker::connect_with_local_defaults() {
@@ -609,36 +614,74 @@ pub async fn get_daemon_status() -> Result<DaemonStatus, String> {
         Err(_) => false,
     };
 
+    // Query system service status
+    let svc_status = crate::platform::service_status().await.unwrap_or(
+        crate::platform::ServiceStatus {
+            installed: false,
+            running: false,
+            enabled: false,
+            pid: None,
+            detail: "Could not query service status".to_string(),
+        }
+    );
+
     Ok(DaemonStatus {
-        running,
+        running: running || svc_status.running,
         docker_connected,
         api_port: port,
         api_url: if running { Some(api_url) } else { None },
         backup_schedule_enabled: daemon_cfg.backup_schedule.enabled,
         backup_interval_hours: daemon_cfg.backup_schedule.interval_hours,
         telemetry_interval_minutes: daemon_cfg.telemetry_interval_minutes,
+        service_installed: svc_status.installed,
+        service_enabled: svc_status.enabled,
+        service_pid: svc_status.pid,
+        service_detail: svc_status.detail,
+        platform: crate::platform::platform_name().to_string(),
     })
 }
 
-/// Start daemon
+/// Install daemon as system service
 #[tauri::command]
-pub async fn start_daemon() -> Result<(), String> {
-    tracing::info!("Start daemon requested");
-    Err("Docker daemon must be started via the system service manager.".to_string())
+pub async fn install_daemon_service() -> Result<String, String> {
+    tracing::info!("Installing daemon service");
+    let result = crate::platform::install_service().await?;
+    tracing::info!("Install result: {}", result.message);
+    Ok(result.message)
 }
 
-/// Stop daemon
+/// Uninstall daemon system service
 #[tauri::command]
-pub async fn stop_daemon() -> Result<(), String> {
-    tracing::info!("Stop daemon requested");
-    Err("Docker daemon must be stopped via the system service manager.".to_string())
+pub async fn uninstall_daemon_service() -> Result<String, String> {
+    tracing::info!("Uninstalling daemon service");
+    let result = crate::platform::uninstall_service().await?;
+    Ok(result.message)
 }
 
-/// Restart daemon
+/// Start daemon service
 #[tauri::command]
-pub async fn restart_daemon() -> Result<(), String> {
-    tracing::info!("Restart daemon requested");
-    Err("Docker daemon must be restarted via the system service manager.".to_string())
+pub async fn start_daemon() -> Result<String, String> {
+    tracing::info!("Starting daemon service");
+    let result = crate::platform::start_service().await?;
+    Ok(result.message)
+}
+
+/// Stop daemon service
+#[tauri::command]
+pub async fn stop_daemon() -> Result<String, String> {
+    tracing::info!("Stopping daemon service");
+    let result = crate::platform::stop_service().await?;
+    Ok(result.message)
+}
+
+/// Restart daemon service (stop + start)
+#[tauri::command]
+pub async fn restart_daemon() -> Result<String, String> {
+    tracing::info!("Restarting daemon service");
+    let _ = crate::platform::stop_service().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let result = crate::platform::start_service().await?;
+    Ok(result.message)
 }
 
 /// Log error from frontend
