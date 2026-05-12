@@ -1,4 +1,4 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnInit, inject, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { resetLicenseCache } from '../../core/guards/init.guard';
 import { FormsModule } from '@angular/forms';
@@ -454,6 +454,29 @@ import { open } from '@tauri-apps/plugin-dialog';
               }
             </mat-card-content>
           </mat-card>
+          <!-- Daemon Log -->
+          <mat-card class="settings-card daemon-log-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>article</mat-icon>
+              <mat-card-title>Daemon Log</mat-card-title>
+              <mat-card-subtitle>Last 100 lines of daemon.log</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="daemon-log-actions">
+                <button mat-stroked-button (click)="loadDaemonLog()" [disabled]="daemonLogLoading">
+                  @if (daemonLogLoading) {
+                    <mat-spinner diameter="18"></mat-spinner>
+                  } @else {
+                    <mat-icon>refresh</mat-icon>
+                  }
+                  {{ daemonLogContent ? 'Refresh' : 'Load Log' }}
+                </button>
+              </div>
+              @if (daemonLogContent) {
+                <pre class="daemon-log-output" #daemonLogPre>{{ daemonLogContent }}</pre>
+              }
+            </mat-card-content>
+          </mat-card>
         </div>
 
         <div class="actions">
@@ -842,6 +865,29 @@ import { open } from '@tauri-apps/plugin-dialog';
       button { margin-left: auto; flex-shrink: 0; }
     }
 
+    .daemon-log-card {
+      grid-column: 1 / -1;
+    }
+
+    .daemon-log-actions {
+      margin-bottom: 0.75rem;
+    }
+
+    .daemon-log-output {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.75rem;
+      line-height: 1.5;
+      padding: 1rem;
+      border-radius: 8px;
+      max-height: 400px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin: 0;
+    }
+
     .danger-zone-card {
       margin-top: 2rem;
       border: 1px solid #ffcdd2;
@@ -903,6 +949,11 @@ export class SettingsComponent implements OnInit {
   // Daemon management
   daemonAction: string | null = null; // 'installing' | 'starting' | 'stopping' | 'restarting' | null
   daemonError: string | null = null;
+
+  // Daemon log
+  daemonLogContent = '';
+  daemonLogLoading = false;
+  @ViewChild('daemonLogPre') daemonLogPre?: ElementRef<HTMLPreElement>;
 
   // Danger zone
   confirmingReset = false;
@@ -1119,6 +1170,25 @@ export class SettingsComponent implements OnInit {
       this.daemonError = String(error);
     } finally {
       this.daemonAction = null;
+    }
+  }
+
+  // ── Daemon Log ──────────────────────────────────────────────────────────
+
+  async loadDaemonLog(): Promise<void> {
+    this.daemonLogLoading = true;
+    try {
+      this.daemonLogContent = await this.tauri.invokeSilent<string>('read_daemon_log', { lines: 100 });
+      // Auto-scroll to bottom after render
+      setTimeout(() => {
+        if (this.daemonLogPre?.nativeElement) {
+          this.daemonLogPre.nativeElement.scrollTop = this.daemonLogPre.nativeElement.scrollHeight;
+        }
+      }, 50);
+    } catch (error) {
+      this.daemonLogContent = 'Failed to load daemon log: ' + String(error);
+    } finally {
+      this.daemonLogLoading = false;
     }
   }
 

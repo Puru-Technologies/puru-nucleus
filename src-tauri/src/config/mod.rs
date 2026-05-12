@@ -37,6 +37,7 @@ pub struct NucleusConfig {
     pub jars_dir: Option<String>,
     pub jres_dir: Option<String>,
     pub native_logs_dir: Option<String>,
+    pub puru_data_path: Option<String>,
     pub daemon: Option<DaemonConfig>,
     pub lan: LanConfig,
 }
@@ -119,6 +120,7 @@ impl Default for NucleusConfig {
             jars_dir: None,
             jres_dir: None,
             native_logs_dir: None,
+            puru_data_path: None,
             daemon: None,
             lan: LanConfig::default(),
         }

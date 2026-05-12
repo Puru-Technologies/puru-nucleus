@@ -6,7 +6,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
-import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult } from '../../core/services/tauri.service';
+import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult, BackupRecord } from '../../core/services/tauri.service';
 import { License, getLicenseStatus, LicenseStatus } from '../../core/models/license.model';
 import { interval, Subscription } from 'rxjs';
 
@@ -96,6 +96,15 @@ import { interval, Subscription } from 'rxjs';
             <div class="stat-body">
               <span class="stat-value">{{ networkStatValue }}</span>
               <span class="stat-label">Network</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon" [class]="lastBackupTime ? 'si-green' : 'si-muted'">
+              <mat-icon>backup</mat-icon>
+            </div>
+            <div class="stat-body">
+              <span class="stat-value">{{ lastBackupTime || 'Never' }}</span>
+              <span class="stat-label">Last Backup</span>
             </div>
           </div>
         } @else {
@@ -750,6 +759,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
   licenseStatus: LicenseStatus | null = null;
   daemonRunning = false;
   telemetry: { cpu_percent: number; ram_gb: number; disk_percent: number } | null = null;
+  lastBackupTime: string | null = null;
 
   get cpuClass(): string {
     const v = this.telemetry?.cpu_percent ?? 0;
@@ -858,11 +868,12 @@ export class DashboardComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Slow calls — Docker services + daemon probe. Can take seconds. */
+  /** Slow calls — Docker services + daemon probe + backup history. */
   private async loadSlowData(): Promise<void> {
-    const [servicesResult, daemonResult] = await Promise.allSettled([
+    const [servicesResult, daemonResult, backupResult] = await Promise.allSettled([
       this.tauri.invokeSilent<ServiceInfo[]>('get_services'),
       this.tauri.invokeSilent<DaemonStatus>('get_daemon_status'),
+      this.tauri.invokeSilent<BackupRecord[]>('get_backup_history'),
     ]);
 
     if (servicesResult.status === 'fulfilled') {
@@ -871,6 +882,25 @@ export class DashboardComponent implements OnInit, OnDestroy {
     if (daemonResult.status === 'fulfilled') {
       this.daemonRunning = daemonResult.value.running;
     }
+    if (backupResult.status === 'fulfilled' && backupResult.value) {
+      const completed = backupResult.value
+        .filter(b => b.status === 'completed')
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      if (completed.length > 0) {
+        this.lastBackupTime = this.timeAgo(new Date(completed[0].created_at));
+      }
+    }
+  }
+
+  private timeAgo(date: Date): string {
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 60) return 'Just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
   }
 
   async runBackup(): Promise<void> {

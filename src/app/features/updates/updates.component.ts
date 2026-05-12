@@ -77,14 +77,24 @@ import { NotificationService } from '../../core/services/notification.service';
                   }
                 </div>
                 <p class="release-notes">{{ nucleusInfo.release_notes }}</p>
-                <button mat-raised-button color="primary" (click)="downloadNucleus()" [disabled]="nucleusDownloading">
-                  @if (nucleusDownloading) {
-                    <mat-spinner diameter="18"></mat-spinner>
-                  } @else {
-                    <mat-icon>download</mat-icon>
-                  }
-                  Download Update
-                </button>
+                <div class="nucleus-actions">
+                  <button mat-raised-button (click)="downloadNucleus()" [disabled]="nucleusDownloading || nucleusInstalling">
+                    @if (nucleusDownloading) {
+                      <mat-spinner diameter="18"></mat-spinner>
+                    } @else {
+                      <mat-icon>download</mat-icon>
+                    }
+                    Download
+                  </button>
+                  <button mat-raised-button color="primary" (click)="downloadAndInstallNucleus()" [disabled]="nucleusDownloading || nucleusInstalling">
+                    @if (nucleusInstalling) {
+                      <mat-spinner diameter="18"></mat-spinner>
+                    } @else {
+                      <mat-icon>system_update_alt</mat-icon>
+                    }
+                    Download &amp; Install
+                  </button>
+                </div>
               </div>
             }
           } @else {
@@ -339,6 +349,11 @@ import { NotificationService } from '../../core/services/notification.service';
       color: #444;
       margin: 0.5rem 0 1rem;
       line-height: 1.5;
+    }
+
+    .nucleus-actions {
+      display: flex;
+      gap: 0.75rem;
     }
 
     /* Status rows */
@@ -608,6 +623,7 @@ export class UpdatesComponent implements OnInit {
   nucleusLoading = false;
   servicesLoading = false;
   nucleusDownloading = false;
+  nucleusInstalling = false;
   downloadingService: string | null = null;
   updatingService: string | null = null;
   rollingBackService: string | null = null;
@@ -675,6 +691,21 @@ export class UpdatesComponent implements OnInit {
       // Error handled by TauriService
     } finally {
       this.nucleusDownloading = false;
+    }
+  }
+
+  async downloadAndInstallNucleus(): Promise<void> {
+    if (!confirm('This will download and install the update. The application will restart. Continue?')) {
+      return;
+    }
+    this.nucleusInstalling = true;
+    try {
+      const msg = await this.tauri.invoke<string>('download_and_install_nucleus_update');
+      this.notification.success(msg || 'Update installed. Restarting...');
+    } catch (error) {
+      // Error handled by TauriService
+    } finally {
+      this.nucleusInstalling = false;
     }
   }
 

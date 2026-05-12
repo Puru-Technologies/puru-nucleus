@@ -210,6 +210,7 @@ export interface NucleusConfig {
   mysql_password: string;
   auto_update_enabled: boolean;
   release_channel: string;
+  puru_data_path?: string;
   daemon?: DaemonConfig;
   lan: LanConfig;
 }

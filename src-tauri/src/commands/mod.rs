@@ -709,6 +709,28 @@ pub async fn get_container_logs(
         .map_err(|e| e.to_string())
 }
 
+// ── Daemon Log Reader ────────────────────────────────────────────────────────
+
+/// Read the last N lines of the daemon log file
+#[tauri::command]
+pub async fn read_daemon_log(lines: Option<u32>) -> Result<String, String> {
+    let log_path = crate::config::config_dir().join("daemon.log");
+    if !log_path.exists() {
+        return Ok("No daemon log found. Start the daemon service to generate logs.".to_string());
+    }
+    let content = tokio::fs::read_to_string(&log_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let max_lines = lines.unwrap_or(100) as usize;
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = if all_lines.len() > max_lines {
+        all_lines.len() - max_lines
+    } else {
+        0
+    };
+    Ok(all_lines[start..].join("\n"))
+}
+
 // ── Log File Reader ──────────────────────────────────────────────────────────
 
 /// Get known log source directories

@@ -813,6 +813,7 @@ export class SetupComponent implements OnInit {
   async loadConfig(): Promise<void> {
     try {
       this.config = await this.tauri.invoke<NucleusConfig>('get_config');
+      this.puruDataPath = this.config.puru_data_path || '';
       await this.checkCredsStatus();
 
       // Auto-detect existing setup and populate empty fields
@@ -900,8 +901,9 @@ export class SetupComponent implements OnInit {
         directory: true,
         title: 'Select Puru Data Directory'
       });
-      if (!selected) return;
+      if (!selected || !this.config) return;
       this.puruDataPath = typeof selected === 'string' ? selected : String(selected);
+      this.config.puru_data_path = this.puruDataPath;
     } catch {
       // User cancelled
     }

@@ -145,6 +145,7 @@ fn run_gui() {
             commands::get_log_sources,
             commands::list_log_files,
             commands::read_log_file,
+            commands::read_daemon_log,
             // Telemetry
             commands::get_telemetry_snapshot,
             // Releases

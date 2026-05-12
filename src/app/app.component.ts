@@ -1,9 +1,10 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive, Router, NavigationEnd } from '@angular/router';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
 import { filter, map } from 'rxjs/operators';
+import { interval, Subscription } from 'rxjs';
 // @ts-ignore
 import packageJson from '../../package.json';
 
@@ -29,7 +30,7 @@ import packageJson from '../../package.json';
             </div>
             <div class="brand-text">
               <span class="brand-name">Nucleus</span>
-              <span class="brand-sub">Puru Technologies</span>
+              <span class="brand-sub">{{ hospitalCode || 'Puru Technologies' }}</span>
             </div>
           </div>
 
@@ -60,6 +61,9 @@ import packageJson from '../../package.json';
             <a class="nav-item" routerLink="/inbox" routerLinkActive="active">
               <mat-icon>mail</mat-icon>
               <span>Inbox</span>
+              @if (unreadCount > 0) {
+                <span class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+              }
             </a>
             <a class="nav-item" routerLink="/updates" routerLinkActive="active">
               <mat-icon>system_update</mat-icon>
@@ -216,6 +220,22 @@ import packageJson from '../../package.json';
       }
     }
 
+    .unread-badge {
+      background: #ef4444;
+      color: white;
+      font-size: 0.65rem;
+      font-weight: 700;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 5px;
+      margin-left: auto;
+      line-height: 1;
+    }
+
     /* ── Footer ─────────────────────────────────── */
     .sidebar-footer {
       padding: 16px 20px;
@@ -229,12 +249,15 @@ import packageJson from '../../package.json';
     }
   `]
 })
-export class AppComponent {
+export class AppComponent implements OnInit, OnDestroy {
   title = 'puru-nucleus';
   version = packageJson.version;
+  hospitalCode = '';
   showShell = true;
+  unreadCount = 0;
 
   private router = inject(Router);
+  private unreadSub?: Subscription;
 
   constructor() {
     // Hide sidebar on activation page
@@ -244,5 +267,41 @@ export class AppComponent {
     ).subscribe(url => {
       this.showShell = !url.startsWith('/activation');
     });
+
+    // Load hospital code for display
+    this.loadHospitalCode();
+  }
+
+  ngOnInit(): void {
+    this.loadUnreadCount();
+    this.unreadSub = interval(60_000).subscribe(() => this.loadUnreadCount());
+  }
+
+  ngOnDestroy(): void {
+    this.unreadSub?.unsubscribe();
+  }
+
+  private async loadUnreadCount(): Promise<void> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      this.unreadCount = await invoke<number>('get_unread_count');
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  private async loadHospitalCode(): Promise<void> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const config = await invoke<{ hospital_code: string }>('get_config');
+      if (config?.hospital_code) {
+        this.hospitalCode = config.hospital_code;
+        // Update window title
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().setTitle(`Puru Nucleus — ${config.hospital_code}`);
+      }
+    } catch {
+      // Non-fatal
+    }
   }
 }

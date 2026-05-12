@@ -86,8 +86,12 @@ node -e "
 "
 echo "  Updated package.json"
 
-sed -i.bak -E "0,/^version = \".*\"/s//version = \"${VERSION}\"/" src-tauri/Cargo.toml
-rm -f src-tauri/Cargo.toml.bak
+node -e "
+  const fs = require('fs');
+  let cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
+  cargo = cargo.replace(/^version = \".*\"/m, 'version = \"${VERSION}\"');
+  fs.writeFileSync('src-tauri/Cargo.toml', cargo);
+"
 echo "  Updated src-tauri/Cargo.toml"
 
 node -e "
