@@ -417,7 +417,35 @@ async fn discover_events(
 
 // ── Per-object dump ──────────────────────────────────────────────────────────
 
-/// Dump a single table via `mysqldump` (handles data, charset, binary correctly).
+/// Find the MySQL container name by checking common names.
+async fn find_mysql_container() -> Option<String> {
+    let candidates = ["mysql", "puru-mysql", "db", "puru-db"];
+    for name in &candidates {
+        let output = tokio::process::Command::new("docker")
+            .args(["inspect", "--format", "{{.State.Running}}", name])
+            .output()
+            .await;
+        if let Ok(out) = output {
+            if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true" {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Check if mysqldump is available locally.
+async fn has_local_mysqldump() -> bool {
+    tokio::process::Command::new("mysqldump")
+        .arg("--version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Dump a single table via `mysqldump` — tries local binary first,
+/// falls back to `docker exec` if mysqldump isn't installed locally.
 async fn dump_table(
     config: &NucleusConfig,
     db: &str,
@@ -425,28 +453,79 @@ async fn dump_table(
     backup_type: &BackupType,
     output_path: &Path,
 ) -> Result<(), NucleusError> {
-    let mut args = vec![
-        format!("-h{}", config.mysql_host),
+    let mut dump_args = vec![
+        format!("-h{}", if has_local_mysqldump().await { config.mysql_host.clone() } else { "127.0.0.1".to_string() }),
         format!("-P{}", config.mysql_port),
         format!("-u{}", config.mysql_user),
+        format!("-p{}", config.mysql_password),
         "--skip-triggers".to_string(),
         "--single-transaction".to_string(),
-        format!("--result-file={}", output_path.display()),
     ];
 
     if *backup_type == BackupType::Partial {
-        args.push("--no-data".to_string());
+        dump_args.push("--no-data".to_string());
     }
 
-    args.push(db.to_string());
-    args.push(table.to_string());
+    dump_args.push(db.to_string());
+    dump_args.push(table.to_string());
 
-    let output = tokio::process::Command::new("mysqldump")
-        .env("MYSQL_PWD", &config.mysql_password)
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysqldump: {}", e)))?;
+    let output = if has_local_mysqldump().await {
+        // Local mysqldump
+        let mut args = dump_args.clone();
+        // Use --result-file for local
+        args.insert(5, format!("--result-file={}", output_path.display()));
+        // Remove -p flag, use env var instead
+        args.retain(|a| !a.starts_with("-p") || a.starts_with("-P"));
+        tokio::process::Command::new("mysqldump")
+            .env("MYSQL_PWD", &config.mysql_password)
+            .args(&args)
+            .output()
+            .await
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysqldump: {}", e)))?
+    } else {
+        // Docker exec — find the MySQL container
+        let container = find_mysql_container().await.ok_or_else(|| {
+            NucleusError::MySqlConnection(
+                "mysqldump not found locally and no running MySQL Docker container found. \
+                 Install mysql-client or ensure the MySQL container is running.".to_string()
+            )
+        })?;
+
+        // Run mysqldump inside the container, capture stdout to file
+        let mut docker_args = vec![
+            "exec".to_string(),
+            container,
+            "mysqldump".to_string(),
+        ];
+        // Inside container, connect to localhost
+        let mut inner_args = vec![
+            "-h127.0.0.1".to_string(),
+            format!("-P{}", config.mysql_port),
+            format!("-u{}", config.mysql_user),
+            format!("-p{}", config.mysql_password),
+            "--skip-triggers".to_string(),
+            "--single-transaction".to_string(),
+        ];
+        if *backup_type == BackupType::Partial {
+            inner_args.push("--no-data".to_string());
+        }
+        inner_args.push(db.to_string());
+        inner_args.push(table.to_string());
+        docker_args.extend(inner_args);
+
+        let result = tokio::process::Command::new("docker")
+            .args(&docker_args)
+            .output()
+            .await
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run docker exec mysqldump: {}", e)))?;
+
+        // Write stdout to file (docker exec doesn't support --result-file)
+        if result.status.success() {
+            tokio::fs::write(output_path, &result.stdout).await?;
+        }
+
+        result
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -824,6 +903,7 @@ async fn dump_all_databases(
 // ── MySQL restore ────────────────────────────────────────────────────────────
 
 /// Pipe a .sql file into the `mysql` CLI. Optionally target a specific database.
+/// Falls back to `docker exec` if mysql client isn't installed locally.
 async fn run_mysql_restore(
     config: &NucleusConfig,
     sql_path: &Path,
@@ -831,28 +911,49 @@ async fn run_mysql_restore(
 ) -> Result<(), NucleusError> {
     let sql_data = tokio::fs::read(sql_path).await?;
 
-    let mut args = vec![
-        format!("-h{}", config.mysql_host),
+    let mut mysql_args = vec![
+        format!("-h127.0.0.1"),
         format!("-P{}", config.mysql_port),
         format!("-u{}", config.mysql_user),
+        format!("-p{}", config.mysql_password),
     ];
-
     if let Some(db) = database {
-        args.push(db.to_string());
+        mysql_args.push(db.to_string());
     }
 
-    let mut child = tokio::process::Command::new("mysql")
-        .env("MYSQL_PWD", &config.mysql_password)
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysql: {}", e)))?;
+    let use_local = has_local_mysql().await;
+
+    let mut child = if use_local {
+        let mut args = mysql_args.clone();
+        args.retain(|a| !a.starts_with("-p") || a.starts_with("-P"));
+        args[0] = format!("-h{}", config.mysql_host);
+        tokio::process::Command::new("mysql")
+            .env("MYSQL_PWD", &config.mysql_password)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysql: {}", e)))?
+    } else {
+        let container = find_mysql_container().await.ok_or_else(|| {
+            NucleusError::MySqlConnection(
+                "mysql client not found locally and no running MySQL Docker container found.".to_string()
+            )
+        })?;
+        let mut docker_args = vec!["exec".to_string(), "-i".to_string(), container, "mysql".to_string()];
+        docker_args.extend(mysql_args);
+        tokio::process::Command::new("docker")
+            .args(&docker_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run docker exec mysql: {}", e)))?
+    };
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&sql_data).await?;
-        // drop to close stdin so mysql finishes
     }
 
     let output = child.wait_with_output().await?;
@@ -868,23 +969,54 @@ async fn run_mysql_restore(
     Ok(())
 }
 
+/// Check if mysql client is available locally.
+async fn has_local_mysql() -> bool {
+    tokio::process::Command::new("mysql")
+        .arg("--version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Execute a single SQL statement via the `mysql` CLI.
+/// Falls back to `docker exec` if mysql client isn't installed locally.
 async fn run_mysql_command(
     config: &NucleusConfig,
     sql: &str,
 ) -> Result<(), NucleusError> {
-    let output = tokio::process::Command::new("mysql")
-        .env("MYSQL_PWD", &config.mysql_password)
-        .args([
-            &format!("-h{}", config.mysql_host),
-            &format!("-P{}", config.mysql_port),
-            &format!("-u{}", config.mysql_user),
-            "-e",
-            sql,
-        ])
-        .output()
-        .await
-        .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysql: {}", e)))?;
+    let output = if has_local_mysql().await {
+        tokio::process::Command::new("mysql")
+            .env("MYSQL_PWD", &config.mysql_password)
+            .args([
+                &format!("-h{}", config.mysql_host),
+                &format!("-P{}", config.mysql_port),
+                &format!("-u{}", config.mysql_user),
+                "-e",
+                sql,
+            ])
+            .output()
+            .await
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysql: {}", e)))?
+    } else {
+        let container = find_mysql_container().await.ok_or_else(|| {
+            NucleusError::MySqlConnection(
+                "mysql client not found locally and no running MySQL Docker container found.".to_string()
+            )
+        })?;
+        tokio::process::Command::new("docker")
+            .args([
+                "exec", &container, "mysql",
+                &format!("-h127.0.0.1"),
+                &format!("-P{}", config.mysql_port),
+                &format!("-u{}", config.mysql_user),
+                &format!("-p{}", config.mysql_password),
+                "-e", sql,
+            ])
+            .output()
+            .await
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run docker exec mysql: {}", e)))?
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
