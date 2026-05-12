@@ -33,6 +33,8 @@ pub struct BackupRecord {
     pub uploaded: bool,
     #[serde(default)]
     pub lan_copied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -138,12 +140,24 @@ fn update_record(
     uploaded: bool,
     lan_copied: bool,
 ) -> Result<(), NucleusError> {
+    update_record_with_error(id, status, size_mb, uploaded, lan_copied, None)
+}
+
+fn update_record_with_error(
+    id: &str,
+    status: BackupStatus,
+    size_mb: u64,
+    uploaded: bool,
+    lan_copied: bool,
+    error: Option<String>,
+) -> Result<(), NucleusError> {
     let mut records = load_history()?;
     if let Some(rec) = records.iter_mut().find(|r| r.id == id) {
         rec.status = status;
         rec.size_mb = size_mb;
         rec.uploaded = uploaded;
         rec.lan_copied = lan_copied;
+        rec.error = error;
     }
     save_history(&records)
 }
@@ -1086,6 +1100,7 @@ pub async fn start_backup(
         created_at: Utc::now(),
         uploaded: false,
         lan_copied: false,
+        error: None,
     })?;
 
     // 5. Dump all databases into a structured temp directory
@@ -1093,7 +1108,7 @@ pub async fn start_backup(
         match dump_all_databases(&cfg, &backup_type, &backup_name).await {
             Ok(result) => result,
             Err(e) => {
-                let _ = update_record(&backup_name, BackupStatus::Failed, 0, false, false);
+                let _ = update_record_with_error(&backup_name, BackupStatus::Failed, 0, false, false, Some(e.to_string()));
                 return Err(e);
             }
         };
@@ -1106,7 +1121,7 @@ pub async fn start_backup(
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            let _ = update_record(&backup_name, BackupStatus::Failed, 0, false, false);
+            let _ = update_record_with_error(&backup_name, BackupStatus::Failed, 0, false, false, Some(e.to_string()));
             return Err(e);
         }
     };

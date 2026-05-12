@@ -188,6 +188,7 @@ export interface BackupRecord {
   created_at: string;
   uploaded: boolean;
   lan_copied: boolean;
+  error?: string;
 }
 
 export interface LanConfig {

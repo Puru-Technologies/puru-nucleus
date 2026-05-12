@@ -54,6 +54,19 @@ import { NotificationService } from '../../core/services/notification.service';
         </mat-card>
       }
 
+      @if (lastError) {
+        <mat-card class="error-card">
+          <mat-card-content>
+            <div class="error-header">
+              <mat-icon>error</mat-icon>
+              <strong>Backup Failed</strong>
+              <button mat-icon-button (click)="lastError = null"><mat-icon>close</mat-icon></button>
+            </div>
+            <pre class="error-detail">{{ lastError }}</pre>
+          </mat-card-content>
+        </mat-card>
+      }
+
       <div class="backup-stats">
         <mat-card class="stat-card">
           <mat-card-content>
@@ -162,8 +175,19 @@ import { NotificationService } from '../../core/services/notification.service';
                 </td>
               </ng-container>
 
+              <ng-container matColumnDef="error">
+                <th mat-header-cell *matHeaderCellDef>Error</th>
+                <td mat-cell *matCellDef="let backup">
+                  @if (backup.status === 'failed') {
+                    <span class="error-text" [title]="backup.error || 'Unknown error'">
+                      {{ backup.error || 'Unknown error' }}
+                    </span>
+                  }
+                </td>
+              </ng-container>
+
               <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-              <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+              <tr mat-row *matRowDef="let row; columns: displayedColumns;" [class.failed-row]="row.status === 'failed'"></tr>
             </table>
           }
         </mat-card-content>
@@ -351,6 +375,52 @@ import { NotificationService } from '../../core/services/notification.service';
         width: 100%;
       }
     }
+
+    .error-card {
+      margin-bottom: 1.5rem;
+      background: #ffebee;
+      border-left: 4px solid #f44336;
+    }
+
+    .error-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      color: #c62828;
+
+      mat-icon { font-size: 20px; width: 20px; height: 20px; }
+      button { margin-left: auto; }
+    }
+
+    .error-detail {
+      background: #fff;
+      border: 1px solid #ffcdd2;
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      font-size: 0.8rem;
+      color: #333;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 200px;
+      overflow-y: auto;
+      margin: 0;
+    }
+
+    .error-text {
+      color: #c62828;
+      font-size: 0.8rem;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      display: inline-block;
+      cursor: help;
+    }
+
+    .failed-row {
+      background: #fff8f8;
+    }
   `]
 })
 export class BackupsComponent implements OnInit {
@@ -361,8 +431,9 @@ export class BackupsComponent implements OnInit {
   loading = true;
   backupInProgress = false;
   currentBackupType: 'full' | 'partial' = 'full';
+  lastError: string | null = null;
 
-  displayedColumns = ['type', 'status', 'size', 'created_at', 'uploaded', 'lan', 'actions'];
+  displayedColumns = ['type', 'status', 'size', 'created_at', 'uploaded', 'lan', 'error', 'actions'];
 
   binlogStatus: BinlogStatus | null = null;
   lanBinlogShipping = false;
@@ -406,6 +477,7 @@ export class BackupsComponent implements OnInit {
   async runBackup(type: 'full' | 'partial'): Promise<void> {
     this.backupInProgress = true;
     this.currentBackupType = type;
+    this.lastError = null;
 
     try {
       const result = await this.tauri.invoke<BackupResult>('start_backup', { type });
@@ -414,9 +486,12 @@ export class BackupsComponent implements OnInit {
           `Backup completed: ${result.size_mb} MB in ${result.duration_seconds}s`
         );
       }
-      await this.loadBackups();
+    } catch (error) {
+      this.lastError = String(error);
+      this.notification.error('Backup failed');
     } finally {
       this.backupInProgress = false;
+      await this.loadBackups();
     }
   }
 
