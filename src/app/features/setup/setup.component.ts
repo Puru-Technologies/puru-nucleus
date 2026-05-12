@@ -209,6 +209,33 @@ interface SetupStep {
               </div>
             </div>
 
+            <!-- TLS Setup Result -->
+            @if (setupComplete && tlsStatus?.configured) {
+              <div class="setup-section">
+                <h3>
+                  <mat-icon class="section-icon" style="color:#4caf50">lock</mat-icon>
+                  HTTPS Configured
+                </h3>
+                <div class="tls-info">
+                  <p>HTTPS is ready. Client machines need a one-time certificate install.</p>
+                  <div class="tls-actions">
+                    <button mat-raised-button color="primary" (click)="downloadClientScript()">
+                      <mat-icon>download</mat-icon>
+                      Download Client Setup Script (.bat)
+                    </button>
+                    <button mat-stroked-button (click)="copyNginxConfig()">
+                      <mat-icon>content_copy</mat-icon>
+                      Copy Nginx Config
+                    </button>
+                  </div>
+                  <div class="tls-urls">
+                    <span><strong>CA Download:</strong> {{ tlsStatus.ca_download_url }}</span>
+                    <span><strong>HTTPS URL:</strong> https://{{ config!.server_ip }}</span>
+                  </div>
+                </div>
+              </div>
+            }
+
             <!-- Progress Bar -->
             @if (setupInProgress) {
               <div class="progress-section">
@@ -546,6 +573,35 @@ interface SetupStep {
       }
     }
 
+    /* ── TLS Info ─────────────────────────── */
+    .tls-info {
+      padding: 1rem;
+      background: #e8f5e9;
+      border-radius: 8px;
+
+      p {
+        margin: 0 0 1rem;
+        color: #333;
+        font-size: 0.875rem;
+      }
+    }
+
+    .tls-actions {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .tls-urls {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.8rem;
+      color: #555;
+      font-family: monospace;
+    }
+
     mat-card-actions {
       display: flex;
       justify-content: flex-end;
@@ -570,6 +626,7 @@ export class SetupComponent implements OnInit {
   detectionResult: DetectionResult | null = null;
   setupInProgress = false;
   setupComplete = false;
+  tlsStatus: any = null;
 
   steps: SetupStep[] = [
     { label: 'Check prerequisites', status: 'pending' },
@@ -580,7 +637,8 @@ export class SetupComponent implements OnInit {
     { label: 'Start services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
-    { label: 'Install daemon service', status: 'pending' }
+    { label: 'Install daemon service', status: 'pending' },
+    { label: 'Configure HTTPS (TLS)', status: 'pending' }
   ];
 
   get allPrerequisitesMet(): boolean {
@@ -724,6 +782,12 @@ export class SetupComponent implements OnInit {
 
     this.setupComplete = true;
     this.setupInProgress = false;
+
+    // Load TLS status after setup
+    try {
+      this.tlsStatus = await this.tauri.invokeSilent('get_tls_status');
+    } catch { /* non-critical */ }
+
     this.notification.success('Setup completed successfully!');
   }
 
@@ -737,7 +801,8 @@ export class SetupComponent implements OnInit {
       'setup_start_services',
       'setup_health_check',
       'setup_configure_backups',
-      'setup_install_daemon'
+      'setup_install_daemon',
+      'setup_tls'
     ];
 
     await this.tauri.invoke(stepCommands[index]);
@@ -756,6 +821,32 @@ export class SetupComponent implements OnInit {
   viewLogs(): void {
     this.router.navigate(['/services']);
     this.notification.success('Use the Services page to view container logs');
+  }
+
+  async downloadClientScript(): Promise<void> {
+    try {
+      const script = await this.tauri.invoke<string>('generate_client_setup_script');
+      const blob = new Blob([script], { type: 'application/bat' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'puru-secure-setup.bat';
+      a.click();
+      URL.revokeObjectURL(url);
+      this.notification.success('Setup script downloaded');
+    } catch {
+      // Error handled by TauriService
+    }
+  }
+
+  async copyNginxConfig(): Promise<void> {
+    try {
+      const config = await this.tauri.invoke<string>('generate_nginx_https_config');
+      await navigator.clipboard.writeText(config);
+      this.notification.success('Nginx HTTPS config copied to clipboard');
+    } catch {
+      // Error handled by TauriService
+    }
   }
 
   finish(): void {

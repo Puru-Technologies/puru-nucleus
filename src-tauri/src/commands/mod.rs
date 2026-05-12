@@ -11,7 +11,10 @@ use crate::licensing::License;
 use crate::messaging::types::{
     DownloadResult as MsgDownloadResult, FileActionResult, HospitalMessage,
 };
-use crate::releases::{DownloadResult, NucleusUpdateInfo, ServiceManifest, ServiceUpdateInfo};
+use crate::releases::{
+    DownloadResult, JarPullResult, JarUpdateCheck, NucleusUpdateInfo, PullAllResult,
+    ServiceManifest, ServiceUpdateInfo,
+};
 use crate::remote_shell::{ShellAuditEntry, ShellResult};
 use crate::services::{DetectionResult, PrerequisiteStatus, ServiceInfo};
 use crate::telemetry::TelemetrySnapshot;
@@ -93,14 +96,27 @@ pub async fn get_license() -> Result<Option<License>, String> {
     crate::licensing::load_license().map_err(|e| e.to_string())
 }
 
+/// Get the hardware fingerprint for this machine.
+#[tauri::command]
+pub async fn get_machine_fingerprint() -> Result<String, String> {
+    crate::licensing::fingerprint::get_cached_fingerprint().map_err(|e| e.to_string())
+}
+
 /// Activate license with email — queries Firestore, extracts license, saves locally
 #[tauri::command]
-pub async fn activate_license(email: String) -> Result<(), String> {
+pub async fn activate_license(email: String, machine_name: String) -> Result<(), String> {
     if email.trim().is_empty() {
         return Err("Email is required".to_string());
     }
+    if machine_name.trim().is_empty() {
+        return Err("Machine name is required".to_string());
+    }
 
     tracing::info!("License activation requested for: {}", email);
+
+    // Generate hardware fingerprint
+    let fingerprint = crate::licensing::fingerprint::generate_fingerprint()
+        .map_err(|e| format!("Failed to generate hardware fingerprint: {}", e))?;
 
     let client = crate::firestore::FirestoreClient::new_from_config()
         .await
@@ -135,10 +151,23 @@ pub async fn activate_license(email: String) -> Result<(), String> {
         .unwrap_or_else(|| hospital_code.clone());
 
     // Build license using shared helper
-    let license = crate::licensing::extract_license_from_firestore(&doc.fields, &hospital_name);
+    let mut license =
+        crate::licensing::extract_license_from_firestore(&doc.fields, &hospital_name);
 
     // Validate license is not expired
     crate::licensing::validate_license(&license)?;
+
+    // Set machine fingerprint and name
+    license.machine_fingerprint = Some(fingerprint.clone());
+    license.machine_name = Some(machine_name.trim().to_string());
+
+    // Register machine in Firestore
+    if let Err(e) = client
+        .register_machine(&hospital_code, &fingerprint, machine_name.trim())
+        .await
+    {
+        tracing::warn!("Failed to register machine in cloud (non-fatal): {:?}", e);
+    }
 
     // Save license locally
     crate::licensing::save_license(&license).map_err(|e| e.user_message())?;
@@ -148,7 +177,12 @@ pub async fn activate_license(email: String) -> Result<(), String> {
     config.hospital_code = hospital_code.clone();
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
-    tracing::info!("License activated for hospital: {} ({})", license.hospital_name, hospital_code);
+    tracing::info!(
+        "License activated for hospital: {} ({}) — machine: {}",
+        license.hospital_name,
+        hospital_code,
+        fingerprint
+    );
     Ok(())
 }
 
@@ -158,6 +192,7 @@ pub struct PullSettingsResult {
     pub hospital_info: crate::licensing::HospitalInfo,
     pub license: License,
     pub license_changed: bool,
+    pub machine_registered: bool,
 }
 
 /// Pull hospital settings (info + license) from Firestore.
@@ -172,10 +207,33 @@ pub async fn pull_settings() -> Result<PullSettingsResult, String> {
         .await
         .map_err(|e| e.user_message())?;
 
-    let (hospital_info, pulled_license) = client
-        .pull_hospital_settings(&config.hospital_code)
+    let doc = client
+        .get_hospital(&config.hospital_code)
         .await
         .map_err(|e| e.user_message())?;
+
+    let hospital_name = doc
+        .fields
+        .get("name")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+        .unwrap_or_else(|| config.hospital_code.clone());
+
+    let hospital_info = crate::licensing::extract_hospital_info(&doc.fields);
+    let mut pulled_license =
+        crate::licensing::extract_license_from_firestore(&doc.fields, &hospital_name);
+
+    // Check machine registration
+    let machines = crate::licensing::extract_registered_machines(&doc.fields);
+    let current_fp = crate::licensing::fingerprint::get_cached_fingerprint().ok();
+    let machine_registered = if machines.is_empty() {
+        // No nucleus_machines array = no enforcement yet
+        true
+    } else {
+        current_fp
+            .as_ref()
+            .map(|fp| machines.iter().any(|(m_fp, _)| m_fp == fp))
+            .unwrap_or(false)
+    };
 
     // Compare pulled license with current local license
     let current_license = crate::licensing::load_license().map_err(|e| e.user_message())?;
@@ -183,24 +241,36 @@ pub async fn pull_settings() -> Result<PullSettingsResult, String> {
         Some(current) => {
             current.valid_till != pulled_license.valid_till
                 || current.features.binlog_shipping != pulled_license.features.binlog_shipping
-                || current.features.point_in_time_recovery != pulled_license.features.point_in_time_recovery
+                || current.features.point_in_time_recovery
+                    != pulled_license.features.point_in_time_recovery
                 || current.features.priority_support != pulled_license.features.priority_support
-                || current.limits.backup_retention_days != pulled_license.limits.backup_retention_days
+                || current.limits.backup_retention_days
+                    != pulled_license.limits.backup_retention_days
                 || current.limits.max_storage_gb != pulled_license.limits.max_storage_gb
         }
         None => true,
     };
 
+    // Preserve local machine_fingerprint and machine_name when saving pulled license
+    if let Some(ref current) = current_license {
+        pulled_license.machine_fingerprint = current.machine_fingerprint.clone();
+        pulled_license.machine_name = current.machine_name.clone();
+    }
+
     // If license changed, save the new license
     if license_changed {
         crate::licensing::save_license(&pulled_license).map_err(|e| e.user_message())?;
-        tracing::info!("License updated from cloud for hospital: {}", config.hospital_code);
+        tracing::info!(
+            "License updated from cloud for hospital: {}",
+            config.hospital_code
+        );
     }
 
     Ok(PullSettingsResult {
         hospital_info,
         license: pulled_license,
         license_changed,
+        machine_registered,
     })
 }
 
@@ -1261,6 +1331,67 @@ pub async fn setup_install_daemon() -> Result<(), String> {
     Ok(())
 }
 
+/// Step 10: Configure HTTPS — generate CA + cert via mkcert, write nginx config
+#[tauri::command]
+pub async fn setup_tls() -> Result<(), String> {
+    tracing::info!("Setup: configuring TLS/HTTPS");
+
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+
+    if config.server_ip.is_empty() {
+        return Err("Server IP not configured. Set it in the infrastructure step.".into());
+    }
+
+    // Check if mkcert is available — if not, skip gracefully (TLS is optional)
+    match crate::tls::setup_tls(&config).await {
+        Ok(result) => {
+            tracing::info!("Setup: TLS configured — {}", result.message);
+
+            // Write nginx HTTPS config
+            let nginx_config = crate::tls::generate_nginx_https_config(&config.server_ip);
+            let nginx_path = std::path::Path::new("/etc/nginx/conf.d/puru-https.conf");
+            if let Some(parent) = nginx_path.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            match tokio::fs::write(nginx_path, &nginx_config).await {
+                Ok(_) => tracing::info!("Setup: nginx HTTPS config written to {:?}", nginx_path),
+                Err(e) => tracing::warn!("Setup: could not write nginx config: {} (manual setup needed)", e),
+            }
+
+            // Generate and save client setup script for download via file explorer
+            let script = crate::tls::generate_client_setup_script(&config.server_ip, 81, 443);
+            let compose_path = std::path::PathBuf::from(&config.docker_compose_path);
+            let data_root = compose_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("/home/puru"))
+                .join("puru-data");
+            let script_path = data_root.join("uploaded-document").join("puru-secure-setup.bat");
+            match tokio::fs::write(&script_path, &script).await {
+                Ok(_) => tracing::info!("Setup: client setup script saved to {:?}", script_path),
+                Err(e) => tracing::warn!("Setup: could not write client script: {}", e),
+            }
+
+            // Try to reload nginx
+            let reload = tokio::process::Command::new("nginx")
+                .arg("-s").arg("reload")
+                .output().await;
+            match reload {
+                Ok(o) if o.status.success() => tracing::info!("Setup: nginx reloaded"),
+                _ => tracing::warn!("Setup: nginx reload failed (restart manually)"),
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            // TLS setup failed — log but don't block the overall setup
+            let msg = format!("TLS setup skipped: {}. Voice calls and screen sharing will require manual Chrome flag setup on client machines.", e);
+            tracing::warn!("Setup: {}", msg);
+            // We return Ok to not block the wizard — TLS is optional
+            Ok(())
+        }
+    }
+}
+
 // ── Release management ───────────────────────────────────────────────────────
 
 /// Check if a nucleus update is available
@@ -1308,6 +1439,39 @@ pub async fn list_service_versions(
     crate::releases::list_service_versions(&service_name)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ── Native JAR deployment ────────────────────────────────────────────────────
+
+/// Pull latest JARs from GCS for specified services
+#[tauri::command]
+pub async fn pull_jars(services: Vec<String>) -> Result<PullAllResult, String> {
+    crate::releases::pull_all_with_jres(&services)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pull latest JAR for a single service
+#[tauri::command]
+pub async fn pull_single_jar(service_name: String) -> Result<JarPullResult, String> {
+    crate::releases::pull_jar(&service_name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Check which services have newer JARs available
+#[tauri::command]
+pub async fn check_jar_updates(services: Vec<String>) -> Result<Vec<JarUpdateCheck>, String> {
+    crate::releases::check_jar_updates_available(&services)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get current deployment mode
+#[tauri::command]
+pub async fn get_deployment_mode() -> Result<String, String> {
+    let cfg = crate::config::load_config().map_err(|e| e.to_string())?;
+    Ok(format!("{:?}", cfg.deployment_mode))
 }
 
 // ── Docker update management ─────────────────────────────────────────────────
@@ -1590,4 +1754,35 @@ pub async fn upload_env_files_to_cloud() -> Result<EnvUploadResult, String> {
     crate::compose_template::upload_env_files_to_gcs(&cfg.hospital_code)
         .await
         .map_err(|e| e.user_message())
+}
+
+// ============================================================
+// TLS / Certificate Management
+// ============================================================
+
+/// Get TLS status
+#[tauri::command]
+pub async fn get_tls_status() -> Result<crate::tls::TlsStatus, String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    Ok(crate::tls::get_tls_status(&config).await)
+}
+
+/// Generate client setup script content
+#[tauri::command]
+pub async fn generate_client_setup_script() -> Result<String, String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.server_ip.is_empty() {
+        return Err("server_ip not configured".into());
+    }
+    Ok(crate::tls::generate_client_setup_script(&config.server_ip, 81, 443))
+}
+
+/// Generate nginx HTTPS config
+#[tauri::command]
+pub async fn generate_nginx_https_config() -> Result<String, String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.server_ip.is_empty() {
+        return Err("server_ip not configured".into());
+    }
+    Ok(crate::tls::generate_nginx_https_config(&config.server_ip))
 }

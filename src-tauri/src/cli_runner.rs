@@ -2,6 +2,7 @@
 //! and renders output with colored tables.
 
 use crate::cli::{BackupArgs, BackupCommands, BinlogArgs, BinlogCommands, Commands, LogFileArgs, LogFileCommands, RestoreArgs, ServiceArgs, ServiceCommands};
+use crate::releases;
 use crate::network;
 use crate::config;
 use crate::services;
@@ -26,6 +27,8 @@ pub async fn run(command: Commands) {
         Commands::Info => cmd_info().await,
         Commands::Network { speed, json } => cmd_network(speed, json).await,
         Commands::Pull => cmd_pull().await,
+        Commands::PullJars { services } => cmd_pull_jars(&services).await,
+        Commands::JarUpdates => cmd_jar_updates().await,
         Commands::Version => cmd_version(),
         Commands::Daemon => {
             // Handled in main.rs before we get here
@@ -1164,6 +1167,148 @@ async fn cmd_pull() {
         println!("  License is up to date.");
     }
     println!();
+}
+
+// ── JAR Pull ────────────────────────────────────────────────────────────────
+
+async fn cmd_pull_jars(services_arg: &str) {
+    let services: Vec<String> = if services_arg == "all" {
+        releases::all_updatable_services()
+    } else {
+        services_arg.split(',').map(|s| s.trim().to_string()).collect()
+    };
+
+    println!();
+    println!(
+        "  Pulling {} service(s)...",
+        services.len()
+    );
+    println!();
+
+    match releases::pull_all_with_jres(&services).await {
+        Ok(result) => {
+            let mut table = Table::new();
+            table.load_preset(presets::UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                Cell::new("Service").set_alignment(CellAlignment::Left),
+                Cell::new("Status").set_alignment(CellAlignment::Center),
+                Cell::new("SHA").set_alignment(CellAlignment::Left),
+                Cell::new("Size").set_alignment(CellAlignment::Right),
+                Cell::new("Message").set_alignment(CellAlignment::Left),
+            ]);
+
+            for r in &result.results {
+                let status_cell = if r.success {
+                    Cell::new("OK").fg(Color::Green)
+                } else {
+                    Cell::new("FAIL").fg(Color::Red)
+                };
+                let sha = if r.short_sha.is_empty() {
+                    "—".to_string()
+                } else {
+                    r.short_sha.clone()
+                };
+                let size = if r.size_mb > 0.0 {
+                    format!("{:.1} MB", r.size_mb)
+                } else {
+                    "—".to_string()
+                };
+                table.add_row(vec![
+                    Cell::new(&r.service),
+                    status_cell,
+                    Cell::new(&sha),
+                    Cell::new(&size),
+                    Cell::new(&r.message),
+                ]);
+            }
+
+            println!("{table}");
+            println!();
+
+            let ok_count = result.results.iter().filter(|r| r.success).count();
+            let fail_count = result.results.len() - ok_count;
+            if fail_count == 0 {
+                println!(
+                    "  All {} services pulled ({:.1} MB total)",
+                    ok_count,
+                    result.total_size_mb
+                );
+            } else {
+                println!(
+                    "  {}/{} services pulled, {} failed ({:.1} MB total)",
+                    ok_count,
+                    result.results.len(),
+                    fail_count,
+                    result.total_size_mb
+                );
+            }
+            println!();
+        }
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e.user_message());
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_jar_updates() {
+    let services = releases::all_updatable_services();
+
+    println!();
+    println!("  Checking JAR updates for {} services...", services.len());
+    println!();
+
+    match releases::check_jar_updates_available(&services).await {
+        Ok(checks) => {
+            let mut table = Table::new();
+            table.load_preset(presets::UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                Cell::new("Service").set_alignment(CellAlignment::Left),
+                Cell::new("Current SHA").set_alignment(CellAlignment::Left),
+                Cell::new("Latest SHA").set_alignment(CellAlignment::Left),
+                Cell::new("Built At").set_alignment(CellAlignment::Left),
+                Cell::new("Update?").set_alignment(CellAlignment::Center),
+            ]);
+
+            for c in &checks {
+                let current = if c.current_sha.is_empty() {
+                    "not installed".to_string()
+                } else {
+                    c.current_sha.clone()
+                };
+                let update_cell = if c.update_available {
+                    Cell::new("Yes").fg(Color::Yellow)
+                } else {
+                    Cell::new("No").fg(Color::Green)
+                };
+                table.add_row(vec![
+                    Cell::new(&c.service),
+                    Cell::new(&current),
+                    Cell::new(&c.latest_sha),
+                    Cell::new(&c.latest_built_at),
+                    update_cell,
+                ]);
+            }
+
+            println!("{table}");
+            println!();
+
+            let updates = checks.iter().filter(|c| c.update_available).count();
+            if updates > 0 {
+                println!(
+                    "  {} update(s) available. Run `puru pull-jars` to update.",
+                    updates
+                );
+            } else {
+                println!("  All services up to date.");
+            }
+            println!();
+        }
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e.user_message());
+            std::process::exit(1);
+        }
+    }
 }
 
 // ── Info ─────────────────────────────────────────────────────────────────────

@@ -23,6 +23,8 @@ export interface License {
   features: LicenseFeatures;
   limits: LicenseLimits;
   activated_at?: string;
+  machine_fingerprint?: string;
+  machine_name?: string;
 }
 
 export type LicenseStatusType = 'active' | 'expiring_soon' | 'expired' | 'unlimited';

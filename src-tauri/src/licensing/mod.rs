@@ -1,5 +1,7 @@
 //! License validation module
 
+pub mod fingerprint;
+
 use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +25,10 @@ pub struct License {
     pub limits: LicenseLimits,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activated_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,6 +231,8 @@ pub fn extract_license_from_firestore(
             features,
             limits,
             activated_at: Some(Utc::now()),
+            machine_fingerprint: None,
+            machine_name: None,
         }
     } else {
         // No license field in Firestore — create default (unlimited, standard features)
@@ -241,6 +249,8 @@ pub fn extract_license_from_firestore(
                 max_storage_gb: 100,
             },
             activated_at: Some(Utc::now()),
+            machine_fingerprint: None,
+            machine_name: None,
         }
     }
 }
@@ -268,6 +278,45 @@ pub fn extract_hospital_info(
     }
 }
 
+/// Extract registered machines from Firestore document fields.
+///
+/// Looks for `nucleus_machines` array, where each element is a map with
+/// `fingerprint` and `name` string fields.
+/// Returns a vec of `(fingerprint, name)` pairs.
+pub fn extract_registered_machines(
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+) -> Vec<(String, String)> {
+    use crate::firestore::convert;
+
+    let machines_val = match fields.get("nucleus_machines") {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+
+    let items = machines_val
+        .get("arrayValue")
+        .and_then(|a| a.get("values"))
+        .and_then(|v| v.as_array());
+
+    let items = match items {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+
+    items
+        .iter()
+        .filter_map(|entry| {
+            let map = convert::get_map_fields(entry).ok()?;
+            let fp = map.get("fingerprint").and_then(|v| convert::get_optional_string(v))?;
+            let name = map
+                .get("name")
+                .and_then(|v| convert::get_optional_string(v))
+                .unwrap_or_default();
+            Some((fp, name))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +337,8 @@ mod tests {
                 max_storage_gb: 100,
             },
             activated_at: None,
+            machine_fingerprint: None,
+            machine_name: None,
         }
     }
 

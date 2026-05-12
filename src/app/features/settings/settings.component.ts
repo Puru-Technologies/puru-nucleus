@@ -334,6 +334,54 @@ import { open } from '@tauri-apps/plugin-dialog';
               }
             </mat-card-content>
           </mat-card>
+
+          <!-- TLS / HTTPS Card -->
+          <mat-card class="settings-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>lock</mat-icon>
+              <mat-card-title>HTTPS / TLS</mat-card-title>
+              <mat-card-subtitle>Secure connection for voice calls &amp; screen share</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              @if (tlsStatus) {
+                <div class="tls-status-row">
+                  <mat-icon [class]="tlsStatus.configured ? 'status-ok' : 'status-warn'">
+                    {{ tlsStatus.configured ? 'check_circle' : 'warning' }}
+                  </mat-icon>
+                  <span>{{ tlsStatus.configured ? 'HTTPS configured' : 'HTTPS not configured' }}</span>
+                </div>
+
+                @if (tlsStatus.configured) {
+                  <div class="tls-details">
+                    <span>CA: {{ tlsStatus.ca_download_url }}</span>
+                    <span>Cert: {{ tlsStatus.cert_path }}</span>
+                  </div>
+                  <div class="tls-actions-row">
+                    <button mat-stroked-button (click)="downloadTlsScript()">
+                      <mat-icon>download</mat-icon> Client Setup Script
+                    </button>
+                    <button mat-stroked-button (click)="copyTlsNginxConfig()">
+                      <mat-icon>content_copy</mat-icon> Nginx Config
+                    </button>
+                  </div>
+                } @else {
+                  <p class="tls-hint">
+                    Requires <code>mkcert</code> installed on this server.
+                    Run setup or click below to generate certificates.
+                  </p>
+                  <button mat-raised-button color="primary" (click)="runTlsSetup()" [disabled]="tlsSettingUp">
+                    @if (tlsSettingUp) { <mat-spinner diameter="18"></mat-spinner> }
+                    <mat-icon>lock</mat-icon> Setup HTTPS
+                  </button>
+                }
+              } @else {
+                <div class="loading-inline">
+                  <mat-spinner diameter="20"></mat-spinner>
+                  <span>Checking TLS status...</span>
+                </div>
+              }
+            </mat-card-content>
+          </mat-card>
         </div>
 
         <div class="actions">
@@ -576,6 +624,47 @@ import { open } from '@tauri-apps/plugin-dialog';
       }
     }
 
+    /* ── TLS Card ───────────────────────── */
+    .tls-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 1rem;
+      font-weight: 500;
+
+      .status-ok { color: #4caf50; }
+      .status-warn { color: #ff9800; }
+    }
+
+    .tls-details {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 0.8rem;
+      color: #666;
+      font-family: monospace;
+      margin-bottom: 1rem;
+    }
+
+    .tls-actions-row {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .tls-hint {
+      font-size: 0.85rem;
+      color: #666;
+      margin: 0 0 1rem;
+
+      code {
+        background: #f5f5f5;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.85em;
+      }
+    }
+
     .actions {
       display: flex;
       gap: 0.75rem;
@@ -606,7 +695,7 @@ export class SettingsComponent implements OnInit {
   daemonBackupType = 'full';
   daemonTelemetryMinutes = 15;
 
-  syncStatus: { lastSynced: Date; pendingChanges: number } | null = null;
+  syncStatus: { lastSynced: Date | null; pendingChanges: number } | null = null;
   pulling = false;
   pullResult: PullSettingsResult | null = null;
 
@@ -615,11 +704,16 @@ export class SettingsComponent implements OnInit {
   lanValidationResult = false;
   lanValidationError = '';
 
+  // TLS
+  tlsStatus: { configured: boolean; ca_download_url?: string; cert_path?: string; key_path?: string } | null = null;
+  tlsSettingUp = false;
+
   ngOnInit(): void {
     this.loadConfig();
     this.checkDaemonStatus();
     this.loadSyncStatus();
     this.checkCredentials();
+    this.loadTlsStatus();
   }
 
   async checkCredentials(): Promise<void> {
@@ -720,9 +814,9 @@ export class SettingsComponent implements OnInit {
 
   async loadSyncStatus(): Promise<void> {
     try {
-      const status = await this.tauri.invokeSilent<{ last_synced: string; pending_count: number }>('get_sync_status');
+      const status = await this.tauri.invokeSilent<{ last_synced: string | null; pending_count: number }>('get_sync_status');
       this.syncStatus = {
-        lastSynced: new Date(status.last_synced),
+        lastSynced: status.last_synced ? new Date(status.last_synced) : null,
         pendingChanges: status.pending_count
       };
     } catch {
@@ -771,7 +865,7 @@ export class SettingsComponent implements OnInit {
       await this.tauri.invoke('validate_lan_path', { path: this.config.lan.path });
       this.lanValidationResult = true;
     } catch (error) {
-      this.lanValidationError = error as string;
+      this.lanValidationError = error instanceof Error ? error.message : String(error);
     } finally {
       this.lanValidating = false;
     }
@@ -783,6 +877,55 @@ export class SettingsComponent implements OnInit {
       this.daemonRunning = true;
       this.notification.success('Daemon restarted');
     } catch (error) {
+      // Error handled by TauriService
+    }
+  }
+
+  // ── TLS ──────────────────────────────────────────────────────────────────
+
+  async loadTlsStatus(): Promise<void> {
+    try {
+      this.tlsStatus = await this.tauri.invokeSilent<{ configured: boolean; ca_download_url?: string; cert_path?: string; key_path?: string }>('get_tls_status');
+    } catch {
+      this.tlsStatus = { configured: false };
+    }
+  }
+
+  async runTlsSetup(): Promise<void> {
+    this.tlsSettingUp = true;
+    try {
+      await this.tauri.invoke('setup_tls');
+      this.notification.success('HTTPS configured. Restart Nginx to apply.');
+      await this.loadTlsStatus();
+    } catch {
+      // Error handled by TauriService
+    } finally {
+      this.tlsSettingUp = false;
+    }
+  }
+
+  async downloadTlsScript(): Promise<void> {
+    try {
+      const script = await this.tauri.invoke<string>('generate_client_setup_script');
+      const blob = new Blob([script], { type: 'application/bat' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'puru-secure-setup.bat';
+      a.click();
+      URL.revokeObjectURL(url);
+      this.notification.success('Client setup script downloaded');
+    } catch {
+      // Error handled by TauriService
+    }
+  }
+
+  async copyTlsNginxConfig(): Promise<void> {
+    try {
+      const config = await this.tauri.invoke<string>('generate_nginx_https_config');
+      await navigator.clipboard.writeText(config);
+      this.notification.success('Nginx HTTPS config copied to clipboard');
+    } catch {
       // Error handled by TauriService
     }
   }

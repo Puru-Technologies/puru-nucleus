@@ -1,4 +1,6 @@
-//! Docker service management — real implementations using bollard
+//! Service management — dispatches between Docker and Native mode
+
+pub mod native;
 
 use bollard::container::{
     ListContainersOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
@@ -6,6 +8,8 @@ use bollard::container::{
 use bollard::Docker;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+
+use crate::config::DeploymentMode;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -379,10 +383,62 @@ async fn probe_all_health(
         .collect()
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// ── Public API (mode dispatch) ───────────────────────────────────────────────
+
+/// Get list of Puru services — dispatches based on deployment mode.
+pub async fn get_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Docker => get_docker_services().await,
+        DeploymentMode::Native => native::get_services(&config).await,
+    }
+}
+
+/// Start a service — dispatches based on deployment mode.
+pub async fn start_service(name: &str) -> Result<(), crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Docker => start_docker_service(name).await,
+        DeploymentMode::Native => native::start_service(name, &config).await,
+    }
+}
+
+/// Stop a service — dispatches based on deployment mode.
+pub async fn stop_service(name: &str) -> Result<(), crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Docker => stop_docker_service(name).await,
+        DeploymentMode::Native => native::stop_service(name, &config).await,
+    }
+}
+
+/// Restart a service — dispatches based on deployment mode.
+pub async fn restart_service(name: &str) -> Result<(), crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Docker => restart_docker_service(name).await,
+        DeploymentMode::Native => native::restart_service(name, &config).await,
+    }
+}
+
+/// Get logs — dispatches based on deployment mode.
+pub async fn get_container_logs(
+    container_name: &str,
+    tail: u64,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> Result<String, crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Docker => get_docker_container_logs(container_name, tail, since, until).await,
+        DeploymentMode::Native => native::get_logs(container_name, tail, &config).await,
+    }
+}
+
+// ── Docker implementation ───────────────────────────────────────────────────
 
 /// Get list of Puru services from Docker
-pub async fn get_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusError> {
+async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusError> {
     // Gracefully handle Docker unavailable — return empty list, not an error
     let docker = match connect_docker().await {
         Ok(d) => d,
@@ -485,7 +541,7 @@ pub async fn get_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusErr
 }
 
 /// Start a Docker container by name
-pub async fn start_service(name: &str) -> Result<(), crate::error::NucleusError> {
+async fn start_docker_service(name: &str) -> Result<(), crate::error::NucleusError> {
     let docker = connect_docker().await?;
     tracing::info!("Starting container: {}", name);
     docker
@@ -495,7 +551,7 @@ pub async fn start_service(name: &str) -> Result<(), crate::error::NucleusError>
 }
 
 /// Stop a Docker container by name (30s graceful timeout for Spring Boot services)
-pub async fn stop_service(name: &str) -> Result<(), crate::error::NucleusError> {
+async fn stop_docker_service(name: &str) -> Result<(), crate::error::NucleusError> {
     let docker = connect_docker().await?;
     tracing::info!("Stopping container: {}", name);
     docker
@@ -505,7 +561,7 @@ pub async fn stop_service(name: &str) -> Result<(), crate::error::NucleusError> 
 }
 
 /// Restart a Docker container by name (30s graceful timeout)
-pub async fn restart_service(name: &str) -> Result<(), crate::error::NucleusError> {
+async fn restart_docker_service(name: &str) -> Result<(), crate::error::NucleusError> {
     let docker = connect_docker().await?;
     tracing::info!("Restarting container: {}", name);
     docker
@@ -515,7 +571,7 @@ pub async fn restart_service(name: &str) -> Result<(), crate::error::NucleusErro
 }
 
 /// Get logs from a Docker container
-pub async fn get_container_logs(
+async fn get_docker_container_logs(
     container_name: &str,
     tail: u64,
     since: Option<i64>,

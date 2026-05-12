@@ -42,9 +42,17 @@ directories = "5.0"
 # System info
 sysinfo = "0.29"
 
+# Hardware fingerprint
+sha2 = "0.10"
+mac_address = "1.1"
+
 # Docker
 bollard = "0.15"
 futures-util = "0.3"
+
+# Process management (native mode)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # HTTP client
 reqwest = { version = "0.11", features = ["json"] }

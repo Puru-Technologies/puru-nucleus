@@ -30,6 +30,7 @@ mod network;
 mod logs;
 mod platform;
 mod remote_shell;
+mod tls;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -83,6 +84,7 @@ fn run_gui() {
             commands::restart_service,
             // License
             commands::get_license,
+            commands::get_machine_fingerprint,
             commands::activate_license,
             // Pull settings
             commands::pull_settings,
@@ -137,6 +139,12 @@ fn run_gui() {
             commands::setup_health_check,
             commands::setup_configure_backups,
             commands::setup_install_daemon,
+            commands::setup_tls,
+            // Native JAR Deployment
+            commands::pull_jars,
+            commands::pull_single_jar,
+            commands::check_jar_updates,
+            commands::get_deployment_mode,
             // Docker Updates
             commands::update_docker_service,
             commands::rollback_docker_service,
@@ -172,6 +180,10 @@ fn run_gui() {
             commands::get_env_files,
             commands::save_env_file,
             commands::upload_env_files_to_cloud,
+            // TLS
+            commands::get_tls_status,
+            commands::generate_client_setup_script,
+            commands::generate_nginx_https_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

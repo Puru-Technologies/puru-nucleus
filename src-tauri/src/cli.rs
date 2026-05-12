@@ -107,6 +107,16 @@ pub enum Commands {
     /// Pull hospital settings from cloud
     Pull,
 
+    /// Pull latest JARs from GCS (native deployment mode)
+    PullJars {
+        /// Specific service name or "all" (default: all)
+        #[arg(default_value = "all")]
+        services: String,
+    },
+
+    /// Check for available JAR updates
+    JarUpdates,
+
     /// Run in daemon mode (background service)
     Daemon,
 }

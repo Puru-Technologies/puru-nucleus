@@ -131,7 +131,7 @@ interface CredentialsStatus {
 
             <h2>Step 2: Activate</h2>
             <p class="subtitle">
-              Enter the hospital email to fetch configuration from cloud
+              Enter the hospital email and machine name to activate
             </p>
 
             <mat-form-field appearance="outline" class="full-width">
@@ -145,10 +145,31 @@ interface CredentialsStatus {
               <mat-hint>This email was used during hospital onboarding</mat-hint>
             </mat-form-field>
 
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Machine Name</mat-label>
+              <input matInput type="text"
+                     [(ngModel)]="machineName"
+                     [disabled]="activating"
+                     placeholder="Main Server"
+                     (keyup.enter)="activate()">
+              <mat-icon matPrefix>computer</mat-icon>
+              <mat-hint>A friendly name for this computer (e.g. "Main Server", "Reception PC")</mat-hint>
+            </mat-form-field>
+
+            @if (fingerprint) {
+              <div class="fingerprint-box">
+                <mat-icon>fingerprint</mat-icon>
+                <div class="fp-text">
+                  <span class="fp-label">Hardware Fingerprint</span>
+                  <code class="fp-value">{{ fingerprint }}</code>
+                </div>
+              </div>
+            }
+
             <button mat-raised-button color="primary"
                     class="activate-btn"
                     (click)="activate()"
-                    [disabled]="!email || activating">
+                    [disabled]="!email || !machineName.trim() || activating">
               @if (activating) {
                 <mat-spinner diameter="20"></mat-spinner>
                 Activating...
@@ -345,6 +366,49 @@ interface CredentialsStatus {
       }
     }
 
+    /* ── Fingerprint box ───────────────────── */
+    .fingerprint-box {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      background: #f5f5f5;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      text-align: left;
+
+      > mat-icon {
+        color: #3f51b5;
+        font-size: 22px;
+        width: 22px;
+        height: 22px;
+        flex-shrink: 0;
+        margin-top: 2px;
+      }
+
+      .fp-text {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .fp-label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #666;
+      }
+
+      .fp-value {
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        font-size: 0.7rem;
+        color: #333;
+        word-break: break-all;
+        line-height: 1.4;
+      }
+    }
+
     /* ── Activate button ───────────────────── */
     .activate-btn {
       width: 100%;
@@ -415,6 +479,8 @@ export class ActivationComponent {
 
   // Step 2 state
   email = '';
+  machineName = '';
+  fingerprint = '';
   activating = false;
   error: string | null = null;
 
@@ -429,6 +495,7 @@ export class ActivationComponent {
       this.designatedPath = status.path;
       if (status.exists) {
         this.credentialsReady = true;
+        this.loadFingerprint();
       }
     } catch {
       // First run — no config dir yet
@@ -456,6 +523,7 @@ export class ActivationComponent {
 
       await this.tauri.invoke('import_credentials_file', { sourcePath: filePath });
       this.credentialsReady = true;
+      this.loadFingerprint();
       this.notification.success('Credentials file imported');
     } catch (error) {
       this.error = String(error);
@@ -473,6 +541,7 @@ export class ActivationComponent {
     try {
       await this.tauri.invoke('save_credentials_content', { content: this.pastedJson.trim() });
       this.credentialsReady = true;
+      this.loadFingerprint();
       this.showPaste = false;
       this.notification.success('Credentials saved');
     } catch (error) {
@@ -489,14 +558,25 @@ export class ActivationComponent {
     this.error = null;
   }
 
+  private async loadFingerprint(): Promise<void> {
+    try {
+      this.fingerprint = await this.tauri.invoke<string>('get_machine_fingerprint');
+    } catch {
+      // Non-fatal — fingerprint will just not be shown
+    }
+  }
+
   async activate(): Promise<void> {
-    if (!this.email) return;
+    if (!this.email || !this.machineName.trim()) return;
 
     this.activating = true;
     this.error = null;
 
     try {
-      await this.tauri.invoke('activate_license', { email: this.email });
+      await this.tauri.invoke('activate_license', {
+        email: this.email,
+        machineName: this.machineName.trim()
+      });
       this.notification.success('Activation successful!');
       this.router.navigate(['/setup']);
     } catch (error) {

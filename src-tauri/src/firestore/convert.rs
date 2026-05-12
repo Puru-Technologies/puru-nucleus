@@ -116,3 +116,7 @@ pub fn null_value() -> Value {
 pub fn map_value(fields: serde_json::Map<String, Value>) -> Value {
     json!({"mapValue": {"fields": fields}})
 }
+
+pub fn array_value(values: Vec<Value>) -> Value {
+    json!({"arrayValue": {"values": values}})
+}

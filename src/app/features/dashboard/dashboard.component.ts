@@ -178,6 +178,15 @@ import { interval, Subscription } from 'rxjs';
                   Priority Support
                 </span>
               </div>
+              @if (license.machine_name || license.machine_fingerprint) {
+                <div class="machine-row">
+                  <mat-icon>computer</mat-icon>
+                  <span class="machine-name">{{ license.machine_name || 'Unknown' }}</span>
+                  @if (license.machine_fingerprint) {
+                    <code class="machine-fp">{{ license.machine_fingerprint.slice(0, 16) }}...</code>
+                  }
+                </div>
+              }
             } @else {
               <div class="empty-state sm">
                 <mat-icon>license</mat-icon>
@@ -611,6 +620,36 @@ import { interval, Subscription } from 'rxjs';
       &.active {
         background: var(--status-green-bg);
         color: #15803d;
+      }
+    }
+
+    /* ── Machine Row ──────────────────────────── */
+    .machine-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px 14px;
+      font-size: 0.8rem;
+
+      > mat-icon {
+        font-size: 16px;
+        width: 16px;
+        height: 16px;
+        color: var(--text-muted);
+      }
+
+      .machine-name {
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .machine-fp {
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        background: #f1f5f9;
+        padding: 2px 6px;
+        border-radius: 4px;
       }
     }
 

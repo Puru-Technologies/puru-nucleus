@@ -15,11 +15,13 @@ const UPDATABLE_SERVICES: &[&str] = &[
     "puru-xenon",
     "puru-has",
     "puru-pacs",
+    "puru-auth",
     "puru-neon",
     "puru-argon",
     "puru-comm",
     "puru-realtime",
     "puru-bridge",
+    "puru-mercury",
 ];
 
 // ── Nucleus manifest types ───────────────────────────────────────────────────
@@ -478,6 +480,545 @@ pub async fn list_service_versions(
     Ok(manifest)
 }
 
+// ── Native JAR deployment types ──────────────────────────────────────────────
+
+/// Service → Java version mapping for native mode
+const SERVICE_JAVA_VERSIONS: &[(&str, &str)] = &[
+    ("puru-xenon", "21"),
+    ("puru-has", "21"),
+    ("puru-pacs", "21"),
+    ("puru-auth", "25"),
+    ("puru-neon", "21"),
+    ("puru-comm", "21"),
+    ("puru-argon", "21"),
+    ("puru-bridge", "21"),
+    ("puru-realtime", "21"),
+    ("puru-mercury", "25"),
+];
+
+/// Metadata from Cloud Build JAR upload (meta.json)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JarBuildMeta {
+    pub service: String,
+    pub short_sha: String,
+    pub commit_sha: String,
+    pub build_id: String,
+    pub built_at: String,
+    pub jar_file: String,
+    pub original_jar: String,
+    pub java_version: String,
+    /// Only present for Angular builds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+    /// "angular" for puru-hydrogen, absent for JARs
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub build_type: Option<String>,
+}
+
+/// Result of pulling a single JAR
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JarPullResult {
+    pub service: String,
+    pub success: bool,
+    pub local_path: String,
+    pub short_sha: String,
+    pub size_mb: f64,
+    pub message: String,
+}
+
+/// Result of pulling multiple JARs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullAllResult {
+    pub results: Vec<JarPullResult>,
+    pub total_size_mb: f64,
+}
+
+/// Update check for a single service
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JarUpdateCheck {
+    pub service: String,
+    pub current_sha: String,
+    pub latest_sha: String,
+    pub latest_built_at: String,
+    pub update_available: bool,
+}
+
+/// JRE manifest from GCS (maps java_version → { platform → filename })
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JreManifest(pub std::collections::HashMap<String, std::collections::HashMap<String, String>>);
+
+/// Get Java version for a service name
+pub fn java_version_for_service(service: &str) -> Option<&'static str> {
+    SERVICE_JAVA_VERSIONS
+        .iter()
+        .find(|(s, _)| *s == service)
+        .map(|(_, v)| *v)
+}
+
+/// Resolve platform string for JRE lookup (e.g. "linux-x64")
+fn resolve_jre_platform() -> String {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let os_str = match os {
+        "macos" => "mac",
+        other => other,
+    };
+    let arch_str = match arch {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    format!("{}-{}", os_str, arch_str)
+}
+
+// ── Native JAR pull functions ───────────────────────────────────────────────
+
+/// Pull latest JAR for a single service from GCS.
+/// Downloads to jars_dir, backs up existing JAR as .bak.
+pub async fn pull_jar(service_name: &str) -> Result<JarPullResult, NucleusError> {
+    if !UPDATABLE_SERVICES.contains(&service_name) && service_name != "puru-hydrogen" {
+        return Err(NucleusError::Validation(format!(
+            "Unknown service: '{}'. Valid services: {}",
+            service_name,
+            UPDATABLE_SERVICES.join(", ")
+        )));
+    }
+
+    let cfg = config::load_config()?;
+    let cred_path = get_credentials_path()?;
+    let client = create_gcs_client(&cred_path).await?;
+
+    // Check if this is an Angular build (puru-hydrogen)
+    if service_name == "puru-hydrogen" {
+        return pull_hydrogen_inner(&client, &cfg).await;
+    }
+
+    let jars_dir = cfg.jars_dir();
+
+    // Download meta.json first
+    let meta_path = format!("jars/{}/latest/meta.json", service_name);
+    let meta_bytes = download_gcs_bytes(&client, &meta_path).await?;
+    let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
+
+    // Download JAR
+    let jar_gcs_path = format!("jars/{}/latest/{}.jar", service_name, service_name);
+    let local_jar = jars_dir.join(format!("{}.jar", service_name));
+
+    // Backup existing JAR
+    if local_jar.exists() {
+        let bak = jars_dir.join(format!("{}.jar.bak", service_name));
+        let _ = tokio::fs::rename(&local_jar, &bak).await;
+    }
+
+    let size_mb = download_gcs_to_file(&client, &jar_gcs_path, &local_jar).await?;
+
+    // Save meta locally
+    let local_meta = jars_dir.join(format!("{}.meta.json", service_name));
+    tokio::fs::write(&local_meta, &meta_bytes).await?;
+
+    tracing::info!(
+        "Pulled {} (sha: {}, {:.1} MB)",
+        service_name,
+        meta.short_sha,
+        size_mb
+    );
+
+    Ok(JarPullResult {
+        service: service_name.to_string(),
+        success: true,
+        local_path: local_jar.to_string_lossy().to_string(),
+        short_sha: meta.short_sha,
+        size_mb,
+        message: "OK".to_string(),
+    })
+}
+
+/// Pull a specific build by short SHA (for rollback).
+pub async fn pull_jar_by_sha(service_name: &str, sha: &str) -> Result<JarPullResult, NucleusError> {
+    if !UPDATABLE_SERVICES.contains(&service_name) {
+        return Err(NucleusError::Validation(format!(
+            "Unknown service: '{}'",
+            service_name
+        )));
+    }
+
+    let cfg = config::load_config()?;
+    let cred_path = get_credentials_path()?;
+    let client = create_gcs_client(&cred_path).await?;
+    let jars_dir = cfg.jars_dir();
+
+    // Download meta.json from builds/{sha}/
+    let meta_path = format!("jars/{}/builds/{}/meta.json", service_name, sha);
+    let meta_bytes = download_gcs_bytes(&client, &meta_path).await?;
+    let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
+
+    // Download JAR from builds/{sha}/
+    let jar_gcs_path = format!("jars/{}/builds/{}/{}.jar", service_name, sha, service_name);
+    let local_jar = jars_dir.join(format!("{}.jar", service_name));
+
+    // Backup existing
+    if local_jar.exists() {
+        let bak = jars_dir.join(format!("{}.jar.bak", service_name));
+        let _ = tokio::fs::rename(&local_jar, &bak).await;
+    }
+
+    let size_mb = download_gcs_to_file(&client, &jar_gcs_path, &local_jar).await?;
+
+    // Save meta locally
+    let local_meta = jars_dir.join(format!("{}.meta.json", service_name));
+    tokio::fs::write(&local_meta, &meta_bytes).await?;
+
+    tracing::info!(
+        "Pulled {} (sha: {}, {:.1} MB) [specific build]",
+        service_name,
+        meta.short_sha,
+        size_mb
+    );
+
+    Ok(JarPullResult {
+        service: service_name.to_string(),
+        success: true,
+        local_path: local_jar.to_string_lossy().to_string(),
+        short_sha: meta.short_sha,
+        size_mb,
+        message: format!("Rolled back to build {}", sha),
+    })
+}
+
+/// Pull latest JARs for multiple services.
+pub async fn pull_all_jars(services: &[String]) -> Result<PullAllResult, NucleusError> {
+    let mut results = Vec::new();
+    let mut total_size = 0.0;
+
+    for svc in services {
+        match pull_jar(svc).await {
+            Ok(r) => {
+                total_size += r.size_mb;
+                results.push(r);
+            }
+            Err(e) => {
+                results.push(JarPullResult {
+                    service: svc.clone(),
+                    success: false,
+                    local_path: String::new(),
+                    short_sha: String::new(),
+                    size_mb: 0.0,
+                    message: e.user_message(),
+                });
+            }
+        }
+    }
+
+    Ok(PullAllResult {
+        results,
+        total_size_mb: total_size,
+    })
+}
+
+/// Check which services have newer JARs available.
+pub async fn check_jar_updates_available(
+    services: &[String],
+) -> Result<Vec<JarUpdateCheck>, NucleusError> {
+    let cred_path = get_credentials_path()?;
+    let client = create_gcs_client(&cred_path).await?;
+    let cfg = config::load_config()?;
+    let jars_dir = cfg.jars_dir();
+
+    let mut checks = Vec::new();
+
+    for svc in services {
+        // Read local meta
+        let local_meta_path = jars_dir.join(format!("{}.meta.json", svc));
+        let current_sha = if local_meta_path.exists() {
+            match tokio::fs::read_to_string(&local_meta_path).await {
+                Ok(content) => serde_json::from_str::<JarBuildMeta>(&content)
+                    .map(|m| m.short_sha)
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        // Fetch remote meta
+        let remote_meta_path = format!("jars/{}/latest/meta.json", svc);
+        match download_gcs_bytes(&client, &remote_meta_path).await {
+            Ok(bytes) => match serde_json::from_slice::<JarBuildMeta>(&bytes) {
+                Ok(remote_meta) => {
+                    let update_available = current_sha.is_empty() || current_sha != remote_meta.short_sha;
+                    checks.push(JarUpdateCheck {
+                        service: svc.clone(),
+                        current_sha: current_sha.clone(),
+                        latest_sha: remote_meta.short_sha,
+                        latest_built_at: remote_meta.built_at,
+                        update_available,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse meta for {}: {}", svc, e);
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to fetch meta for {}: {}", svc, e);
+            }
+        }
+    }
+
+    Ok(checks)
+}
+
+/// Read local meta.json to get current build info.
+pub fn read_local_jar_meta(service_name: &str) -> Result<Option<JarBuildMeta>, NucleusError> {
+    let cfg = config::load_config()?;
+    let meta_path = cfg.jars_dir().join(format!("{}.meta.json", service_name));
+
+    if !meta_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&meta_path)?;
+    let meta: JarBuildMeta = serde_json::from_str(&content)?;
+    Ok(Some(meta))
+}
+
+// ── Hydrogen (Angular) pull ─────────────────────────────────────────────────
+
+/// Internal: Pull latest puru-hydrogen Angular build from GCS.
+async fn pull_hydrogen_inner(
+    client: &google_cloud_storage::client::Client,
+    cfg: &config::NucleusConfig,
+) -> Result<JarPullResult, NucleusError> {
+    let nginx_dir = cfg.nginx_html_dir();
+
+    // Download meta.json
+    let meta_path = "jars/puru-hydrogen/latest/meta.json";
+    let meta_bytes = download_gcs_bytes(client, meta_path).await?;
+    let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
+
+    // Download tarball
+    let tarball_path = "jars/puru-hydrogen/latest/puru-hydrogen.tar.gz";
+    let tmp_tarball = std::env::temp_dir().join("puru-hydrogen.tar.gz");
+    let size_mb = download_gcs_to_file(client, tarball_path, &tmp_tarball).await?;
+
+    // Backup existing html dir
+    if nginx_dir.exists() {
+        let bak = nginx_dir.with_extension("bak");
+        let _ = tokio::fs::rename(&nginx_dir, &bak).await;
+    }
+
+    // Create dir and extract tarball
+    tokio::fs::create_dir_all(&nginx_dir).await?;
+
+    let tar_output = tokio::process::Command::new("tar")
+        .args([
+            "-xzf",
+            &tmp_tarball.to_string_lossy(),
+            "-C",
+            &nginx_dir.to_string_lossy(),
+            "--no-same-owner",
+        ])
+        .output()
+        .await?;
+
+    if !tar_output.status.success() {
+        // Restore backup on failure
+        let bak = nginx_dir.with_extension("bak");
+        if bak.exists() {
+            let _ = tokio::fs::remove_dir_all(&nginx_dir).await;
+            let _ = tokio::fs::rename(&bak, &nginx_dir).await;
+        }
+        let stderr = String::from_utf8_lossy(&tar_output.stderr);
+        return Err(NucleusError::Internal(format!(
+            "Failed to extract puru-hydrogen tarball: {}", stderr
+        )));
+    }
+
+    // Download nginx config template
+    match download_gcs_bytes(client, "templates/nginx/puru-hydrogen.conf").await {
+        Ok(nginx_conf) => {
+            let conf_path = PathBuf::from("/etc/nginx/conf.d/puru.conf");
+            if let Some(parent) = conf_path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            tokio::fs::write(&conf_path, &nginx_conf).await?;
+
+            // Reload nginx
+            let _ = tokio::process::Command::new("nginx")
+                .args(["-s", "reload"])
+                .status()
+                .await;
+        }
+        Err(e) => {
+            tracing::warn!("Failed to download nginx config template: {}", e);
+        }
+    }
+
+    // Save meta locally
+    let jars_dir = cfg.jars_dir();
+    let _ = tokio::fs::create_dir_all(&jars_dir).await;
+    let local_meta = jars_dir.join("puru-hydrogen.meta.json");
+    tokio::fs::write(&local_meta, &meta_bytes).await?;
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&tmp_tarball).await;
+
+    tracing::info!(
+        "Pulled puru-hydrogen (sha: {}, {:.1} MB)",
+        meta.short_sha,
+        size_mb
+    );
+
+    Ok(JarPullResult {
+        service: "puru-hydrogen".to_string(),
+        success: true,
+        local_path: nginx_dir.to_string_lossy().to_string(),
+        short_sha: meta.short_sha,
+        size_mb,
+        message: "OK".to_string(),
+    })
+}
+
+// ── JRE management ──────────────────────────────────────────────────────────
+
+/// Download and extract JRE for given java version if not already present.
+pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
+    let cfg = config::load_config()?;
+    let jres_dir = cfg.jres_dir();
+    let jre_dir = jres_dir.join(format!("temurin-{}", java_version));
+    let java_bin = jre_dir.join("bin").join("java");
+
+    // Already installed?
+    if java_bin.exists() {
+        return Ok(java_bin);
+    }
+
+    tracing::info!("JRE {} not found locally, downloading...", java_version);
+
+    let cred_path = get_credentials_path()?;
+    let client = create_gcs_client(&cred_path).await?;
+
+    // Download manifest
+    let manifest_bytes = download_gcs_bytes(&client, "jres/jre-manifest.json").await?;
+    let manifest: JreManifest = serde_json::from_slice(&manifest_bytes)?;
+
+    // Resolve platform
+    let platform = resolve_jre_platform();
+    let filename = manifest
+        .0
+        .get(java_version)
+        .and_then(|platforms| platforms.get(&platform))
+        .ok_or_else(|| {
+            NucleusError::NotFound(format!(
+                "No JRE found for Java {} on platform {}",
+                java_version, platform
+            ))
+        })?;
+
+    // Download tarball
+    let gcs_path = format!("jres/{}", filename);
+    let tmp_tarball = std::env::temp_dir().join(filename);
+    let size_mb = download_gcs_to_file(&client, &gcs_path, &tmp_tarball).await?;
+
+    tracing::info!(
+        "Downloaded JRE {} ({:.1} MB), extracting...",
+        java_version,
+        size_mb
+    );
+
+    // Extract — tarballs typically have a top-level dir like jdk-21.0.x-jre/
+    // We extract to a temp dir and move the contents into our target dir
+    let tmp_extract = std::env::temp_dir().join(format!("jre-extract-{}", java_version));
+    let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
+    tokio::fs::create_dir_all(&tmp_extract).await?;
+
+    let tar_output = tokio::process::Command::new("tar")
+        .args([
+            "-xzf",
+            &tmp_tarball.to_string_lossy(),
+            "-C",
+            &tmp_extract.to_string_lossy(),
+            "--no-same-owner",
+        ])
+        .output()
+        .await?;
+
+    if !tar_output.status.success() {
+        let stderr = String::from_utf8_lossy(&tar_output.stderr);
+        return Err(NucleusError::Internal(format!(
+            "Failed to extract JRE {} tarball: {}",
+            java_version, stderr
+        )));
+    }
+
+    // Find the extracted directory (there should be exactly one top-level dir)
+    let mut entries = tokio::fs::read_dir(&tmp_extract).await?;
+    let extracted_dir = if let Some(entry) = entries.next_entry().await? {
+        entry.path()
+    } else {
+        return Err(NucleusError::Internal(
+            "JRE tarball extracted empty".into(),
+        ));
+    };
+
+    // Move to final location
+    let parent = jre_dir.parent().ok_or_else(|| {
+        NucleusError::Internal(format!("Invalid JRE directory: {}", jre_dir.display()))
+    })?;
+    tokio::fs::create_dir_all(parent).await?;
+    // Remove existing if corrupt
+    let _ = tokio::fs::remove_dir_all(&jre_dir).await;
+    tokio::fs::rename(&extracted_dir, &jre_dir).await?;
+
+    // Cleanup
+    let _ = tokio::fs::remove_file(&tmp_tarball).await;
+    let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
+
+    // Verify java binary exists
+    if !java_bin.exists() {
+        return Err(NucleusError::Internal(format!(
+            "JRE {} extracted but java binary not found at {}",
+            java_version,
+            java_bin.display()
+        )));
+    }
+
+    tracing::info!("JRE {} installed at {}", java_version, jre_dir.display());
+    Ok(java_bin)
+}
+
+/// Pull JARs + ensure required JREs are present.
+pub async fn pull_all_with_jres(services: &[String]) -> Result<PullAllResult, NucleusError> {
+    let result = pull_all_jars(services).await?;
+
+    // Collect unique java versions needed from successfully pulled services
+    let mut java_versions = std::collections::HashSet::new();
+    for r in &result.results {
+        if r.success {
+            if let Ok(Some(meta)) = read_local_jar_meta(&r.service) {
+                java_versions.insert(meta.java_version);
+            } else if let Some(ver) = java_version_for_service(&r.service) {
+                java_versions.insert(ver.to_string());
+            }
+        }
+    }
+
+    // Download missing JREs
+    for version in &java_versions {
+        if let Err(e) = ensure_jre(version).await {
+            tracing::warn!("Failed to ensure JRE {}: {}", version, e);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Get list of all updatable service names (for CLI/UI)
+pub fn all_updatable_services() -> Vec<String> {
+    let mut services: Vec<String> = UPDATABLE_SERVICES.iter().map(|s| s.to_string()).collect();
+    services.push("puru-hydrogen".to_string());
+    services
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -546,5 +1087,28 @@ mod tests {
         assert_eq!(image_to_service_name("mysql:8.0"), None);
         assert_eq!(image_to_service_name("rabbitmq:3-management"), None);
         assert_eq!(image_to_service_name("redis:7"), None);
+    }
+
+    #[test]
+    fn test_service_java_versions_in_sync_with_updatable() {
+        // Every service in UPDATABLE_SERVICES must have a Java version mapping
+        for svc in UPDATABLE_SERVICES {
+            if *svc == "puru-hydrogen" {
+                continue; // Angular, no Java needed
+            }
+            assert!(
+                java_version_for_service(svc).is_some(),
+                "Service {} is in UPDATABLE_SERVICES but missing from SERVICE_JAVA_VERSIONS",
+                svc
+            );
+        }
+        // Every service in SERVICE_JAVA_VERSIONS must be in UPDATABLE_SERVICES
+        for (svc, _) in SERVICE_JAVA_VERSIONS {
+            assert!(
+                UPDATABLE_SERVICES.contains(svc),
+                "Service {} is in SERVICE_JAVA_VERSIONS but missing from UPDATABLE_SERVICES",
+                svc
+            );
+        }
     }
 }

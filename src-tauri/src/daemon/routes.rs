@@ -432,10 +432,32 @@ pub async fn pull_settings() -> Result<Json<crate::commands::PullSettingsResult>
         .await
         .map_err(|e| internal_err(e.user_message()))?;
 
-    let (hospital_info, pulled_license) = client
-        .pull_hospital_settings(&config.hospital_code)
+    let doc = client
+        .get_hospital(&config.hospital_code)
         .await
         .map_err(|e| internal_err(e.user_message()))?;
+
+    let hospital_name = doc
+        .fields
+        .get("name")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+        .unwrap_or_else(|| config.hospital_code.clone());
+
+    let hospital_info = crate::licensing::extract_hospital_info(&doc.fields);
+    let mut pulled_license =
+        crate::licensing::extract_license_from_firestore(&doc.fields, &hospital_name);
+
+    // Check machine registration
+    let machines = crate::licensing::extract_registered_machines(&doc.fields);
+    let current_fp = crate::licensing::fingerprint::get_cached_fingerprint().ok();
+    let machine_registered = if machines.is_empty() {
+        true
+    } else {
+        current_fp
+            .as_ref()
+            .map(|fp| machines.iter().any(|(m_fp, _)| m_fp == fp))
+            .unwrap_or(false)
+    };
 
     let current_license = crate::licensing::load_license()
         .map_err(|e| internal_err(e.user_message()))?;
@@ -444,13 +466,21 @@ pub async fn pull_settings() -> Result<Json<crate::commands::PullSettingsResult>
         Some(current) => {
             current.valid_till != pulled_license.valid_till
                 || current.features.binlog_shipping != pulled_license.features.binlog_shipping
-                || current.features.point_in_time_recovery != pulled_license.features.point_in_time_recovery
+                || current.features.point_in_time_recovery
+                    != pulled_license.features.point_in_time_recovery
                 || current.features.priority_support != pulled_license.features.priority_support
-                || current.limits.backup_retention_days != pulled_license.limits.backup_retention_days
+                || current.limits.backup_retention_days
+                    != pulled_license.limits.backup_retention_days
                 || current.limits.max_storage_gb != pulled_license.limits.max_storage_gb
         }
         None => true,
     };
+
+    // Preserve local machine fields
+    if let Some(ref current) = current_license {
+        pulled_license.machine_fingerprint = current.machine_fingerprint.clone();
+        pulled_license.machine_name = current.machine_name.clone();
+    }
 
     if license_changed {
         crate::licensing::save_license(&pulled_license)
@@ -461,6 +491,7 @@ pub async fn pull_settings() -> Result<Json<crate::commands::PullSettingsResult>
         hospital_info,
         license: pulled_license,
         license_changed,
+        machine_registered,
     }))
 }
 
@@ -479,6 +510,40 @@ pub async fn network_speed_test() -> Result<Json<crate::network::SpeedTestResult
         .map(Json)
         .map_err(|e| internal_err(e.user_message()))
 }
+
+// ── Native JAR Deployment ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PullJarsRequest {
+    #[serde(default)]
+    pub services: Option<Vec<String>>,
+}
+
+/// POST /api/jars/pull — pull latest JARs from GCS
+pub async fn pull_jars(
+    Json(body): Json<PullJarsRequest>,
+) -> Result<Json<crate::releases::PullAllResult>, (StatusCode, String)> {
+    let services = body
+        .services
+        .unwrap_or_else(crate::releases::all_updatable_services);
+
+    crate::releases::pull_all_with_jres(&services)
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
+/// GET /api/jars/updates — check for available JAR updates
+pub async fn check_jar_updates() -> Result<Json<Vec<crate::releases::JarUpdateCheck>>, (StatusCode, String)> {
+    let services = crate::releases::all_updatable_services();
+
+    crate::releases::check_jar_updates_available(&services)
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
+// ── LAN Binlog ──────────────────────────────────────────────────────────────
 
 /// POST /api/lan/binlog/ship — ship binlog files to LAN
 pub async fn ship_binlogs_lan() -> Result<Json<crate::backup::binlog::BinlogShipResult>, (StatusCode, String)> {

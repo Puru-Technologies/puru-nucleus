@@ -3,6 +3,20 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Deployment mode — Docker containers vs native JAR processes
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeploymentMode {
+    Docker,
+    Native,
+}
+
+impl Default for DeploymentMode {
+    fn default() -> Self {
+        Self::Docker
+    }
+}
+
 /// Main nucleus configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +33,10 @@ pub struct NucleusConfig {
     pub mysql_password: String,
     pub auto_update_enabled: bool,
     pub release_channel: String,
+    pub deployment_mode: DeploymentMode,
+    pub jars_dir: Option<String>,
+    pub jres_dir: Option<String>,
+    pub native_logs_dir: Option<String>,
     pub daemon: Option<DaemonConfig>,
     pub lan: LanConfig,
 }
@@ -97,9 +115,49 @@ impl Default for NucleusConfig {
             mysql_password: String::new(),
             auto_update_enabled: true,
             release_channel: "stable".to_string(),
+            deployment_mode: DeploymentMode::default(),
+            jars_dir: None,
+            jres_dir: None,
+            native_logs_dir: None,
             daemon: None,
             lan: LanConfig::default(),
         }
+    }
+}
+
+impl NucleusConfig {
+    /// Resolved JARs directory (default: /opt/puru/jars)
+    pub fn jars_dir(&self) -> PathBuf {
+        self.jars_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/puru/jars"))
+    }
+
+    /// Resolved JREs directory (default: /opt/puru/jres)
+    pub fn jres_dir(&self) -> PathBuf {
+        self.jres_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/puru/jres"))
+    }
+
+    /// Resolved native logs directory (default: /opt/puru/logs)
+    pub fn native_logs_dir(&self) -> PathBuf {
+        self.native_logs_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/puru/logs"))
+    }
+
+    /// Resolved env files directory (default: /opt/puru/env)
+    pub fn env_dir(&self) -> PathBuf {
+        PathBuf::from("/opt/puru/env")
+    }
+
+    /// Resolved nginx html directory (default: /opt/puru/nginx/html)
+    pub fn nginx_html_dir(&self) -> PathBuf {
+        PathBuf::from("/opt/puru/nginx/html")
     }
 }
 

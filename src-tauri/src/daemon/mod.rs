@@ -79,6 +79,9 @@ pub async fn run_daemon() {
         // Network
         .route("/api/network", get(routes::network_check))
         .route("/api/network/speedtest", post(routes::network_speed_test))
+        // Native JAR deployment
+        .route("/api/jars/pull", post(routes::pull_jars))
+        .route("/api/jars/updates", get(routes::check_jar_updates))
         // LAN binlog
         .route("/api/lan/binlog/ship", post(routes::ship_binlogs_lan))
         // Middleware

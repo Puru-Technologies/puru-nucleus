@@ -266,6 +266,16 @@ impl FirestoreClient {
             boolean_value(daemon_info.scheduled_backups_enabled),
         );
 
+        // Machine fingerprint (from local license, if available)
+        if let Ok(Some(license)) = crate::licensing::load_license() {
+            if let Some(ref fp) = license.machine_fingerprint {
+                nucleus_fields.insert("machine_fingerprint".into(), string_value(fp));
+            }
+            if let Some(ref name) = license.machine_name {
+                nucleus_fields.insert("machine_name".into(), string_value(name));
+            }
+        }
+
         // Services map: { "Xenon (Backend)": { status: "running", container_name: "backend" } }
         let mut services_map = serde_json::Map::new();
         for svc in services {
@@ -331,6 +341,85 @@ impl FirestoreClient {
         });
 
         queries::create_document(&self.http, &token, &parent, "alerts", fields).await
+    }
+
+    /// Register a machine in the hospital's `nucleus_machines` array.
+    ///
+    /// Reads the hospital doc, checks if the fingerprint already exists in the array,
+    /// and either updates the existing entry or appends a new one.
+    pub async fn register_machine(
+        &self,
+        code: &str,
+        fingerprint: &str,
+        machine_name: &str,
+    ) -> Result<(), NucleusError> {
+        let doc = self.get_hospital(code).await?;
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut machines: Vec<serde_json::Value> = Vec::new();
+        let mut found = false;
+
+        // Rebuild the array, updating the matching entry if found
+        if let Some(arr_val) = doc.fields.get("nucleus_machines") {
+            if let Some(items) = arr_val
+                .get("arrayValue")
+                .and_then(|a| a.get("values"))
+                .and_then(|v| v.as_array())
+            {
+                for item in items {
+                    let item_fp = convert::get_map_fields(item)
+                        .ok()
+                        .and_then(|m| m.get("fingerprint"))
+                        .and_then(|v| convert::get_optional_string(v));
+
+                    if item_fp.as_deref() == Some(fingerprint) {
+                        // Update existing entry
+                        found = true;
+                        let mut entry = serde_json::Map::new();
+                        entry.insert("fingerprint".into(), string_value(fingerprint));
+                        entry.insert("name".into(), string_value(machine_name));
+                        // Preserve original activated_at if present
+                        let activated_at = convert::get_map_fields(item)
+                            .ok()
+                            .and_then(|m| m.get("activated_at"))
+                            .and_then(|v| convert::get_optional_timestamp(v));
+                        entry.insert(
+                            "activated_at".into(),
+                            timestamp_value(activated_at.as_deref().unwrap_or(&now)),
+                        );
+                        entry.insert("last_seen_at".into(), timestamp_value(&now));
+                        machines.push(map_value(entry));
+                    } else {
+                        machines.push(item.clone());
+                    }
+                }
+            }
+        }
+
+        // Append new entry if not found
+        if !found {
+            let mut entry = serde_json::Map::new();
+            entry.insert("fingerprint".into(), string_value(fingerprint));
+            entry.insert("name".into(), string_value(machine_name));
+            entry.insert("activated_at".into(), timestamp_value(&now));
+            entry.insert("last_seen_at".into(), timestamp_value(&now));
+            machines.push(map_value(entry));
+        }
+
+        let fields = json!({
+            "nucleus_machines": convert::array_value(machines),
+        });
+
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            fields,
+            &["nucleus_machines"],
+        )
+        .await
     }
 
     /// Pull hospital settings (info + license) from Firestore.
