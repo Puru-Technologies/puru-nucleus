@@ -1,5 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { resetLicenseCache } from '../../core/guards/init.guard';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatIconModule } from '@angular/material/icon';
@@ -1174,6 +1175,7 @@ export class SettingsComponent implements OnInit {
     this.resetting = true;
     try {
       await this.tauri.invoke('reset_activation');
+      resetLicenseCache();
       this.notification.success('Activation reset. Redirecting to activation...');
       setTimeout(() => window.location.reload(), 1500);
     } catch (error) {
