@@ -97,7 +97,7 @@ pub async fn status() -> Result<ServiceStatus, String> {
         });
     }
 
-    let active_output = tokio::process::Command::new("systemctl")
+    let active_output = crate::process::silent_cmd("systemctl")
         .args(["is-active", SERVICE_NAME])
         .output()
         .await
@@ -105,7 +105,7 @@ pub async fn status() -> Result<ServiceStatus, String> {
     let active_str = String::from_utf8_lossy(&active_output.stdout).trim().to_string();
     let running = active_str == "active";
 
-    let enabled_output = tokio::process::Command::new("systemctl")
+    let enabled_output = crate::process::silent_cmd("systemctl")
         .args(["is-enabled", SERVICE_NAME])
         .output()
         .await
@@ -115,7 +115,7 @@ pub async fn status() -> Result<ServiceStatus, String> {
 
     // Try to get PID from systemctl show
     let pid = if running {
-        let show_output = tokio::process::Command::new("systemctl")
+        let show_output = crate::process::silent_cmd("systemctl")
             .args(["show", SERVICE_NAME, "--property=MainPID", "--value"])
             .output()
             .await
@@ -144,7 +144,7 @@ pub async fn status() -> Result<ServiceStatus, String> {
 
 /// Helper: run systemctl with args, returning error on non-zero exit.
 async fn run_systemctl(args: &[&str]) -> Result<(), String> {
-    let output = tokio::process::Command::new("systemctl")
+    let output = crate::process::silent_cmd("systemctl")
         .args(args)
         .output()
         .await

@@ -47,7 +47,7 @@ pub async fn install() -> Result<ServiceResult, String> {
         .map_err(|e| format!("Failed to write plist (run as root?): {}", e))?;
 
     // Load the daemon
-    let output = tokio::process::Command::new("launchctl")
+    let output = crate::process::silent_cmd("launchctl")
         .args(["load", PLIST_PATH])
         .output()
         .await
@@ -69,7 +69,7 @@ pub async fn install() -> Result<ServiceResult, String> {
 /// Unload and remove the launchd plist.
 pub async fn uninstall() -> Result<ServiceResult, String> {
     // Unload if loaded (ignore errors)
-    let _ = tokio::process::Command::new("launchctl")
+    let _ = crate::process::silent_cmd("launchctl")
         .args(["unload", PLIST_PATH])
         .output()
         .await;
@@ -87,7 +87,7 @@ pub async fn uninstall() -> Result<ServiceResult, String> {
 
 /// Start the launch daemon.
 pub async fn start() -> Result<ServiceResult, String> {
-    let output = tokio::process::Command::new("launchctl")
+    let output = crate::process::silent_cmd("launchctl")
         .args(["start", LABEL])
         .output()
         .await
@@ -106,7 +106,7 @@ pub async fn start() -> Result<ServiceResult, String> {
 
 /// Stop the launch daemon.
 pub async fn stop() -> Result<ServiceResult, String> {
-    let output = tokio::process::Command::new("launchctl")
+    let output = crate::process::silent_cmd("launchctl")
         .args(["stop", LABEL])
         .output()
         .await
@@ -138,7 +138,7 @@ pub async fn status() -> Result<ServiceStatus, String> {
     }
 
     // `launchctl list <label>` returns: PID\tLastExitStatus\tLabel
-    let output = tokio::process::Command::new("launchctl")
+    let output = crate::process::silent_cmd("launchctl")
         .args(["list", LABEL])
         .output()
         .await

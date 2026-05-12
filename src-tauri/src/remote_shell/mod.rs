@@ -203,14 +203,14 @@ pub async fn execute_command(command: &str) -> Result<ShellResult, NucleusError>
     let output = {
         #[cfg(unix)]
         {
-            tokio::process::Command::new("sh")
+            crate::process::silent_cmd("sh")
                 .args(["-c", &trimmed])
                 .output()
                 .await
         }
         #[cfg(windows)]
         {
-            tokio::process::Command::new("cmd")
+            crate::process::silent_cmd("cmd")
                 .args(["/C", &trimmed])
                 .output()
                 .await

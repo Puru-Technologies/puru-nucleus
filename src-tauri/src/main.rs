@@ -29,6 +29,7 @@ mod messaging;
 mod network;
 mod logs;
 mod platform;
+mod process;
 mod remote_shell;
 mod tls;
 

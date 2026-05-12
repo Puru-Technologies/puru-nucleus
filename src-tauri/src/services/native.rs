@@ -157,7 +157,7 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     let env_vars = load_env_files(config, name);
 
     // Spawn process
-    let child = tokio::process::Command::new(&java_bin)
+    let child = crate::process::silent_cmd(&java_bin.to_string_lossy())
         .args(["-jar", &jar.to_string_lossy()])
         .envs(env_vars)
         .stdout(log_file)

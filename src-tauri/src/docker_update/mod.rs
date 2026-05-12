@@ -182,7 +182,7 @@ async fn run_compose_command(compose_path: &str, args: &[&str]) -> Result<(), Nu
     let mut v2_args = vec!["compose", "-f", compose_path];
     v2_args.extend_from_slice(args);
 
-    let output = tokio::process::Command::new("docker")
+    let output = crate::process::silent_cmd("docker")
         .args(&v2_args)
         .output()
         .await;
@@ -196,7 +196,7 @@ async fn run_compose_command(compose_path: &str, args: &[&str]) -> Result<(), Nu
     let mut v1_args = vec!["-f", compose_path];
     v1_args.extend_from_slice(args);
 
-    let output = tokio::process::Command::new("docker-compose")
+    let output = crate::process::silent_cmd("docker-compose")
         .args(&v1_args)
         .output()
         .await
@@ -279,7 +279,7 @@ pub async fn update_service(
     std::fs::copy(compose_path, &bak_path)?;
 
     // 5) Docker pull the new image
-    let pull_output = tokio::process::Command::new("docker")
+    let pull_output = crate::process::silent_cmd("docker")
         .args(["pull", &new_image])
         .output()
         .await

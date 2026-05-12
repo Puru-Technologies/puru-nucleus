@@ -770,7 +770,7 @@ async fn check_docker_prereq() -> PrerequisiteStatus {
 
 async fn check_compose_prereq() -> PrerequisiteStatus {
     // Try V2 plugin first: docker compose version --short
-    if let Ok(output) = tokio::process::Command::new("docker")
+    if let Ok(output) = crate::process::silent_cmd("docker")
         .args(["compose", "version", "--short"])
         .output()
         .await
@@ -788,7 +788,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
     }
 
     // Fallback to V1 standalone: docker-compose --version
-    if let Ok(output) = tokio::process::Command::new("docker-compose")
+    if let Ok(output) = crate::process::silent_cmd("docker-compose")
         .arg("--version")
         .output()
         .await
@@ -814,7 +814,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
 
 async fn check_mysql_prereq() -> PrerequisiteStatus {
     // Try host-installed MySQL
-    if let Ok(output) = tokio::process::Command::new("mysql")
+    if let Ok(output) = crate::process::silent_cmd("mysql")
         .arg("--version")
         .output()
         .await
@@ -873,7 +873,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
 
 async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
     // Try host-installed RabbitMQ
-    if let Ok(output) = tokio::process::Command::new("rabbitmqctl")
+    if let Ok(output) = crate::process::silent_cmd("rabbitmqctl")
         .arg("version")
         .output()
         .await

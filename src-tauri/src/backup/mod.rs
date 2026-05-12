@@ -421,7 +421,7 @@ async fn discover_events(
 async fn find_mysql_container() -> Option<String> {
     let candidates = ["mysql", "puru-mysql", "db", "puru-db"];
     for name in &candidates {
-        let output = tokio::process::Command::new("docker")
+        let output = crate::process::silent_cmd("docker")
             .args(["inspect", "--format", "{{.State.Running}}", name])
             .output()
             .await;
@@ -436,7 +436,7 @@ async fn find_mysql_container() -> Option<String> {
 
 /// Check if mysqldump is available locally.
 async fn has_local_mysqldump() -> bool {
-    tokio::process::Command::new("mysqldump")
+    crate::process::silent_cmd("mysqldump")
         .arg("--version")
         .output()
         .await
@@ -476,7 +476,7 @@ async fn dump_table(
         args.insert(5, format!("--result-file={}", output_path.display()));
         // Remove -p flag, use env var instead
         args.retain(|a| !a.starts_with("-p") || a.starts_with("-P"));
-        tokio::process::Command::new("mysqldump")
+        crate::process::silent_cmd("mysqldump")
             .env("MYSQL_PWD", &config.mysql_password)
             .args(&args)
             .output()
@@ -513,7 +513,7 @@ async fn dump_table(
         inner_args.push(table.to_string());
         docker_args.extend(inner_args);
 
-        let result = tokio::process::Command::new("docker")
+        let result = crate::process::silent_cmd("docker")
             .args(&docker_args)
             .output()
             .await
@@ -927,7 +927,7 @@ async fn run_mysql_restore(
         let mut args = mysql_args.clone();
         args.retain(|a| !a.starts_with("-p") || a.starts_with("-P"));
         args[0] = format!("-h{}", config.mysql_host);
-        tokio::process::Command::new("mysql")
+        crate::process::silent_cmd("mysql")
             .env("MYSQL_PWD", &config.mysql_password)
             .args(&args)
             .stdin(std::process::Stdio::piped())
@@ -943,7 +943,7 @@ async fn run_mysql_restore(
         })?;
         let mut docker_args = vec!["exec".to_string(), "-i".to_string(), container, "mysql".to_string()];
         docker_args.extend(mysql_args);
-        tokio::process::Command::new("docker")
+        crate::process::silent_cmd("docker")
             .args(&docker_args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -971,7 +971,7 @@ async fn run_mysql_restore(
 
 /// Check if mysql client is available locally.
 async fn has_local_mysql() -> bool {
-    tokio::process::Command::new("mysql")
+    crate::process::silent_cmd("mysql")
         .arg("--version")
         .output()
         .await
@@ -986,7 +986,7 @@ async fn run_mysql_command(
     sql: &str,
 ) -> Result<(), NucleusError> {
     let output = if has_local_mysql().await {
-        tokio::process::Command::new("mysql")
+        crate::process::silent_cmd("mysql")
             .env("MYSQL_PWD", &config.mysql_password)
             .args([
                 &format!("-h{}", config.mysql_host),
@@ -1004,7 +1004,7 @@ async fn run_mysql_command(
                 "mysql client not found locally and no running MySQL Docker container found.".to_string()
             )
         })?;
-        tokio::process::Command::new("docker")
+        crate::process::silent_cmd("docker")
             .args([
                 "exec", &container, "mysql",
                 &format!("-h127.0.0.1"),

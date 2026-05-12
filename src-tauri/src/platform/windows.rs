@@ -10,7 +10,7 @@ pub async fn install() -> Result<ServiceResult, String> {
     let exe_path = get_exe_path()?;
     let bin_path = format!("\"{}\" daemon", exe_path);
 
-    let output = tokio::process::Command::new("sc.exe")
+    let output = crate::process::silent_cmd("sc.exe")
         .args([
             "create",
             SERVICE_NAME,
@@ -39,7 +39,7 @@ pub async fn install() -> Result<ServiceResult, String> {
     }
 
     // Set description
-    let _ = tokio::process::Command::new("sc.exe")
+    let _ = crate::process::silent_cmd("sc.exe")
         .args([
             "description",
             SERVICE_NAME,
@@ -49,7 +49,7 @@ pub async fn install() -> Result<ServiceResult, String> {
         .await;
 
     // Configure recovery: restart on failure
-    let _ = tokio::process::Command::new("sc.exe")
+    let _ = crate::process::silent_cmd("sc.exe")
         .args([
             "failure",
             SERVICE_NAME,
@@ -71,7 +71,7 @@ pub async fn install() -> Result<ServiceResult, String> {
 /// Remove the Windows service.
 pub async fn uninstall() -> Result<ServiceResult, String> {
     // Stop first (ignore errors)
-    let _ = tokio::process::Command::new("sc.exe")
+    let _ = crate::process::silent_cmd("sc.exe")
         .args(["stop", SERVICE_NAME])
         .output()
         .await;
@@ -79,7 +79,7 @@ pub async fn uninstall() -> Result<ServiceResult, String> {
     // Brief pause to let it stop
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let output = tokio::process::Command::new("sc.exe")
+    let output = crate::process::silent_cmd("sc.exe")
         .args(["delete", SERVICE_NAME])
         .output()
         .await
@@ -102,7 +102,7 @@ pub async fn uninstall() -> Result<ServiceResult, String> {
 
 /// Start the Windows service.
 pub async fn start() -> Result<ServiceResult, String> {
-    let output = tokio::process::Command::new("sc.exe")
+    let output = crate::process::silent_cmd("sc.exe")
         .args(["start", SERVICE_NAME])
         .output()
         .await
@@ -126,7 +126,7 @@ pub async fn start() -> Result<ServiceResult, String> {
 
 /// Stop the Windows service.
 pub async fn stop() -> Result<ServiceResult, String> {
-    let output = tokio::process::Command::new("sc.exe")
+    let output = crate::process::silent_cmd("sc.exe")
         .args(["stop", SERVICE_NAME])
         .output()
         .await
@@ -150,7 +150,7 @@ pub async fn stop() -> Result<ServiceResult, String> {
 
 /// Query Windows service status via `sc.exe query`.
 pub async fn status() -> Result<ServiceStatus, String> {
-    let output = tokio::process::Command::new("sc.exe")
+    let output = crate::process::silent_cmd("sc.exe")
         .args(["query", SERVICE_NAME])
         .output()
         .await
@@ -184,7 +184,7 @@ pub async fn status() -> Result<ServiceStatus, String> {
         });
 
     // Check if auto-start
-    let qc_output = tokio::process::Command::new("sc.exe")
+    let qc_output = crate::process::silent_cmd("sc.exe")
         .args(["qc", SERVICE_NAME])
         .output()
         .await

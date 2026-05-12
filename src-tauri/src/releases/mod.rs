@@ -417,7 +417,7 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
 
     match ext {
         "deb" => {
-            let output = tokio::process::Command::new("sudo")
+            let output = crate::process::silent_cmd("sudo")
                 .args(["dpkg", "-i", file_path])
                 .output()
                 .await
@@ -429,7 +429,7 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
             }
 
             // Restart the service after install
-            let _ = tokio::process::Command::new("sudo")
+            let _ = crate::process::silent_cmd("sudo")
                 .args(["systemctl", "restart", "puru-nucleus"])
                 .output()
                 .await;
@@ -437,7 +437,7 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
             Ok("Update installed and service restarted".to_string())
         }
         "msi" => {
-            let output = tokio::process::Command::new("msiexec")
+            let output = crate::process::silent_cmd("msiexec")
                 .args(["/i", file_path, "/quiet", "/norestart"])
                 .output()
                 .await
@@ -452,12 +452,12 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
             }
 
             // Restart the service after install
-            let _ = tokio::process::Command::new("sc.exe")
+            let _ = crate::process::silent_cmd("sc.exe")
                 .args(["stop", "PuruNucleus"])
                 .output()
                 .await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let _ = tokio::process::Command::new("sc.exe")
+            let _ = crate::process::silent_cmd("sc.exe")
                 .args(["start", "PuruNucleus"])
                 .output()
                 .await;
@@ -466,7 +466,7 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
         }
         "dmg" => {
             // macOS: just open the DMG, user installs manually
-            let _ = tokio::process::Command::new("open")
+            let _ = crate::process::silent_cmd("open")
                 .arg(file_path)
                 .output()
                 .await;
@@ -885,7 +885,7 @@ async fn pull_hydrogen_inner(
     // Create dir and extract tarball
     tokio::fs::create_dir_all(&nginx_dir).await?;
 
-    let tar_output = tokio::process::Command::new("tar")
+    let tar_output = crate::process::silent_cmd("tar")
         .args([
             "-xzf",
             &tmp_tarball.to_string_lossy(),
@@ -919,7 +919,7 @@ async fn pull_hydrogen_inner(
             tokio::fs::write(&conf_path, &nginx_conf).await?;
 
             // Reload nginx
-            let _ = tokio::process::Command::new("nginx")
+            let _ = crate::process::silent_cmd("nginx")
                 .args(["-s", "reload"])
                 .status()
                 .await;
@@ -1007,7 +1007,7 @@ pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
     let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
     tokio::fs::create_dir_all(&tmp_extract).await?;
 
-    let tar_output = tokio::process::Command::new("tar")
+    let tar_output = crate::process::silent_cmd("tar")
         .args([
             "-xzf",
             &tmp_tarball.to_string_lossy(),

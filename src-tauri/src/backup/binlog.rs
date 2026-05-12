@@ -129,7 +129,7 @@ async fn list_binlog_files(pool: &mysql_async::Pool) -> Result<Vec<BinlogFileInf
 
 /// Read a binlog file's raw contents via `mysqlbinlog` CLI tool
 async fn read_binlog_data(config: &NucleusConfig, file_name: &str) -> Result<Vec<u8>, NucleusError> {
-    let output = tokio::process::Command::new("mysqlbinlog")
+    let output = crate::process::silent_cmd("mysqlbinlog")
         .args([
             "--read-from-remote-server",
             &format!("--host={}", config.mysql_host),

@@ -936,7 +936,7 @@ pub async fn setup_create_databases() -> Result<(), String> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let output = tokio::process::Command::new("mysql")
+    let output = crate::process::silent_cmd("mysql")
         .env("MYSQL_PWD", &config.mysql_password)
         .args([
             &format!("-h{}", config.mysql_host),
@@ -964,7 +964,7 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
     tracing::info!("Setup: configuring RabbitMQ");
 
     // Try Docker exec first (most common setup — RabbitMQ runs in container)
-    let docker_exec = tokio::process::Command::new("docker")
+    let docker_exec = crate::process::silent_cmd("docker")
         .args([
             "exec", "rabbitmq", "rabbitmqctl", "add_vhost", "puru",
         ])
@@ -985,7 +985,7 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         ];
 
         for args in commands {
-            let output = tokio::process::Command::new("docker")
+            let output = crate::process::silent_cmd("docker")
                 .args(*args)
                 .output()
                 .await
@@ -1001,7 +1001,7 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         }
     } else {
         // Fallback: try host-installed rabbitmqctl
-        let vhost_output = tokio::process::Command::new("rabbitmqctl")
+        let vhost_output = crate::process::silent_cmd("rabbitmqctl")
             .args(["add_vhost", "puru"])
             .output()
             .await
@@ -1021,7 +1021,7 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         ];
 
         for args in user_commands {
-            let output = tokio::process::Command::new("rabbitmqctl")
+            let output = crate::process::silent_cmd("rabbitmqctl")
                 .args(*args)
                 .output()
                 .await
@@ -1258,7 +1258,7 @@ pub async fn setup_pull_images() -> Result<(), String> {
     for image in PURU_IMAGES {
         tracing::info!("Pulling image: {}", image);
 
-        let output = tokio::process::Command::new("docker")
+        let output = crate::process::silent_cmd("docker")
             .args(["pull", image])
             .output()
             .await
@@ -1290,7 +1290,7 @@ pub async fn setup_start_services() -> Result<(), String> {
     }
 
     // Try docker compose (V2) first, fallback to docker-compose (V1)
-    let output = tokio::process::Command::new("docker")
+    let output = crate::process::silent_cmd("docker")
         .args(["compose", "-f", compose_path, "up", "-d"])
         .output()
         .await;
@@ -1299,7 +1299,7 @@ pub async fn setup_start_services() -> Result<(), String> {
         Ok(out) if out.status.success() => Ok(()),
         _ => {
             // Fallback to V1
-            let output = tokio::process::Command::new("docker-compose")
+            let output = crate::process::silent_cmd("docker-compose")
                 .args(["-f", compose_path, "up", "-d"])
                 .output()
                 .await
@@ -1388,7 +1388,7 @@ pub async fn setup_configure_backups() -> Result<(), String> {
 
     // Verify MySQL is accessible by running a simple query
     if !config.mysql_password.is_empty() {
-        let output = tokio::process::Command::new("mysql")
+        let output = crate::process::silent_cmd("mysql")
             .env("MYSQL_PWD", &config.mysql_password)
             .args([
                 &format!("-h{}", config.mysql_host),
@@ -1466,7 +1466,7 @@ pub async fn setup_tls() -> Result<(), String> {
             }
 
             // Try to reload nginx
-            let reload = tokio::process::Command::new("nginx")
+            let reload = crate::process::silent_cmd("nginx")
                 .arg("-s").arg("reload")
                 .output().await;
             match reload {
