@@ -149,11 +149,57 @@ interface SetupStep {
                   <p>Found {{ detectionResult!.containers.length }} containers</p>
                 </div>
                 <div class="detection-actions">
-                  <button mat-stroked-button (click)="adoptExisting()">
+                  <button mat-stroked-button (click)="adoptExisting()" [disabled]="adopting">
+                    @if (adopting) {
+                      <mat-spinner diameter="18"></mat-spinner>
+                    }
                     Adopt Existing
                   </button>
                   <button mat-stroked-button (click)="freshInstall()">
                     Fresh Install
+                  </button>
+                </div>
+              </div>
+            }
+
+            <!-- Mismatch Warning -->
+            @if (mismatchError) {
+              <div class="mismatch-error">
+                <mat-icon>error</mat-icon>
+                <div>
+                  <strong>Hospital Code Mismatch</strong>
+                  <p>{{ mismatchError }}</p>
+                  <p class="mismatch-hint">Fix the hospital code in Firestore or re-activate with the correct email, then try again.</p>
+                </div>
+              </div>
+            }
+
+            @if (configMismatches.length > 0) {
+              <div class="mismatch-panel">
+                <div class="mismatch-header">
+                  <mat-icon>warning</mat-icon>
+                  <strong>Config values differ from detected environment</strong>
+                </div>
+                <div class="mismatch-list">
+                  @for (m of configMismatches; track m.field) {
+                    <div class="mismatch-item">
+                      <span class="mismatch-field">{{ m.field }}</span>
+                      <div class="mismatch-choices">
+                        <button mat-stroked-button [class.selected]="m.choice === 'config'"
+                                (click)="m.choice = 'config'" class="choice-btn">
+                          Keep: {{ m.config_value }}
+                        </button>
+                        <button mat-stroked-button [class.selected]="m.choice === 'detected'"
+                                (click)="m.choice = 'detected'" class="choice-btn">
+                          Use detected: {{ m.detected_value }}
+                        </button>
+                      </div>
+                    </div>
+                  }
+                </div>
+                <div class="mismatch-actions">
+                  <button mat-raised-button color="primary" (click)="applyMismatchChoices()">
+                    Apply & Continue
                   </button>
                 </div>
               </div>
@@ -609,6 +655,84 @@ interface SetupStep {
       padding-top: 1rem;
       border-top: 1px solid #eee;
     }
+
+    /* ── Mismatch UI ─────────────────────── */
+    .mismatch-error {
+      display: flex;
+      gap: 12px;
+      padding: 1rem;
+      background: #ffebee;
+      border-radius: 8px;
+      margin-bottom: 1.5rem;
+      color: #c62828;
+
+      mat-icon { font-size: 24px; width: 24px; height: 24px; flex-shrink: 0; margin-top: 2px; }
+      strong { display: block; margin-bottom: 4px; }
+      p { margin: 0; font-size: 0.875rem; }
+      .mismatch-hint { color: #666; margin-top: 4px; }
+    }
+
+    .mismatch-panel {
+      padding: 1rem;
+      background: #fff3e0;
+      border-radius: 8px;
+      margin-bottom: 1.5rem;
+    }
+
+    .mismatch-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 1rem;
+      color: #e65100;
+
+      mat-icon { font-size: 20px; width: 20px; height: 20px; }
+    }
+
+    .mismatch-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .mismatch-item {
+      padding: 0.75rem;
+      background: #fff;
+      border-radius: 6px;
+    }
+
+    .mismatch-field {
+      font-weight: 500;
+      font-size: 0.8rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .mismatch-choices {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .choice-btn {
+      font-size: 0.8rem !important;
+      font-family: monospace;
+    }
+
+    .choice-btn.selected {
+      background: #e3f2fd !important;
+      border-color: #2196f3 !important;
+      color: #1565c0 !important;
+    }
+
+    .mismatch-actions {
+      margin-top: 1rem;
+      display: flex;
+      justify-content: flex-end;
+    }
   `]
 })
 export class SetupComponent implements OnInit {
@@ -627,6 +751,9 @@ export class SetupComponent implements OnInit {
   setupInProgress = false;
   setupComplete = false;
   tlsStatus: any = null;
+  adopting = false;
+  mismatchError: string | null = null;
+  configMismatches: Array<{ field: string; config_value: string; detected_value: string; choice: 'config' | 'detected' }> = [];
 
   steps: SetupStep[] = [
     { label: 'Check prerequisites', status: 'pending' },
@@ -738,17 +865,67 @@ export class SetupComponent implements OnInit {
   }
 
   async adoptExisting(): Promise<void> {
-    // Auto-detect environment from env files and apply to config
+    this.adopting = true;
+    this.mismatchError = null;
+    this.configMismatches = [];
+
     try {
-      await this.tauri.invokeSilent('apply_detected_environment', {
+      const result = await this.tauri.invoke<{
+        applied: string[];
+        mismatches: Array<{ field: string; config_value: string; detected_value: string }>;
+      }>('apply_detected_environment', {
         compose_path: this.config?.docker_compose_path || null,
       });
-      // Reload config to pick up detected values
+
+      // Reload config to pick up applied values
       this.config = await this.tauri.invoke<NucleusConfig>('get_config');
-    } catch {
-      // Non-critical — config can be manually set
+
+      // Check for hospital_code mismatch — hard block
+      const codeMismatch = result.mismatches.find(m => m.field === 'hospital_code');
+      if (codeMismatch) {
+        this.mismatchError = `License has hospital code "${codeMismatch.config_value}" but the existing installation uses "${codeMismatch.detected_value}". These must match.`;
+        return;
+      }
+
+      // Other mismatches — let user choose
+      const otherMismatches = result.mismatches.filter(m => m.field !== 'hospital_code');
+      if (otherMismatches.length > 0) {
+        this.configMismatches = otherMismatches.map(m => ({ ...m, choice: 'detected' as const }));
+        return; // Wait for user to resolve via applyMismatchChoices()
+      }
+
+      // No mismatches — proceed
+      this.proceedWithAdopt();
+    } catch (error) {
+      this.notification.error('Detection failed: ' + String(error));
+    } finally {
+      this.adopting = false;
+    }
+  }
+
+  async applyMismatchChoices(): Promise<void> {
+    if (!this.config) return;
+
+    // Apply user choices to config
+    for (const m of this.configMismatches) {
+      const value = m.choice === 'detected' ? m.detected_value : m.config_value;
+      switch (m.field) {
+        case 'server_ip': this.config.server_ip = value; break;
+        case 'mysql_user': this.config.mysql_user = value; break;
+        case 'mysql_password': this.config.mysql_password = value; break;
+      }
     }
 
+    try {
+      await this.tauri.invoke('save_config', { config: this.config });
+      this.configMismatches = [];
+      this.proceedWithAdopt();
+    } catch (error) {
+      this.notification.error('Failed to save config: ' + String(error));
+    }
+  }
+
+  private proceedWithAdopt(): void {
     this.steps[0].status = 'completed';
     this.steps[1].status = 'completed';
     this.steps[2].status = 'completed';

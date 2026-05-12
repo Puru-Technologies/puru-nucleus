@@ -402,11 +402,11 @@ pub async fn detect_environment(
 }
 
 /// Apply detected environment to the current config.
-/// Only fills in fields that are currently empty.
+/// Overwrites config with detected values; returns mismatches so UI can warn.
 #[tauri::command]
 pub async fn apply_detected_environment(
     compose_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<crate::detection::ApplyResult, String> {
     let path = match compose_path {
         Some(p) if !p.is_empty() => p,
         _ => {
@@ -422,11 +422,22 @@ pub async fn apply_detected_environment(
     let detection = crate::detection::detect_environment(&path).map_err(|e| e.to_string())?;
 
     let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
-    crate::detection::apply_detected_config(&mut config, &detection);
+    let result = crate::detection::apply_detected_config(&mut config, &detection);
+
+    if !result.mismatches.is_empty() {
+        for m in &result.mismatches {
+            tracing::warn!(
+                "Config mismatch: {} is '{}' but env file has '{}' — not overwritten, fix manually in Settings",
+                m.field, m.config_value, m.detected_value
+            );
+        }
+    }
+
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
-    tracing::info!("Applied detected environment to config");
-    Ok(())
+    tracing::info!("Applied detected environment to config ({} fields, {} mismatches)",
+        result.applied.len(), result.mismatches.len());
+    Ok(result)
 }
 
 /// Alert structure

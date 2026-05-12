@@ -327,29 +327,88 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
     })
 }
 
-/// Parse env files and auto-populate a NucleusConfig with detected values.
-/// Only fills in fields that are currently empty/default.
+/// A field where the existing config value differs from the detected env value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigMismatch {
+    pub field: String,
+    pub config_value: String,
+    pub detected_value: String,
+}
+
+/// Result of applying detected environment to config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyResult {
+    pub applied: Vec<String>,
+    pub mismatches: Vec<ConfigMismatch>,
+}
+
+/// Parse env files and apply detected values to NucleusConfig.
+///
+/// - Empty/default config fields are filled from detected values.
+/// - Non-empty fields that differ are reported as mismatches but **not**
+///   overwritten — the user must fix them manually in Settings.
 pub fn apply_detected_config(
     config: &mut crate::config::NucleusConfig,
     detection: &EnvDetectionResult,
-) {
+) -> ApplyResult {
+    let mut applied = Vec::new();
+    let mut mismatches = Vec::new();
+
     if let Some(ref hospital) = detection.hospital_info {
-        if config.hospital_code.is_empty() && !hospital.code.is_empty() {
-            config.hospital_code = hospital.code.clone();
+        if !hospital.code.is_empty() {
+            if config.hospital_code.is_empty() {
+                config.hospital_code = hospital.code.clone();
+                applied.push("hospital_code".to_string());
+            } else if config.hospital_code != hospital.code {
+                mismatches.push(ConfigMismatch {
+                    field: "hospital_code".to_string(),
+                    config_value: config.hospital_code.clone(),
+                    detected_value: hospital.code.clone(),
+                });
+            }
         }
-        if config.server_ip.is_empty() && !hospital.server_ip.is_empty() {
-            config.server_ip = hospital.server_ip.clone();
+        if !hospital.server_ip.is_empty() {
+            if config.server_ip.is_empty() {
+                config.server_ip = hospital.server_ip.clone();
+                applied.push("server_ip".to_string());
+            } else if config.server_ip != hospital.server_ip {
+                mismatches.push(ConfigMismatch {
+                    field: "server_ip".to_string(),
+                    config_value: config.server_ip.clone(),
+                    detected_value: hospital.server_ip.clone(),
+                });
+            }
         }
     }
 
     if let Some(ref db) = detection.database {
-        if config.mysql_user == "root" && !db.username.is_empty() {
-            config.mysql_user = db.username.clone();
+        if !db.username.is_empty() {
+            if config.mysql_user == "root" || config.mysql_user.is_empty() {
+                config.mysql_user = db.username.clone();
+                applied.push("mysql_user".to_string());
+            } else if config.mysql_user != db.username {
+                mismatches.push(ConfigMismatch {
+                    field: "mysql_user".to_string(),
+                    config_value: config.mysql_user.clone(),
+                    detected_value: db.username.clone(),
+                });
+            }
         }
-        if config.mysql_password.is_empty() && !db.password.is_empty() {
-            config.mysql_password = db.password.clone();
+        if !db.password.is_empty() {
+            if config.mysql_password.is_empty() {
+                config.mysql_password = db.password.clone();
+                applied.push("mysql_password".to_string());
+            } else if config.mysql_password != db.password {
+                mismatches.push(ConfigMismatch {
+                    field: "mysql_password".to_string(),
+                    config_value: "(existing)".to_string(),
+                    detected_value: "(from env file)".to_string(),
+                });
+            }
         }
     }
+
+    ApplyResult { applied, mismatches }
 }
 
 #[cfg(test)]
