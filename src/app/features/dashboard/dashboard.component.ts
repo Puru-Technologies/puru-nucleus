@@ -51,24 +51,24 @@ import { interval, Subscription } from 'rxjs';
       <div class="stats-row">
         @if (systemInfo) {
           <div class="stat-card">
-            <div class="stat-icon si-blue"><mat-icon>memory</mat-icon></div>
+            <div class="stat-icon" [class]="cpuClass"><mat-icon>memory</mat-icon></div>
             <div class="stat-body">
-              <span class="stat-value">{{ systemInfo.cpu_cores }}</span>
-              <span class="stat-label">CPU Cores</span>
+              <span class="stat-value">{{ telemetry?.cpu_percent | number:'1.0-0' }}%</span>
+              <span class="stat-label">CPU ({{ systemInfo.cpu_cores }} cores)</span>
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon si-purple"><mat-icon>storage</mat-icon></div>
+            <div class="stat-icon" [class]="ramClass"><mat-icon>storage</mat-icon></div>
             <div class="stat-body">
-              <span class="stat-value">{{ systemInfo.total_ram_gb | number:'1.0-0' }} GB</span>
-              <span class="stat-label">Total RAM</span>
+              <span class="stat-value">{{ telemetry?.ram_gb | number:'1.1-1' }} / {{ systemInfo.total_ram_gb | number:'1.0-0' }} GB</span>
+              <span class="stat-label">RAM Usage</span>
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon si-green"><mat-icon>hard_drive</mat-icon></div>
+            <div class="stat-icon" [class]="diskClass"><mat-icon>hard_drive</mat-icon></div>
             <div class="stat-body">
-              <span class="stat-value">{{ systemInfo.disk_free_gb | number:'1.0-0' }} GB</span>
-              <span class="stat-label">Disk Free</span>
+              <span class="stat-value">{{ telemetry?.disk_percent | number:'1.0-0' }}%</span>
+              <span class="stat-label">Disk ({{ systemInfo.disk_free_gb | number:'1.0-0' }} GB free)</span>
             </div>
           </div>
           <div class="stat-card">
@@ -357,6 +357,8 @@ import { interval, Subscription } from 'rxjs';
       &.si-purple { background: linear-gradient(135deg, #8b5cf6, #a855f7); }
       &.si-green { background: linear-gradient(135deg, #22c55e, #16a34a); }
       &.si-orange { background: linear-gradient(135deg, #f59e0b, #d97706); }
+      &.si-orange { background: linear-gradient(135deg, #f59e0b, #d97706); }
+      &.si-red { background: linear-gradient(135deg, #ef4444, #dc2626); }
       &.si-muted { background: #cbd5e1; }
     }
 
@@ -747,6 +749,21 @@ export class DashboardComponent implements OnInit, OnDestroy {
   license: License | null = null;
   licenseStatus: LicenseStatus | null = null;
   daemonRunning = false;
+  telemetry: { cpu_percent: number; ram_gb: number; disk_percent: number } | null = null;
+
+  get cpuClass(): string {
+    const v = this.telemetry?.cpu_percent ?? 0;
+    return v > 80 ? 'si-red' : v > 50 ? 'si-orange' : 'si-blue';
+  }
+  get ramClass(): string {
+    if (!this.telemetry || !this.systemInfo) return 'si-purple';
+    const pct = (this.telemetry.ram_gb / this.systemInfo.total_ram_gb) * 100;
+    return pct > 85 ? 'si-red' : pct > 60 ? 'si-orange' : 'si-purple';
+  }
+  get diskClass(): string {
+    const v = this.telemetry?.disk_percent ?? 0;
+    return v > 90 ? 'si-red' : v > 70 ? 'si-orange' : 'si-green';
+  }
   networkStatus: NetworkStatus | null = null;
   speedTestResult: SpeedTestResult | null = null;
   speedTestRunning = false;
@@ -821,11 +838,12 @@ export class DashboardComponent implements OnInit, OnDestroy {
     this.networkSub?.unsubscribe();
   }
 
-  /** Fast calls — license + system info. Renders in <100ms. */
+  /** Fast calls — license + system info + telemetry. */
   private async loadFastData(): Promise<void> {
-    const [licenseResult, sysResult] = await Promise.allSettled([
+    const [licenseResult, sysResult, telResult] = await Promise.allSettled([
       this.tauri.invokeSilent<License>('get_license'),
       this.tauri.invokeSilent<SystemInfo>('get_system_info'),
+      this.tauri.invokeSilent<{ cpu_percent: number; ram_gb: number; disk_percent: number }>('get_telemetry_snapshot'),
     ]);
 
     if (licenseResult.status === 'fulfilled' && licenseResult.value) {
@@ -834,6 +852,9 @@ export class DashboardComponent implements OnInit, OnDestroy {
     }
     if (sysResult.status === 'fulfilled') {
       this.systemInfo = sysResult.value;
+    }
+    if (telResult.status === 'fulfilled') {
+      this.telemetry = telResult.value;
     }
   }
 
