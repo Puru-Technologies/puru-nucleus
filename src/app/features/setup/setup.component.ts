@@ -815,6 +815,9 @@ export class SetupComponent implements OnInit {
       this.config = await this.tauri.invoke<NucleusConfig>('get_config');
       await this.checkCredsStatus();
 
+      // Auto-detect existing setup and populate empty fields
+      await this.autoDetectAndPopulate();
+
       // If MySQL password is already set, skip to phase 2 automatically
       if (this.config.mysql_password) {
         this.configSaved = true;
@@ -822,6 +825,48 @@ export class SetupComponent implements OnInit {
       }
     } catch {
       // Will show defaults
+    }
+  }
+
+  /** Detect compose file and populate config fields from env files */
+  private async autoDetectAndPopulate(): Promise<void> {
+    if (!this.config) return;
+
+    try {
+      // Detect existing Docker setup (finds compose path + containers)
+      const detection = await this.tauri.invokeSilent<DetectionResult>('detect_existing_setup');
+      if (detection?.compose_path && !this.config.docker_compose_path) {
+        this.config.docker_compose_path = detection.compose_path;
+      }
+
+      // If we have a compose path, detect environment variables from it
+      if (this.config.docker_compose_path) {
+        const envResult = await this.tauri.invokeSilent<any>('detect_environment', {
+          composePath: this.config.docker_compose_path
+        });
+
+        if (envResult) {
+          // Populate empty fields from detected values
+          if (envResult.hospital_info) {
+            if (!this.config.server_ip && envResult.hospital_info.server_ip) {
+              this.config.server_ip = envResult.hospital_info.server_ip;
+            }
+            if (!this.config.hospital_code && envResult.hospital_info.code) {
+              this.config.hospital_code = envResult.hospital_info.code;
+            }
+          }
+          if (envResult.database) {
+            if ((!this.config.mysql_user || this.config.mysql_user === 'root') && envResult.database.username) {
+              this.config.mysql_user = envResult.database.username;
+            }
+            if (!this.config.mysql_password && envResult.database.password) {
+              this.config.mysql_password = envResult.database.password;
+            }
+          }
+        }
+      }
+    } catch {
+      // Detection is best-effort — don't block setup
     }
   }
 
