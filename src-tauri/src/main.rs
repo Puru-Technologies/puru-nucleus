@@ -42,8 +42,8 @@ fn main() {
     // Route based on subcommand
     match cli_args.command {
         Some(cli::Commands::Daemon) => {
-            // Daemon mode — headless background service
-            init_logging();
+            // Daemon mode — headless background service, log to file
+            init_daemon_logging();
             tracing::info!("Starting puru-nucleus in daemon mode");
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(daemon::run_daemon());
@@ -68,6 +68,32 @@ fn init_logging() {
         .with(fmt::layer())
         .with(EnvFilter::from_default_env().add_directive("puru_nucleus=info".parse().unwrap()))
         .init();
+}
+
+/// Initialize logging for daemon mode — writes to a log file so errors are visible
+/// even when running as a Windows Service (no console).
+fn init_daemon_logging() {
+    let log_dir = crate::config::config_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("daemon.log");
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    match file {
+        Ok(file) => {
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_writer(std::sync::Mutex::new(file)))
+                .with(EnvFilter::from_default_env().add_directive("puru_nucleus=info".parse().unwrap()))
+                .init();
+        }
+        Err(_) => {
+            // Fallback to stderr if log file can't be opened
+            init_logging();
+        }
+    }
 }
 
 fn run_gui() {

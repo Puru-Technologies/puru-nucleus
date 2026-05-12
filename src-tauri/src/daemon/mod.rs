@@ -96,14 +96,20 @@ pub async fn run_daemon() {
     let addr = format!("0.0.0.0:{}", port);
     tracing::info!("Daemon listening on http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect(&format!("Failed to bind to port {}. Is it already in use?", port));
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("Failed to bind to port {}: {}. Is it already in use?", port, e);
+            return;
+        }
+    };
 
-    axum::serve(listener, app)
+    if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .expect("Daemon server error");
+    {
+        tracing::error!("Daemon server error: {}", e);
+    }
 
     tracing::info!("Daemon shut down gracefully");
 }
