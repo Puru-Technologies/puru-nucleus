@@ -403,6 +403,82 @@ pub async fn download_nucleus_update(channel: &str) -> Result<DownloadResult, Nu
     })
 }
 
+/// Install a downloaded nucleus update.
+/// Linux: dpkg -i, Windows: msiexec /quiet, macOS: open dmg
+pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusError> {
+    let path = std::path::Path::new(file_path);
+    if !path.exists() {
+        return Err(NucleusError::NotFound(format!(
+            "Installer not found: {}", file_path
+        )));
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    match ext {
+        "deb" => {
+            let output = tokio::process::Command::new("sudo")
+                .args(["dpkg", "-i", file_path])
+                .output()
+                .await
+                .map_err(|e| NucleusError::Internal(format!("dpkg failed: {}", e)))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(NucleusError::Internal(format!("dpkg install failed: {}", stderr)));
+            }
+
+            // Restart the service after install
+            let _ = tokio::process::Command::new("sudo")
+                .args(["systemctl", "restart", "puru-nucleus"])
+                .output()
+                .await;
+
+            Ok("Update installed and service restarted".to_string())
+        }
+        "msi" => {
+            let output = tokio::process::Command::new("msiexec")
+                .args(["/i", file_path, "/quiet", "/norestart"])
+                .output()
+                .await
+                .map_err(|e| NucleusError::Internal(format!("msiexec failed: {}", e)))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return Err(NucleusError::Internal(format!(
+                    "MSI install failed (exit {}): {}{}", output.status, stdout, stderr
+                )));
+            }
+
+            // Restart the service after install
+            let _ = tokio::process::Command::new("sc.exe")
+                .args(["stop", "PuruNucleus"])
+                .output()
+                .await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let _ = tokio::process::Command::new("sc.exe")
+                .args(["start", "PuruNucleus"])
+                .output()
+                .await;
+
+            Ok("Update installed and service restarted".to_string())
+        }
+        "dmg" => {
+            // macOS: just open the DMG, user installs manually
+            let _ = tokio::process::Command::new("open")
+                .arg(file_path)
+                .output()
+                .await;
+
+            Ok("DMG opened — drag to Applications to complete install".to_string())
+        }
+        _ => Err(NucleusError::Validation(format!(
+            "Unknown installer format: .{}", ext
+        ))),
+    }
+}
+
 /// Download a specific service JAR version.
 pub async fn download_service_jar(
     service_name: &str,

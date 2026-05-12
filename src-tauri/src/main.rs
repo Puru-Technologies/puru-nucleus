@@ -124,6 +124,7 @@ fn run_gui() {
             commands::check_nucleus_update,
             commands::check_service_updates,
             commands::download_nucleus_update,
+            commands::download_and_install_nucleus_update,
             commands::download_service_jar,
             commands::list_service_versions,
             // Credentials

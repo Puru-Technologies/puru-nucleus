@@ -1514,6 +1514,22 @@ pub async fn download_nucleus_update() -> Result<DownloadResult, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Download and install nucleus update
+#[tauri::command]
+pub async fn download_and_install_nucleus_update() -> Result<String, String> {
+    let cfg = crate::config::load_config().map_err(|e| e.to_string())?;
+
+    // Download
+    let result = crate::releases::download_nucleus_update(&cfg.release_channel)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Install
+    crate::releases::install_nucleus_update(&result.file_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Download a specific service JAR version
 #[tauri::command]
 pub async fn download_service_jar(
