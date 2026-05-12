@@ -351,9 +351,15 @@ jobs:
         run: |
           PUBLIC_PATH="gs://puru-pacs-ace-artifact/nucleus"
 
+          # Versioned copies
           gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/"
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/"
           gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${PUBLIC_PATH}/"
+
+          # Latest copies (stable names for website download links)
+          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/puru-nucleus-latest.deb"
+          gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/puru-nucleus-latest.msi"
+          gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${PUBLIC_PATH}/puru-nucleus-latest.dmg"
 
           echo "Copied installers to public bucket: ${PUBLIC_PATH}/"
 
