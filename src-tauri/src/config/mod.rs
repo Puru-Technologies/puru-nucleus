@@ -70,6 +70,10 @@ pub struct BackupSchedule {
     pub enabled: bool,
     pub interval_hours: u32,
     pub backup_type: String,
+    /// Fixed time to run daily backup (e.g. "02:00" for 2 AM). 24-hour format.
+    /// If set, overrides interval_hours — runs once daily at this time.
+    #[serde(default)]
+    pub backup_time: Option<String>,
 }
 
 impl Default for BackupSchedule {
@@ -78,6 +82,7 @@ impl Default for BackupSchedule {
             enabled: true,
             interval_hours: 24,
             backup_type: "full".to_string(),
+            backup_time: Some("02:00".to_string()),
         }
     }
 }

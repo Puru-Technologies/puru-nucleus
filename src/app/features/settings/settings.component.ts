@@ -388,14 +388,20 @@ import { open } from '@tauri-apps/plugin-dialog';
                   @if (daemonBackupEnabled) {
                     <div class="inline-fields">
                       <mat-form-field appearance="outline">
-                        <mat-label>Interval (hours)</mat-label>
-                        <input matInput type="number" [(ngModel)]="daemonBackupIntervalHours" min="1">
+                        <mat-label>Backup Time (HH:MM)</mat-label>
+                        <input matInput [(ngModel)]="daemonBackupTime" placeholder="02:00">
+                        <mat-hint>Daily at this time (24h format). Leave empty for interval-based.</mat-hint>
                       </mat-form-field>
                       <mat-form-field appearance="outline">
                         <mat-label>Backup Type</mat-label>
                         <input matInput [(ngModel)]="daemonBackupType" placeholder="full">
                       </mat-form-field>
                     </div>
+                    <mat-form-field appearance="outline" class="full-width">
+                      <mat-label>Fallback Interval (hours)</mat-label>
+                      <input matInput type="number" [(ngModel)]="daemonBackupIntervalHours" min="1">
+                      <mat-hint>Used if backup time is not set</mat-hint>
+                    </mat-form-field>
                   }
 
                   <mat-form-field appearance="outline" class="full-width">
@@ -931,6 +937,7 @@ export class SettingsComponent implements OnInit {
   daemonBackupEnabled = true;
   daemonBackupIntervalHours = 24;
   daemonBackupType = 'full';
+  daemonBackupTime = '02:00';
   daemonTelemetryMinutes = 15;
 
   syncStatus: { lastSynced: Date | null; pendingChanges: number } | null = null;
@@ -1005,6 +1012,7 @@ export class SettingsComponent implements OnInit {
         this.daemonBackupEnabled = this.config.daemon.backup_schedule.enabled;
         this.daemonBackupIntervalHours = this.config.daemon.backup_schedule.interval_hours;
         this.daemonBackupType = this.config.daemon.backup_schedule.backup_type;
+        this.daemonBackupTime = this.config.daemon.backup_schedule.backup_time || '';
         this.daemonTelemetryMinutes = this.config.daemon.telemetry_interval_minutes;
       }
     } finally {
@@ -1022,7 +1030,8 @@ export class SettingsComponent implements OnInit {
       backup_schedule: {
         enabled: this.daemonBackupEnabled,
         interval_hours: this.daemonBackupIntervalHours,
-        backup_type: this.daemonBackupType
+        backup_type: this.daemonBackupType,
+        backup_time: this.daemonBackupTime || null
       },
       telemetry_interval_minutes: this.daemonTelemetryMinutes
     };

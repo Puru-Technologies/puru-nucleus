@@ -1,6 +1,6 @@
 //! Background task scheduler for daemon mode — backup scheduling, status reporting, and command listening
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
@@ -60,60 +60,125 @@ pub fn start_all(daemon_cfg: &DaemonConfig, telemetry_enabled: bool) -> Vec<Join
 
 /// Periodic backup task
 async fn backup_scheduler(schedule: BackupSchedule) {
-    if !schedule.enabled || schedule.interval_hours == 0 {
+    if !schedule.enabled {
         tracing::info!("Backup scheduler disabled");
         return;
     }
 
+    // Determine scheduling mode
+    if let Some(ref time_str) = schedule.backup_time {
+        // Time-based: run once daily at the specified time
+        backup_scheduler_timed(time_str, &schedule).await;
+    } else if schedule.interval_hours > 0 {
+        // Interval-based: run every N hours (legacy)
+        backup_scheduler_interval(&schedule).await;
+    } else {
+        tracing::info!("Backup scheduler: no schedule configured");
+    }
+}
+
+/// Run backup at a fixed time each day (e.g. "02:00")
+async fn backup_scheduler_timed(time_str: &str, schedule: &BackupSchedule) {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    let (target_hour, target_minute) = match (parts.first(), parts.get(1)) {
+        (Some(h), Some(m)) => {
+            match (h.parse::<u32>(), m.parse::<u32>()) {
+                (Ok(h), Ok(m)) if h < 24 && m < 60 => (h, m),
+                _ => {
+                    tracing::error!("Backup scheduler: invalid backup_time '{}', expected HH:MM", time_str);
+                    return;
+                }
+            }
+        }
+        _ => {
+            tracing::error!("Backup scheduler: invalid backup_time '{}', expected HH:MM", time_str);
+            return;
+        }
+    };
+
+    tracing::info!(
+        "Backup scheduler started: daily at {:02}:{:02}, type={}",
+        target_hour, target_minute, schedule.backup_type
+    );
+
+    loop {
+        // Calculate sleep duration until next target time
+        let now = chrono::Local::now();
+        let today_target = now.date_naive()
+            .and_hms_opt(target_hour, target_minute, 0)
+            .unwrap();
+        let today_target = chrono::Local.from_local_datetime(&today_target).unwrap();
+
+        let next_run = if now >= today_target {
+            // Already past today's time — schedule for tomorrow
+            today_target + chrono::Duration::days(1)
+        } else {
+            today_target
+        };
+
+        let sleep_secs = (next_run - now).num_seconds().max(1) as u64;
+        tracing::info!(
+            "Backup scheduler: next backup at {} (in {}h {}m)",
+            next_run.format("%Y-%m-%d %H:%M"),
+            sleep_secs / 3600,
+            (sleep_secs % 3600) / 60
+        );
+
+        tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+        run_scheduled_backup(schedule).await;
+    }
+}
+
+/// Run backup every N hours (interval-based)
+async fn backup_scheduler_interval(schedule: &BackupSchedule) {
     let interval = Duration::from_secs(schedule.interval_hours as u64 * 3600);
     tracing::info!(
         "Backup scheduler started: every {}h, type={}",
-        schedule.interval_hours,
-        schedule.backup_type
+        schedule.interval_hours, schedule.backup_type
     );
 
     let mut tick = tokio::time::interval(interval);
-    // Skip the first immediate tick
-    tick.tick().await;
+    tick.tick().await; // skip first immediate tick
 
     loop {
         tick.tick().await;
+        run_scheduled_backup(schedule).await;
+    }
+}
 
-        // Check license before running backup
-        let license = match crate::licensing::load_license() {
-            Ok(Some(l)) if l.is_valid() => l,
-            Ok(Some(_)) => {
-                tracing::warn!("Backup scheduler: license expired, skipping backup");
-                continue;
-            }
-            Ok(None) => {
-                tracing::warn!("Backup scheduler: no license found, skipping backup");
-                continue;
-            }
-            Err(e) => {
-                tracing::error!("Backup scheduler: failed to load license: {}", e);
-                continue;
-            }
-        };
+/// Execute a single scheduled backup
+async fn run_scheduled_backup(schedule: &BackupSchedule) {
+    let license = match crate::licensing::load_license() {
+        Ok(Some(l)) if l.is_valid() => l,
+        Ok(Some(_)) => {
+            tracing::warn!("Backup scheduler: license expired, skipping backup");
+            return;
+        }
+        Ok(None) => {
+            tracing::warn!("Backup scheduler: no license found, skipping backup");
+            return;
+        }
+        Err(e) => {
+            tracing::error!("Backup scheduler: failed to load license: {}", e);
+            return;
+        }
+    };
 
-        let backup_type = match schedule.backup_type.as_str() {
-            "partial" => crate::backup::BackupType::Partial,
-            _ => crate::backup::BackupType::Full,
-        };
+    let backup_type = match schedule.backup_type.as_str() {
+        "partial" => crate::backup::BackupType::Partial,
+        _ => crate::backup::BackupType::Full,
+    };
 
-        tracing::info!("Backup scheduler: starting {:?} backup", backup_type);
-        match crate::backup::start_backup(backup_type, &license).await {
-            Ok(result) => {
-                tracing::info!(
-                    "Backup scheduler: completed in {}s, size={}MB, id={}",
-                    result.duration_seconds,
-                    result.size_mb,
-                    result.backup_id
-                );
-            }
-            Err(e) => {
-                tracing::error!("Backup scheduler: backup failed: {}", e);
-            }
+    tracing::info!("Backup scheduler: starting {:?} backup", backup_type);
+    match crate::backup::start_backup(backup_type, &license).await {
+        Ok(result) => {
+            tracing::info!(
+                "Backup scheduler: completed in {}s, size={}MB, id={}",
+                result.duration_seconds, result.size_mb, result.backup_id
+            );
+        }
+        Err(e) => {
+            tracing::error!("Backup scheduler: backup failed: {}", e);
         }
     }
 }

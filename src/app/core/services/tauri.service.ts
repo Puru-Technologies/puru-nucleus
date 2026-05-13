@@ -241,6 +241,7 @@ export interface BackupScheduleConfig {
   enabled: boolean;
   interval_hours: number;
   backup_type: string;
+  backup_time?: string | null;
 }
 
 export interface TelemetrySnapshot {
