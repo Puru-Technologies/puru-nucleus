@@ -141,6 +141,13 @@ const PURU_SERVICE_REGISTRY: &[PuruServiceDef] = &[
         health_endpoint: Some("/actuator/health"),
     },
     PuruServiceDef {
+        name: "Integration",
+        image_patterns: &["puru-integration"],
+        container_patterns: &["integration"],
+        default_port: 8088,
+        health_endpoint: Some("/actuator/health"),
+    },
+    PuruServiceDef {
         name: "Radon",
         image_patterns: &["puru-radon"],
         container_patterns: &["gh"],

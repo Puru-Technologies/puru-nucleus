@@ -24,6 +24,7 @@ const SERVICE_PORTS: &[(&str, u16)] = &[
     ("puru-bridge", 8094),
     ("puru-auth", 8095),
     ("puru-mercury", 8096),
+    ("puru-integration", 8088),
 ];
 
 /// Health endpoint for Spring Boot services

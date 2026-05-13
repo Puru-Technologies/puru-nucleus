@@ -22,6 +22,7 @@ const UPDATABLE_SERVICES: &[&str] = &[
     "puru-realtime",
     "puru-bridge",
     "puru-mercury",
+    "puru-integration",
 ];
 
 // ── Nucleus manifest types ───────────────────────────────────────────────────
@@ -570,6 +571,7 @@ const SERVICE_JAVA_VERSIONS: &[(&str, &str)] = &[
     ("puru-bridge", "21"),
     ("puru-realtime", "21"),
     ("puru-mercury", "25"),
+    ("puru-integration", "21"),
 ];
 
 /// Metadata from Cloud Build JAR upload (meta.json)

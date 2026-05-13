@@ -44,6 +44,7 @@ const FRAGMENTS: &[(&str, Option<&str>)] = &[
     ("realtime.yml", Some("realtime")),
     ("medical.yml", Some("neon")),
     ("bridge.yml", Some("bridge")),
+    ("integration.yml", Some("integration")),
     ("frontend.yml", Some("hydrogen")),
 ];
 
@@ -73,6 +74,7 @@ pub struct TemplateVariables {
     pub realtime_tag: String,
     pub neon_tag: String,
     pub bridge_tag: String,
+    pub integration_tag: String,
     pub hydrogen_tag: String,
 }
 
@@ -89,6 +91,7 @@ pub struct ServiceModules {
     pub realtime: bool,
     pub neon: bool,
     pub bridge: bool,
+    pub integration: bool,
     pub hydrogen: bool,
 }
 
@@ -104,6 +107,7 @@ impl Default for ServiceModules {
             realtime: true,
             neon: true,
             bridge: true,
+            integration: true,
             hydrogen: true,
         }
     }
@@ -326,6 +330,7 @@ pub fn substitute_variables(content: &str, vars: &TemplateVariables) -> String {
         .replace("{{REALTIME_TAG}}", &vars.realtime_tag)
         .replace("{{NEON_TAG}}", &vars.neon_tag)
         .replace("{{BRIDGE_TAG}}", &vars.bridge_tag)
+        .replace("{{INTEGRATION_TAG}}", &vars.integration_tag)
         .replace("{{HYDROGEN_TAG}}", &vars.hydrogen_tag)
 }
 
@@ -362,6 +367,7 @@ pub fn assemble_compose(modules: &ServiceModules) -> Result<String, NucleusError
             "realtime" => modules.realtime,
             "neon" => modules.neon,
             "bridge" => modules.bridge,
+            "integration" => modules.integration,
             "hydrogen" => modules.hydrogen,
             _ => false,
         }
@@ -577,6 +583,7 @@ pub fn build_variables_from_config(cfg: &config::NucleusConfig) -> TemplateVaria
         realtime_tag: "latest".to_string(),
         neon_tag: "latest".to_string(),
         bridge_tag: "latest".to_string(),
+        integration_tag: "latest".to_string(),
         hydrogen_tag: "latest".to_string(),
     }
 }
@@ -641,6 +648,7 @@ services:
             realtime_tag: "1.0.0".to_string(),
             neon_tag: "1.3.0".to_string(),
             bridge_tag: "1.0.2".to_string(),
+            integration_tag: "1.0.0".to_string(),
             hydrogen_tag: "3.0.0".to_string(),
         };
 
@@ -687,6 +695,7 @@ services:
         assert_eq!(vars.realtime_tag, "latest");
         assert_eq!(vars.neon_tag, "latest");
         assert_eq!(vars.bridge_tag, "latest");
+        assert_eq!(vars.integration_tag, "latest");
         assert_eq!(vars.hydrogen_tag, "latest");
     }
 
@@ -730,6 +739,7 @@ services:
             realtime_tag: "latest".to_string(),
             neon_tag: "latest".to_string(),
             bridge_tag: "latest".to_string(),
+            integration_tag: "latest".to_string(),
             hydrogen_tag: "latest".to_string(),
         };
 
@@ -783,6 +793,10 @@ services:
             "  bridge:\n    image: asia-south2-docker.pkg.dev/puru-255206/puru1/puru-bridge:{{BRIDGE_TAG}}\n    container_name: bridge\n    restart: always\n    network_mode: host\n",
         ).unwrap();
         std::fs::write(
+            dir.join("integration.yml"),
+            "  integration:\n    image: asia-south2-docker.pkg.dev/puru-255206/puru1/puru-integration:{{INTEGRATION_TAG}}\n    container_name: integration\n    restart: always\n    network_mode: host\n",
+        ).unwrap();
+        std::fs::write(
             dir.join("frontend.yml"),
             "  frontend:\n    image: asia-south2-docker.pkg.dev/puru-255206/puru1/puru-hydrogen:{{HYDROGEN_TAG}}\n    container_name: frontend\n    restart: always\n    network_mode: host\n",
         ).unwrap();
@@ -810,6 +824,7 @@ services:
                 "realtime" => modules.realtime,
                 "neon" => modules.neon,
                 "bridge" => modules.bridge,
+                "integration" => modules.integration,
                 "hydrogen" => modules.hydrogen,
                 _ => false,
             }
@@ -848,7 +863,7 @@ services:
         assert!(result.contains("version: \"3.8\""));
         // Should have services: key
         assert!(result.contains("services:"));
-        // All 10 services present
+        // All 11 services present
         assert!(result.contains("auth:"));
         assert!(result.contains("backend:"));
         assert!(result.contains("has:"));
@@ -858,6 +873,7 @@ services:
         assert!(result.contains("realtime:"));
         assert!(result.contains("medical:"));
         assert!(result.contains("bridge:"));
+        assert!(result.contains("integration:"));
         assert!(result.contains("frontend:"));
     }
 
@@ -898,6 +914,7 @@ services:
             realtime: false,
             neon: false,
             bridge: false,
+            integration: false,
             hydrogen: false,
         };
 

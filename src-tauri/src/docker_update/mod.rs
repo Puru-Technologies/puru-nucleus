@@ -47,6 +47,7 @@ const SERVICE_TO_COMPOSE: &[(&str, &str)] = &[
     ("puru-realtime", "realtime"),
     ("puru-neon", "medical"),
     ("puru-bridge", "bridge"),
+    ("puru-integration", "integration"),
     ("puru-hydrogen", "frontend"),
 ];
 
