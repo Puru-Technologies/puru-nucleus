@@ -77,11 +77,6 @@ jobs:
             artifact-name: windows-artifacts
             rust-targets: ''
             tauri-args: '--bundles msi'
-          - os: macos-latest
-            platform: macos
-            artifact-name: macos-artifacts
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            tauri-args: '--target universal-apple-darwin --bundles dmg'
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.validate-version.outputs.version }}
@@ -179,30 +174,6 @@ jobs:
           Write-Host "Built: $dest ($sizeMB MB)"
           Write-Host "SHA256: $hash"
 
-      # ── Collect artifacts (macOS) ──────────────────────────────
-      - name: Prepare artifacts (macOS)
-        if: matrix.platform == 'macos'
-        run: |
-          DMG_FILE=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
-          if [ -z "$DMG_FILE" ]; then
-            echo "::error::No .dmg file found in bundle output"
-            exit 1
-          fi
-
-          DEST="puru-nucleus-${VERSION}-universal.dmg"
-          cp "$DMG_FILE" "$DEST"
-
-          SHA256=$(shasum -a 256 "$DEST" | awk '{print $1}')
-          SIZE_BYTES=$(stat -f%z "$DEST")
-          SIZE_MB=$(echo "scale=1; $SIZE_BYTES / 1048576" | bc)
-
-          echo "file=$DEST" > metadata.txt
-          echo "sha256=$SHA256" >> metadata.txt
-          echo "size_mb=$SIZE_MB" >> metadata.txt
-
-          echo "Built: $DEST ($SIZE_MB MB)"
-          echo "SHA256: $SHA256"
-
       # ── Upload ─────────────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -242,8 +213,7 @@ jobs:
             --generate-notes \
             $PRERELEASE_FLAG \
             artifacts/linux-artifacts/puru-nucleus-*.deb \
-            artifacts/windows-artifacts/puru-nucleus-*.msi \
-            artifacts/macos-artifacts/puru-nucleus-*.dmg
+            artifacts/windows-artifacts/puru-nucleus-*.msi
 
   # ── 4. Publish to GCS ──────────────────────────────────────────
   publish-to-gcs:
@@ -282,10 +252,6 @@ jobs:
           WINDOWS_SHA=$(parse_metadata artifacts/windows-artifacts/metadata.txt sha256)
           WINDOWS_SIZE=$(parse_metadata artifacts/windows-artifacts/metadata.txt size_mb)
 
-          MACOS_FILE=$(parse_metadata artifacts/macos-artifacts/metadata.txt file)
-          MACOS_SHA=$(parse_metadata artifacts/macos-artifacts/metadata.txt sha256)
-          MACOS_SIZE=$(parse_metadata artifacts/macos-artifacts/metadata.txt size_mb)
-
           RELEASE_DATE=$(date +%Y-%m-%d)
 
           cat > latest.json <<EOF
@@ -312,15 +278,6 @@ jobs:
                     "size_mb": ${LINUX_SIZE}
                   }
                 }
-              },
-              "macos": {
-                "universal": {
-                  "dmg": {
-                    "file": "${MACOS_FILE}",
-                    "sha256": "${MACOS_SHA}",
-                    "size_mb": ${MACOS_SIZE}
-                  }
-                }
               }
             }
           }
@@ -339,7 +296,6 @@ jobs:
 
           gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${GCS_PATH}/"
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${GCS_PATH}/"
-          gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${GCS_PATH}/"
 
           gsutil -h "Cache-Control:no-cache, no-store, must-revalidate" \
             cp latest.json "${GCS_PATH}/latest.json"
@@ -354,12 +310,10 @@ jobs:
           # Versioned copies
           gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/"
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/"
-          gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${PUBLIC_PATH}/"
 
           # Latest copies (stable names for website download links)
           gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/puru-nucleus-latest.deb"
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/puru-nucleus-latest.msi"
-          gsutil cp "artifacts/macos-artifacts/puru-nucleus-${VERSION}-universal.dmg" "${PUBLIC_PATH}/puru-nucleus-latest.dmg"
 
           echo "Copied installers to public bucket: ${PUBLIC_PATH}/"
 
