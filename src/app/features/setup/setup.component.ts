@@ -12,7 +12,8 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatDividerModule } from '@angular/material/divider';
 import { Router } from '@angular/router';
-import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult } from '../../core/services/tauri.service';
+import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult, InstallProgress, InstallResult } from '../../core/services/tauri.service';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { NotificationService } from '../../core/services/notification.service';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -241,6 +242,43 @@ interface SetupStep {
                   </mat-list-item>
                 }
               </mat-list>
+
+              <!-- Install Missing Button -->
+              @if (installablePrereqs.length > 0 && !installing) {
+                <div class="install-action">
+                  <button mat-raised-button color="accent" (click)="installMissing()">
+                    <mat-icon>download</mat-icon>
+                    Install {{ installableNames }}
+                  </button>
+                  <span class="install-hint">Downloads and installs automatically. UAC prompts may appear.</span>
+                </div>
+              }
+
+              <!-- Install Progress -->
+              @if (installing && installProgress) {
+                <div class="install-progress-card">
+                  <div class="install-progress-header">
+                    <mat-icon>{{ installProgress.stage === 'completed' ? 'check_circle' : installProgress.stage === 'failed' ? 'error' : 'downloading' }}</mat-icon>
+                    <span><strong>{{ installProgress.software }}:</strong> {{ installProgress.message }}</span>
+                  </div>
+                  <mat-progress-bar
+                    [mode]="installProgress.stage === 'installing' || installProgress.stage === 'verifying' ? 'indeterminate' : 'determinate'"
+                    [value]="installProgress.percent">
+                  </mat-progress-bar>
+                </div>
+              }
+
+              <!-- Install Results -->
+              @if (installResults.length > 0 && !installing) {
+                <div class="install-results">
+                  @for (result of installResults; track result.software) {
+                    <div class="install-result" [class.success]="result.success" [class.failure]="!result.success">
+                      <mat-icon>{{ result.success ? 'check_circle' : 'cancel' }}</mat-icon>
+                      <span>{{ result.software }}: {{ result.success ? 'Installed (' + (result.version || 'ok') + ')' : result.error }}</span>
+                    </div>
+                  }
+                </div>
+              }
             </div>
 
             <!-- Setup Steps -->
@@ -525,6 +563,81 @@ interface SetupStep {
       color: #f44336;
     }
 
+    /* ── Install Missing ─────────────────── */
+
+    .install-action {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+      padding: 12px 16px;
+      background: #fff3e0;
+      border-radius: 8px;
+      border-left: 4px solid #ff9800;
+
+      .install-hint {
+        font-size: 12px;
+        color: #666;
+      }
+    }
+
+    .install-progress-card {
+      margin-top: 12px;
+      padding: 16px;
+      background: #e3f2fd;
+      border-radius: 8px;
+      border-left: 4px solid #2196f3;
+
+      .install-progress-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 14px;
+
+        mat-icon {
+          color: #1976d2;
+          font-size: 20px;
+          width: 20px;
+          height: 20px;
+        }
+      }
+    }
+
+    .install-results {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .install-result {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+
+      &.success {
+        background: #e8f5e9;
+        color: #2e7d32;
+        mat-icon { color: #4caf50; }
+      }
+
+      &.failure {
+        background: #ffebee;
+        color: #c62828;
+        mat-icon { color: #f44336; }
+      }
+
+      mat-icon {
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+      }
+    }
+
     .steps-list {
       display: flex;
       flex-direction: column;
@@ -776,6 +889,10 @@ export class SetupComponent implements OnInit {
   puruDataPath = '';
 
   prerequisites: PrerequisiteStatus[] = [];
+  installablePrereqs: PrerequisiteStatus[] = [];
+  installing = false;
+  installProgress: InstallProgress | null = null;
+  installResults: InstallResult[] = [];
   detectionResult: DetectionResult | null = null;
   setupInProgress = false;
   setupComplete = false;
@@ -796,6 +913,10 @@ export class SetupComponent implements OnInit {
     { label: 'Install daemon service', status: 'pending' },
     { label: 'Configure HTTPS (TLS)', status: 'pending' }
   ];
+
+  get installableNames(): string {
+    return this.installablePrereqs.map(p => p.name).join(' & ');
+  }
 
   get allPrerequisitesMet(): boolean {
     return this.prerequisites.length > 0 && this.prerequisites.every(p => p.installed);
@@ -962,9 +1083,46 @@ export class SetupComponent implements OnInit {
       ]);
 
       this.prerequisites = prereqs;
+      this.installablePrereqs = prereqs.filter(p => !p.installed && p.installable);
       this.detectionResult = detection;
     } catch {
       // Error handled by TauriService
+    }
+  }
+
+  async installMissing(): Promise<void> {
+    const names = this.installablePrereqs.map(p => p.name);
+    if (names.length === 0) return;
+
+    this.installing = true;
+    this.installProgress = null;
+    this.installResults = [];
+
+    // Listen for progress events
+    let unlisten: UnlistenFn | null = null;
+    try {
+      unlisten = await listen<InstallProgress>('install-progress', (event) => {
+        this.installProgress = event.payload;
+      });
+
+      const results = await this.tauri.invoke<InstallResult[]>('install_prerequisites', { software: names });
+      this.installResults = results;
+
+      // Re-check prerequisites
+      await this.loadPrerequisites();
+
+      const allOk = results.every(r => r.success);
+      if (allOk) {
+        this.notification.success('All prerequisites installed successfully');
+      } else {
+        const failed = results.filter(r => !r.success).map(r => r.software);
+        this.notification.error(`Failed to install: ${failed.join(', ')}`);
+      }
+    } catch (err: any) {
+      this.notification.error(err?.message || err || 'Installation failed');
+    } finally {
+      if (unlisten) unlisten();
+      this.installing = false;
     }
   }
 

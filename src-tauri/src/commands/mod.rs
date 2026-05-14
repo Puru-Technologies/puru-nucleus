@@ -936,6 +936,17 @@ pub async fn setup_check_prerequisites() -> Result<(), String> {
     Ok(())
 }
 
+/// Install missing prerequisites (MySQL, RabbitMQ + Erlang) on Windows.
+/// Emits `install-progress` Tauri events for download/install progress.
+#[tauri::command]
+pub async fn install_prerequisites(
+    app: tauri::AppHandle,
+    software: Vec<String>,
+) -> Result<Vec<crate::installer::InstallResult>, String> {
+    tracing::info!("Installing prerequisites: {:?}", software);
+    Ok(crate::installer::install_missing(&app, &software).await)
+}
+
 /// Step 2: Create MySQL databases for all Puru services
 #[tauri::command]
 pub async fn setup_create_databases() -> Result<(), String> {

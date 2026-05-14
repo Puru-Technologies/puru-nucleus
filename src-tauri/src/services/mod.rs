@@ -71,6 +71,9 @@ pub struct PrerequisiteStatus {
     pub installed: bool,
     pub version: Option<String>,
     pub required_version: Option<String>,
+    /// Whether this prerequisite can be auto-installed (Windows only, MySQL/RabbitMQ)
+    #[serde(default)]
+    pub installable: bool,
 }
 
 // ── Service Registry ─────────────────────────────────────────────────────────
@@ -755,6 +758,7 @@ async fn check_docker_prereq() -> PrerequisiteStatus {
                 installed: false,
                 version: None,
                 required_version: Some("20.0.0".to_string()),
+                installable: false,
             };
         }
     };
@@ -765,12 +769,14 @@ async fn check_docker_prereq() -> PrerequisiteStatus {
             installed: true,
             version: v.version,
             required_version: Some("20.0.0".to_string()),
+            installable: false,
         },
         Err(_) => PrerequisiteStatus {
             name: "Docker".to_string(),
             installed: false,
             version: None,
             required_version: Some("20.0.0".to_string()),
+            installable: false,
         },
     }
 }
@@ -790,6 +796,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
                 installed: true,
                 version,
                 required_version: Some("2.0.0".to_string()),
+                installable: false,
             };
         }
     }
@@ -807,6 +814,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
                 installed: true,
                 version: extract_version(&raw),
                 required_version: Some("2.0.0".to_string()),
+                installable: false,
             };
         }
     }
@@ -816,6 +824,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
         installed: false,
         version: None,
         required_version: Some("2.0.0".to_string()),
+        installable: false,
     }
 }
 
@@ -833,6 +842,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
                 installed: true,
                 version: extract_version(&raw),
                 required_version: Some("8.0.0".to_string()),
+                installable: false,
             };
         }
     }
@@ -864,6 +874,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
                         installed: true,
                         version,
                         required_version: Some("8.0.0".to_string()),
+                        installable: false,
                     };
                 }
             }
@@ -875,6 +886,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
         installed: false,
         version: None,
         required_version: Some("8.0.0".to_string()),
+        installable: true,
     }
 }
 
@@ -892,6 +904,7 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
                 installed: true,
                 version: extract_version(&raw),
                 required_version: Some("3.10.0".to_string()),
+                installable: false,
             };
         }
     }
@@ -926,6 +939,7 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
                         installed: true,
                         version,
                         required_version: Some("3.10.0".to_string()),
+                        installable: false,
                     };
                 }
             }
@@ -937,5 +951,6 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
         installed: false,
         version: None,
         required_version: Some("3.10.0".to_string()),
+        installable: true,
     }
 }

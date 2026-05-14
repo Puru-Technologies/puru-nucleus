@@ -32,6 +32,7 @@ mod platform;
 mod process;
 mod remote_shell;
 mod tls;
+mod installer;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -162,6 +163,7 @@ fn run_gui() {
             // Logging
             commands::log_error,
             // Setup
+            commands::install_prerequisites,
             commands::setup_check_prerequisites,
             commands::setup_create_databases,
             commands::setup_configure_rabbitmq,

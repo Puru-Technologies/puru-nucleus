@@ -160,6 +160,23 @@ export interface PrerequisiteStatus {
   installed: boolean;
   version?: string;
   required_version?: string;
+  installable?: boolean;
+}
+
+export interface InstallProgress {
+  software: string;
+  stage: 'downloading' | 'installing' | 'verifying' | 'completed' | 'failed';
+  percent: number;
+  message: string;
+  bytes_downloaded: number;
+  bytes_total: number;
+}
+
+export interface InstallResult {
+  software: string;
+  success: boolean;
+  version?: string;
+  error?: string;
 }
 
 export interface ServiceInfo {
