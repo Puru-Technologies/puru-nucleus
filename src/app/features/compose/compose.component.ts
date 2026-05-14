@@ -223,6 +223,7 @@ import { NotificationService } from '../../core/services/notification.service';
                 <mat-slide-toggle [ngModel]="modules.realtime" disabled>Realtime</mat-slide-toggle>
                 <mat-slide-toggle [ngModel]="modules.neon" disabled>Pharmacy (Neon)</mat-slide-toggle>
                 <mat-slide-toggle [ngModel]="modules.bridge" disabled>Bridge</mat-slide-toggle>
+                <mat-slide-toggle [ngModel]="modules.integration" disabled>Integration</mat-slide-toggle>
                 <mat-slide-toggle [ngModel]="modules.hydrogen" disabled>Hydrogen (Frontend)</mat-slide-toggle>
               </div>
             </div>
@@ -485,6 +486,7 @@ export class ComposeComponent implements OnInit {
     realtime: true,
     neon: true,
     bridge: true,
+    integration: true,
     hydrogen: true,
   };
 
@@ -513,6 +515,7 @@ export class ComposeComponent implements OnInit {
     realtime_tag: 'latest',
     neon_tag: 'latest',
     bridge_tag: 'latest',
+    integration_tag: 'latest',
     hydrogen_tag: 'latest',
   };
 

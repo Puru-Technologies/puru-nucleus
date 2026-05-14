@@ -538,7 +538,7 @@ impl FirestoreClient {
             realtime: read_bool("realtime", true),
             neon: read_bool("neon", true),
             bridge: read_bool("bridge", true),
-            integration: read_bool("integration", false),
+            integration: read_bool("integration", true),
             hydrogen: read_bool("hydrogen", true),
         })
     }

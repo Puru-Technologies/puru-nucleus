@@ -407,6 +407,7 @@ export interface TemplateVariables {
   realtime_tag: string;
   neon_tag: string;
   bridge_tag: string;
+  integration_tag: string;
   hydrogen_tag: string;
 }
 
@@ -420,6 +421,7 @@ export interface ServiceModules {
   realtime: boolean;
   neon: boolean;
   bridge: boolean;
+  integration: boolean;
   hydrogen: boolean;
 }
 
