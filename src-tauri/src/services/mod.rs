@@ -903,7 +903,7 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
                 name: "RabbitMQ".to_string(),
                 installed: true,
                 version: extract_version(&raw),
-                required_version: Some("3.10.0".to_string()),
+                required_version: None,
                 installable: false,
             };
         }
@@ -938,7 +938,7 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
                         name: "RabbitMQ".to_string(),
                         installed: true,
                         version,
-                        required_version: Some("3.10.0".to_string()),
+                        required_version: None,
                         installable: false,
                     };
                 }
