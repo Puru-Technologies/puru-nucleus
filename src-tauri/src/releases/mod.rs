@@ -22,6 +22,7 @@ const UPDATABLE_SERVICES: &[&str] = &[
     "puru-realtime",
     "puru-bridge",
     "puru-mercury",
+    "puru-counter",
     "puru-integration",
 ];
 

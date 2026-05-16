@@ -158,6 +158,20 @@ const PURU_SERVICE_REGISTRY: &[PuruServiceDef] = &[
         health_endpoint: Some("/actuator/health"),
     },
     PuruServiceDef {
+        name: "Mercury (HRMS)",
+        image_patterns: &["puru-mercury"],
+        container_patterns: &["mercury", "hrms"],
+        default_port: 8089,
+        health_endpoint: Some("/actuator/health"),
+    },
+    PuruServiceDef {
+        name: "Counter",
+        image_patterns: &["puru-counter"],
+        container_patterns: &["counter"],
+        default_port: 8095,
+        health_endpoint: Some("/actuator/health"),
+    },
+    PuruServiceDef {
         name: "Hydrogen (Frontend)",
         image_patterns: &["puru-hydrogen"],
         container_patterns: &["frontend", "ui", "puruui"],

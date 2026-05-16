@@ -486,6 +486,7 @@ export class ComposeComponent implements OnInit {
     realtime: true,
     neon: true,
     mercury: true,
+    counter: true,
     bridge: true,
     integration: true,
     hydrogen: true,

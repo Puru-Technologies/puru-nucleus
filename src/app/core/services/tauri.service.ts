@@ -438,6 +438,7 @@ export interface ServiceModules {
   realtime: boolean;
   neon: boolean;
   mercury: boolean;
+  counter: boolean;
   bridge: boolean;
   integration: boolean;
   hydrogen: boolean;
