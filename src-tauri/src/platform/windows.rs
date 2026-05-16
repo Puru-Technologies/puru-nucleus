@@ -8,15 +8,21 @@ const DISPLAY_NAME: &str = "Puru Nucleus";
 /// Register as a Windows service via sc.exe create.
 pub async fn install() -> Result<ServiceResult, String> {
     let exe_path = get_exe_path()?;
+    // sc.exe requires the full command (with args) as the binPath value.
     let bin_path = format!("\"{}\" daemon", exe_path);
 
+    // sc.exe has quirky parsing: the keyword (binPath=) and value are separate arguments,
+    // e.g.: sc create Name binPath= "path args" start= auto DisplayName= "Name"
     let output = crate::process::silent_cmd("sc.exe")
         .args([
             "create",
             SERVICE_NAME,
-            &format!("binPath={}", bin_path),
-            "start=auto",
-            &format!("DisplayName={}", DISPLAY_NAME),
+            "binPath=",
+            &bin_path,
+            "start=",
+            "auto",
+            "DisplayName=",
+            DISPLAY_NAME,
         ])
         .output()
         .await
@@ -27,13 +33,6 @@ pub async fn install() -> Result<ServiceResult, String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}{}", stdout, stderr);
         if !combined.contains("already exists") {
-            if combined.contains("Access is denied") || combined.contains("FAILED 5") {
-                return Err(
-                    "Administrator privileges required to install the service. \
-                     Right-click Puru Nucleus and select 'Run as Administrator', then try again."
-                        .to_string(),
-                );
-            }
             return Err(format!("Service registration failed: {}", combined.trim()));
         }
     }
@@ -59,12 +58,15 @@ pub async fn install() -> Result<ServiceResult, String> {
         .output()
         .await;
 
+    // Auto-start the service after registration
+    let _ = crate::process::silent_cmd("sc.exe")
+        .args(["start", SERVICE_NAME])
+        .output()
+        .await;
+
     Ok(ServiceResult {
         success: true,
-        message: format!(
-            "Windows service '{}' registered. Run `sc.exe start {}` to start.",
-            DISPLAY_NAME, SERVICE_NAME
-        ),
+        message: format!("Windows service '{}' installed and started.", DISPLAY_NAME),
     })
 }
 
@@ -112,9 +114,6 @@ pub async fn start() -> Result<ServiceResult, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}{}", stdout.trim(), stderr.trim());
-        if combined.contains("Access is denied") || combined.contains("FAILED 5") {
-            return Err("Administrator privileges required. Run as Administrator and try again.".to_string());
-        }
         return Err(format!("Service start failed: {}", combined));
     }
 
@@ -136,9 +135,6 @@ pub async fn stop() -> Result<ServiceResult, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}{}", stdout.trim(), stderr.trim());
-        if combined.contains("Access is denied") || combined.contains("FAILED 5") {
-            return Err("Administrator privileges required. Run as Administrator and try again.".to_string());
-        }
         return Err(format!("Service stop failed: {}", combined));
     }
 

@@ -1549,7 +1549,7 @@ pub async fn download_nucleus_update() -> Result<DownloadResult, String> {
 
 /// Download and install nucleus update
 #[tauri::command]
-pub async fn download_and_install_nucleus_update() -> Result<String, String> {
+pub async fn download_and_install_nucleus_update(app: tauri::AppHandle) -> Result<String, String> {
     let cfg = crate::config::load_config().map_err(|e| e.to_string())?;
 
     // Download
@@ -1558,9 +1558,18 @@ pub async fn download_and_install_nucleus_update() -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     // Install
-    crate::releases::install_nucleus_update(&result.file_path)
+    let msg = crate::releases::install_nucleus_update(&result.file_path)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Exit the app after a short delay so the response can be sent back to frontend
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        app_clone.exit(0);
+    });
+
+    Ok(msg)
 }
 
 /// Download a specific service JAR version

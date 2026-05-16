@@ -757,7 +757,7 @@ async fn check_docker_prereq() -> PrerequisiteStatus {
                 name: "Docker".to_string(),
                 installed: false,
                 version: None,
-                required_version: Some("20.0.0".to_string()),
+                required_version: None,
                 installable: false,
             };
         }
@@ -768,14 +768,14 @@ async fn check_docker_prereq() -> PrerequisiteStatus {
             name: "Docker".to_string(),
             installed: true,
             version: v.version,
-            required_version: Some("20.0.0".to_string()),
+            required_version: None,
             installable: false,
         },
         Err(_) => PrerequisiteStatus {
             name: "Docker".to_string(),
             installed: false,
             version: None,
-            required_version: Some("20.0.0".to_string()),
+            required_version: None,
             installable: false,
         },
     }
@@ -795,7 +795,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
                 name: "Docker Compose".to_string(),
                 installed: true,
                 version,
-                required_version: Some("2.0.0".to_string()),
+                required_version: None,
                 installable: false,
             };
         }
@@ -813,7 +813,7 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
                 name: "Docker Compose".to_string(),
                 installed: true,
                 version: extract_version(&raw),
-                required_version: Some("2.0.0".to_string()),
+                required_version: None,
                 installable: false,
             };
         }
@@ -841,7 +841,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
                 name: "MySQL".to_string(),
                 installed: true,
                 version: extract_version(&raw),
-                required_version: Some("8.0.0".to_string()),
+                required_version: None,
                 installable: false,
             };
         }
@@ -873,7 +873,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
                         name: "MySQL".to_string(),
                         installed: true,
                         version,
-                        required_version: Some("8.0.0".to_string()),
+                        required_version: None,
                         installable: false,
                     };
                 }
@@ -950,7 +950,7 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
         name: "RabbitMQ".to_string(),
         installed: false,
         version: None,
-        required_version: Some("3.10.0".to_string()),
+        required_version: None,
         installable: true,
     }
 }

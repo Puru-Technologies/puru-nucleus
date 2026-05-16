@@ -1,6 +1,6 @@
 [package]
 name = "puru-nucleus"
-version = "0.3.11"
+version = "0.3.12"
 description = "Control center for Puru hospital deployments"
 authors = ["Puru Technologies"]
 license = "Proprietary"
@@ -66,6 +66,10 @@ tower-http = { version = "0.5", features = ["cors"] }
 # Process management (native mode — unix only)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Windows Service integration
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

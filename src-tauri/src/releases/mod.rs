@@ -406,6 +406,9 @@ pub async fn download_nucleus_update(channel: &str) -> Result<DownloadResult, Nu
 
 /// Install a downloaded nucleus update.
 /// Linux: dpkg -i, Windows: msiexec /quiet, macOS: open dmg
+///
+/// On success, the caller should exit the app shortly after — the installer
+/// replaces the running binary so a restart is needed.
 pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusError> {
     let path = std::path::Path::new(file_path);
     if !path.exists() {
@@ -429,50 +432,31 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
                 return Err(NucleusError::Internal(format!("dpkg install failed: {}", stderr)));
             }
 
-            // Restart the service after install
-            let _ = crate::process::silent_cmd("sudo")
-                .args(["systemctl", "restart", "puru-nucleus"])
-                .output()
-                .await;
-
-            Ok("Update installed and service restarted".to_string())
+            Ok("Update installed. Application will close — please reopen.".to_string())
         }
         "msi" => {
-            let output = crate::process::silent_cmd("msiexec")
-                .args(["/i", file_path, "/quiet", "/norestart"])
-                .output()
-                .await
-                .map_err(|e| NucleusError::Internal(format!("msiexec failed: {}", e)))?;
+            // Spawn the MSI installer as a detached process so it can replace our binary
+            // after we exit. Using cmd /c with a small delay to let us exit first.
+            use std::process::Command;
+            let script = format!(
+                "timeout /t 3 /nobreak >nul & msiexec /i \"{}\" /quiet /norestart",
+                file_path
+            );
+            Command::new("cmd")
+                .args(["/C", &script])
+                .spawn()
+                .map_err(|e| NucleusError::Internal(format!("Failed to spawn installer: {}", e)))?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                return Err(NucleusError::Internal(format!(
-                    "MSI install failed (exit {}): {}{}", output.status, stdout, stderr
-                )));
-            }
-
-            // Restart the service after install
-            let _ = crate::process::silent_cmd("sc.exe")
-                .args(["stop", "PuruNucleus"])
-                .output()
-                .await;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let _ = crate::process::silent_cmd("sc.exe")
-                .args(["start", "PuruNucleus"])
-                .output()
-                .await;
-
-            Ok("Update installed and service restarted".to_string())
+            Ok("Update will install after app closes. Please reopen when done.".to_string())
         }
         "dmg" => {
-            // macOS: just open the DMG, user installs manually
+            // macOS: open the DMG for manual drag-to-Applications
             let _ = crate::process::silent_cmd("open")
                 .arg(file_path)
                 .output()
                 .await;
 
-            Ok("DMG opened — drag to Applications to complete install".to_string())
+            Ok("DMG opened — drag to Applications to complete install.".to_string())
         }
         _ => Err(NucleusError::Validation(format!(
             "Unknown installer format: .{}", ext

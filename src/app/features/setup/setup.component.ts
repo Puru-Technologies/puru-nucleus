@@ -235,24 +235,32 @@ interface SetupStep {
                     <span matListItemLine>
                       @if (prereq.installed) {
                         Version {{ prereq.version }}
+                      } @else if (prereq.required_version) {
+                        Not installed (requires {{ prereq.required_version }}+)
                       } @else {
-                        Not installed (requires {{ prereq.required_version }})
+                        Not installed
                       }
                     </span>
                   </mat-list-item>
                 }
               </mat-list>
 
-              <!-- Install Missing Button -->
-              @if (installablePrereqs.length > 0 && !installing) {
-                <div class="install-action">
+              <!-- Re-check / Install Missing Buttons -->
+              <div class="prereq-actions">
+                @if (!installing) {
+                  <button mat-stroked-button (click)="recheckPrerequisites()" [disabled]="recheckingPrereqs">
+                    <mat-icon>{{ recheckingPrereqs ? 'hourglass_empty' : 'refresh' }}</mat-icon>
+                    {{ recheckingPrereqs ? 'Checking...' : 'Re-check' }}
+                  </button>
+                }
+                @if (installablePrereqs.length > 0 && !installing) {
                   <button mat-raised-button color="accent" (click)="installMissing()">
                     <mat-icon>download</mat-icon>
                     Install {{ installableNames }}
                   </button>
-                  <span class="install-hint">Downloads and installs automatically. UAC prompts may appear.</span>
-                </div>
-              }
+                  <span class="install-hint">Downloads and installs automatically.</span>
+                }
+              </div>
 
               <!-- Install Progress -->
               @if (installing && installProgress) {
@@ -565,15 +573,12 @@ interface SetupStep {
 
     /* ── Install Missing ─────────────────── */
 
-    .install-action {
+    .prereq-actions {
       display: flex;
       align-items: center;
       gap: 12px;
       margin-top: 12px;
-      padding: 12px 16px;
-      background: #fff3e0;
-      border-radius: 8px;
-      border-left: 4px solid #ff9800;
+      flex-wrap: wrap;
 
       .install-hint {
         font-size: 12px;
@@ -891,6 +896,7 @@ export class SetupComponent implements OnInit {
   prerequisites: PrerequisiteStatus[] = [];
   installablePrereqs: PrerequisiteStatus[] = [];
   installing = false;
+  recheckingPrereqs = false;
   installProgress: InstallProgress | null = null;
   installResults: InstallResult[] = [];
   detectionResult: DetectionResult | null = null;
@@ -1087,6 +1093,19 @@ export class SetupComponent implements OnInit {
       this.detectionResult = detection;
     } catch {
       // Error handled by TauriService
+    }
+  }
+
+  async recheckPrerequisites(): Promise<void> {
+    this.recheckingPrereqs = true;
+    try {
+      await this.loadPrerequisites();
+      const allOk = this.prerequisites.every(p => p.installed);
+      if (allOk) {
+        this.notification.success('All prerequisites detected');
+      }
+    } finally {
+      this.recheckingPrereqs = false;
     }
   }
 

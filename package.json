@@ -1,6 +1,6 @@
 {
   "name": "puru-nucleus",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Control center for Puru hospital deployments",
   "private": true,
   "scripts": {

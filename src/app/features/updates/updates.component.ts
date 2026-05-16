@@ -695,13 +695,13 @@ export class UpdatesComponent implements OnInit {
   }
 
   async downloadAndInstallNucleus(): Promise<void> {
-    if (!confirm('This will download and install the update. The application will restart. Continue?')) {
+    if (!confirm('This will download and install the update. The application will close after installation. Continue?')) {
       return;
     }
     this.nucleusInstalling = true;
     try {
       const msg = await this.tauri.invoke<string>('download_and_install_nucleus_update');
-      this.notification.success(msg || 'Update installed. Restarting...');
+      this.notification.success(msg || 'Update installed. Application will close shortly...');
     } catch (error) {
       // Error handled by TauriService
     } finally {
