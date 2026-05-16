@@ -1,6 +1,6 @@
 [package]
 name = "puru-nucleus"
-version = "0.3.13"
+version = "0.3.14"
 description = "Control center for Puru hospital deployments"
 authors = ["Puru Technologies"]
 license = "Proprietary"

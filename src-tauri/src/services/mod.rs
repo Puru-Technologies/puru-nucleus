@@ -823,13 +823,13 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
         name: "Docker Compose".to_string(),
         installed: false,
         version: None,
-        required_version: Some("2.0.0".to_string()),
+        required_version: None,
         installable: false,
     }
 }
 
 async fn check_mysql_prereq() -> PrerequisiteStatus {
-    // Try host-installed MySQL
+    // 1. Try mysql on PATH
     if let Ok(output) = crate::process::silent_cmd("mysql")
         .arg("--version")
         .output()
@@ -847,7 +847,64 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
         }
     }
 
-    // Fallback: detect MySQL Docker container
+    // 2. Windows: check common install paths (mysql is often not on PATH)
+    #[cfg(target_os = "windows")]
+    {
+        let search_paths = [
+            r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
+            r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe",
+            r"C:\Program Files\MySQL\MySQL Server 9.0\bin\mysql.exe",
+        ];
+        for path in &search_paths {
+            if std::path::Path::new(path).exists() {
+                if let Ok(output) = crate::process::silent_cmd(path)
+                    .arg("--version")
+                    .output()
+                    .await
+                {
+                    if output.status.success() {
+                        let raw = String::from_utf8_lossy(&output.stdout);
+                        return PrerequisiteStatus {
+                            name: "MySQL".to_string(),
+                            installed: true,
+                            version: extract_version(&raw),
+                            required_version: None,
+                            installable: false,
+                        };
+                    }
+                }
+            }
+        }
+        // Also scan for any MySQL Server directory
+        if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\MySQL") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("MySQL Server") {
+                    let mysql_bin = format!(r"C:\Program Files\MySQL\{}\bin\mysql.exe", name);
+                    if std::path::Path::new(&mysql_bin).exists() {
+                        if let Ok(output) = crate::process::silent_cmd(&mysql_bin)
+                            .arg("--version")
+                            .output()
+                            .await
+                        {
+                            if output.status.success() {
+                                let raw = String::from_utf8_lossy(&output.stdout);
+                                return PrerequisiteStatus {
+                                    name: "MySQL".to_string(),
+                                    installed: true,
+                                    version: extract_version(&raw),
+                                    required_version: None,
+                                    installable: false,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: detect MySQL Docker container
     if let Ok(docker) = Docker::connect_with_local_defaults() {
         if let Ok(containers) = docker
             .list_containers(Some(ListContainersOptions::<String> {
@@ -885,13 +942,13 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
         name: "MySQL".to_string(),
         installed: false,
         version: None,
-        required_version: Some("8.0.0".to_string()),
+        required_version: None,
         installable: true,
     }
 }
 
 async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
-    // Try host-installed RabbitMQ
+    // 1. Try rabbitmqctl on PATH
     if let Ok(output) = crate::process::silent_cmd("rabbitmqctl")
         .arg("version")
         .output()
@@ -909,7 +966,71 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
         }
     }
 
-    // Fallback: detect RabbitMQ Docker container
+    // 2. Windows: check common install path (rabbitmqctl is often not on PATH)
+    #[cfg(target_os = "windows")]
+    {
+        let rabbitmq_base = r"C:\Program Files\RabbitMQ Server";
+        if let Ok(entries) = std::fs::read_dir(rabbitmq_base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("rabbitmq_server-") {
+                    let ctl = format!(r"{}\{}\sbin\rabbitmqctl.bat", rabbitmq_base, name);
+                    if let Ok(output) = crate::process::silent_cmd(&ctl)
+                        .arg("version")
+                        .output()
+                        .await
+                    {
+                        if output.status.success() {
+                            let raw = String::from_utf8_lossy(&output.stdout);
+                            return PrerequisiteStatus {
+                                name: "RabbitMQ".to_string(),
+                                installed: true,
+                                version: extract_version(&raw),
+                                required_version: None,
+                                installable: false,
+                            };
+                        }
+                    }
+                    // Directory exists even if rabbitmqctl fails — it's installed
+                    let version = name.strip_prefix("rabbitmq_server-").map(|v| v.to_string());
+                    return PrerequisiteStatus {
+                        name: "RabbitMQ".to_string(),
+                        installed: true,
+                        version,
+                        required_version: None,
+                        installable: false,
+                    };
+                }
+            }
+        }
+    }
+
+    // 3. Check management API (works regardless of PATH — just needs RabbitMQ running)
+    if let Ok(resp) = reqwest::Client::new()
+        .get("http://localhost:15672/api/overview")
+        .basic_auth("guest", Some("guest"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    {
+        if resp.status().is_success() {
+            // Try to extract version from the API response
+            let version = resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("rabbitmq_version")?.as_str().map(|s| s.to_string()));
+            return PrerequisiteStatus {
+                name: "RabbitMQ".to_string(),
+                installed: true,
+                version,
+                required_version: None,
+                installable: false,
+            };
+        }
+    }
+
+    // 4. Fallback: detect RabbitMQ Docker container
     if let Ok(docker) = Docker::connect_with_local_defaults() {
         if let Ok(containers) = docker
             .list_containers(Some(ListContainersOptions::<String> {
@@ -922,7 +1043,6 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
                 let image = container.image.as_deref().unwrap_or("");
                 if image.contains("rabbitmq:") {
                     let version = image.rsplit(':').next().and_then(|tag| {
-                        // Handle tags like "3.12.8-management"
                         let v = tag.split('-').next().unwrap_or(tag);
                         if v.chars()
                             .next()
