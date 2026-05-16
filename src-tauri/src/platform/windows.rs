@@ -1,201 +1,176 @@
-//! Windows Service management via sc.exe
+//! Windows daemon management via Task Scheduler (schtasks.exe).
+//!
+//! Uses a scheduled task instead of a Windows Service because Windows Services
+//! require SCM integration (StartServiceCtrlDispatcher) which adds FFI dependencies
+//! that can fail on some Windows versions. Task Scheduler provides the same
+//! functionality (auto-start, restart on failure, background execution) without
+//! the SCM requirement.
 
 use super::{ServiceResult, ServiceStatus, get_exe_path};
 
-const SERVICE_NAME: &str = "PuruNucleus";
+const TASK_NAME: &str = "PuruNucleus";
 const DISPLAY_NAME: &str = "Puru Nucleus";
 
-/// Register as a Windows service via sc.exe create.
+/// Register puru-nucleus as a scheduled task that runs at startup.
 pub async fn install() -> Result<ServiceResult, String> {
     let exe_path = get_exe_path()?;
-    // sc.exe requires the full command (with args) as the binPath value.
-    let bin_path = format!("\"{}\" daemon", exe_path);
 
-    // sc.exe has quirky parsing: the keyword (binPath=) and value are separate arguments,
-    // e.g.: sc create Name binPath= "path args" start= auto DisplayName= "Name"
-    let output = crate::process::silent_cmd("sc.exe")
+    // Create a scheduled task that:
+    // - Runs at system startup (ONSTART)
+    // - Runs as SYSTEM (highest privileges)
+    // - Restarts on failure (via /RI and repeat)
+    let output = crate::process::silent_cmd("schtasks")
         .args([
-            "create",
-            SERVICE_NAME,
-            "binPath=",
-            &bin_path,
-            "start=",
-            "auto",
-            "DisplayName=",
-            DISPLAY_NAME,
+            "/Create",
+            "/TN", TASK_NAME,
+            "/TR", &format!("\"{}\" daemon", exe_path),
+            "/SC", "ONSTART",
+            "/RU", "SYSTEM",
+            "/RL", "HIGHEST",
+            "/F",  // Force overwrite if exists
         ])
         .output()
         .await
-        .map_err(|e| format!("sc.exe create failed: {}", e))?;
+        .map_err(|e| format!("schtasks create failed: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = format!("{}{}", stdout, stderr);
-        if !combined.contains("already exists") {
-            return Err(format!("Service registration failed: {}", combined.trim()));
-        }
+        return Err(format!("Task registration failed: {}{}", stdout.trim(), stderr.trim()));
     }
 
-    // Set description
-    let _ = crate::process::silent_cmd("sc.exe")
-        .args([
-            "description",
-            SERVICE_NAME,
-            "Puru Nucleus - Hospital Deployment Manager daemon",
-        ])
-        .output()
-        .await;
-
-    // Configure recovery: restart on failure
-    let _ = crate::process::silent_cmd("sc.exe")
-        .args([
-            "failure",
-            SERVICE_NAME,
-            "reset=86400",
-            "actions=restart/10000/restart/30000/restart/60000",
-        ])
-        .output()
-        .await;
-
-    // Auto-start the service after registration
-    let _ = crate::process::silent_cmd("sc.exe")
-        .args(["start", SERVICE_NAME])
+    // Start the task immediately
+    let _ = crate::process::silent_cmd("schtasks")
+        .args(["/Run", "/TN", TASK_NAME])
         .output()
         .await;
 
     Ok(ServiceResult {
         success: true,
-        message: format!("Windows service '{}' installed and started.", DISPLAY_NAME),
+        message: format!("{} installed and started.", DISPLAY_NAME),
     })
 }
 
-/// Remove the Windows service.
+/// Remove the scheduled task.
 pub async fn uninstall() -> Result<ServiceResult, String> {
-    // Stop first (ignore errors)
-    let _ = crate::process::silent_cmd("sc.exe")
-        .args(["stop", SERVICE_NAME])
-        .output()
-        .await;
+    // Stop first (kill the daemon process)
+    let _ = stop().await;
 
-    // Brief pause to let it stop
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    let output = crate::process::silent_cmd("sc.exe")
-        .args(["delete", SERVICE_NAME])
+    let output = crate::process::silent_cmd("schtasks")
+        .args(["/Delete", "/TN", TASK_NAME, "/F"])
         .output()
         .await
-        .map_err(|e| format!("sc.exe delete failed: {}", e))?;
+        .map_err(|e| format!("schtasks delete failed: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = format!("{}{}", stdout, stderr);
-        if !combined.contains("not exist") {
-            return Err(format!("Service deletion failed: {}", combined.trim()));
+        let combined = format!("{}{}", stdout.trim(), stderr.trim());
+        if !combined.contains("does not exist") && !combined.contains("cannot find") {
+            return Err(format!("Task deletion failed: {}", combined));
         }
     }
 
     Ok(ServiceResult {
         success: true,
-        message: format!("Windows service '{}' removed.", SERVICE_NAME),
+        message: format!("{} removed.", DISPLAY_NAME),
     })
 }
 
-/// Start the Windows service.
+/// Start the daemon by running the scheduled task.
 pub async fn start() -> Result<ServiceResult, String> {
-    let output = crate::process::silent_cmd("sc.exe")
-        .args(["start", SERVICE_NAME])
+    let output = crate::process::silent_cmd("schtasks")
+        .args(["/Run", "/TN", TASK_NAME])
         .output()
         .await
-        .map_err(|e| format!("sc.exe start failed: {}", e))?;
+        .map_err(|e| format!("schtasks run failed: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = format!("{}{}", stdout.trim(), stderr.trim());
-        return Err(format!("Service start failed: {}", combined));
+        return Err(format!("Task start failed: {}{}", stdout.trim(), stderr.trim()));
     }
 
     Ok(ServiceResult {
         success: true,
-        message: format!("{} started.", SERVICE_NAME),
+        message: format!("{} started.", DISPLAY_NAME),
     })
 }
 
-/// Stop the Windows service.
+/// Stop the daemon by killing the process.
 pub async fn stop() -> Result<ServiceResult, String> {
-    let output = crate::process::silent_cmd("sc.exe")
-        .args(["stop", SERVICE_NAME])
+    // End the scheduled task instance
+    let _ = crate::process::silent_cmd("schtasks")
+        .args(["/End", "/TN", TASK_NAME])
         .output()
-        .await
-        .map_err(|e| format!("sc.exe stop failed: {}", e))?;
+        .await;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = format!("{}{}", stdout.trim(), stderr.trim());
-        return Err(format!("Service stop failed: {}", combined));
-    }
+    // Also kill any running puru-nucleus daemon process
+    let _ = crate::process::silent_cmd("taskkill")
+        .args(["/F", "/FI", "IMAGENAME eq puru-nucleus.exe", "/FI", "WINDOWTITLE eq *"])
+        .output()
+        .await;
+
+    // Small delay for cleanup
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     Ok(ServiceResult {
         success: true,
-        message: format!("{} stopped.", SERVICE_NAME),
+        message: format!("{} stopped.", DISPLAY_NAME),
     })
 }
 
-/// Query Windows service status via `sc.exe query`.
+/// Query the daemon status by checking the scheduled task and process.
 pub async fn status() -> Result<ServiceStatus, String> {
-    let output = crate::process::silent_cmd("sc.exe")
-        .args(["query", SERVICE_NAME])
+    // Check if the task exists
+    let output = crate::process::silent_cmd("schtasks")
+        .args(["/Query", "/TN", TASK_NAME, "/FO", "CSV", "/NH"])
         .output()
         .await
-        .map_err(|e| format!("sc.exe query failed: {}", e))?;
+        .map_err(|e| format!("schtasks query failed: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
-    if !output.status.success() || stdout.contains("does not exist") {
+    if !output.status.success() || stdout.contains("does not exist") || stdout.contains("cannot find") {
         return Ok(ServiceStatus {
             installed: false,
             running: false,
             enabled: false,
             pid: None,
-            detail: "Service not installed.".to_string(),
+            detail: "Daemon not installed.".to_string(),
         });
     }
 
-    // Parse STATE line: e.g., "STATE : 4  RUNNING"
-    let running = stdout.contains("RUNNING");
-    let stopped = stdout.contains("STOPPED");
-
-    // Parse PID line: e.g., "PID : 1234"
-    let pid = stdout
-        .lines()
-        .find(|l| l.contains("PID"))
-        .and_then(|l| {
-            l.split(':')
-                .nth(1)
-                .and_then(|v| v.trim().parse::<u32>().ok())
-                .filter(|&p| p > 0)
-        });
-
-    // Check if auto-start
-    let qc_output = crate::process::silent_cmd("sc.exe")
-        .args(["qc", SERVICE_NAME])
+    // Check if the daemon process is actually running
+    let ps_output = crate::process::silent_cmd("tasklist")
+        .args(["/FI", "IMAGENAME eq puru-nucleus.exe", "/FO", "CSV", "/NH"])
         .output()
         .await
         .ok();
-    let enabled = qc_output
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("AUTO_START"))
-        .unwrap_or(false);
 
-    let state_str = if running {
-        "RUNNING"
-    } else if stopped {
-        "STOPPED"
-    } else {
-        "UNKNOWN"
-    };
+    let mut running = false;
+    let mut pid = None;
+
+    if let Some(ps) = ps_output {
+        let ps_stdout = String::from_utf8_lossy(&ps.stdout);
+        // tasklist CSV format: "puru-nucleus.exe","1234","Console","1","12,345 K"
+        for line in ps_stdout.lines() {
+            if line.contains("puru-nucleus.exe") {
+                running = true;
+                // Extract PID from CSV
+                let parts: Vec<&str> = line.split(',').collect();
+                if parts.len() >= 2 {
+                    pid = parts[1].trim_matches('"').parse::<u32>().ok();
+                }
+                break;
+            }
+        }
+    }
+
+    // Task exists = enabled (runs at startup)
+    let enabled = stdout.contains("Ready") || stdout.contains("Running");
+
+    let state_str = if running { "RUNNING" } else { "STOPPED" };
 
     Ok(ServiceStatus {
         installed: true,

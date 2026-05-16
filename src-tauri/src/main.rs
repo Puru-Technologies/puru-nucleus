@@ -33,8 +33,6 @@ mod process;
 mod remote_shell;
 mod tls;
 mod installer;
-#[cfg(target_os = "windows")]
-mod win_service;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -46,25 +44,11 @@ fn main() {
     // Route based on subcommand
     match cli_args.command {
         Some(cli::Commands::Daemon) => {
-            // Daemon mode — headless background service
-            #[cfg(target_os = "windows")]
-            {
-                // Try to run as a Windows Service first (SCM-launched).
-                // If this fails (e.g. running interactively from terminal), fall back to normal daemon.
-                if let Err(_e) = win_service::run_as_service() {
-                    init_daemon_logging();
-                    tracing::info!("Starting puru-nucleus daemon (interactive mode)");
-                    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-                    rt.block_on(daemon::run_daemon());
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                init_daemon_logging();
-                tracing::info!("Starting puru-nucleus in daemon mode");
-                let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-                rt.block_on(daemon::run_daemon());
-            }
+            // Daemon mode — headless background service, log to file
+            init_daemon_logging();
+            tracing::info!("Starting puru-nucleus in daemon mode");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(daemon::run_daemon());
         }
         Some(command) => {
             // CLI mode — run command and exit
