@@ -1034,7 +1034,10 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         }
     } else {
         // Fallback: try host-installed rabbitmqctl
-        let vhost_output = crate::process::silent_cmd("rabbitmqctl")
+        let rabbitmqctl = find_rabbitmqctl().await
+            .ok_or_else(|| "Cannot reach RabbitMQ. rabbitmqctl not found on PATH or in default install directory.".to_string())?;
+
+        let vhost_output = crate::process::silent_cmd(&rabbitmqctl)
             .args(["add_vhost", "puru"])
             .output()
             .await
@@ -1054,7 +1057,7 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         ];
 
         for args in user_commands {
-            let output = crate::process::silent_cmd("rabbitmqctl")
+            let output = crate::process::silent_cmd(&rabbitmqctl)
                 .args(*args)
                 .output()
                 .await
@@ -1071,6 +1074,39 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
 
     tracing::info!("Setup: RabbitMQ configured (vhost=puru, user=puru)");
     Ok(())
+}
+
+/// Find rabbitmqctl binary — checks PATH first, then Windows default install directory.
+async fn find_rabbitmqctl() -> Option<String> {
+    // 1. Check PATH
+    if let Ok(output) = crate::process::silent_cmd("rabbitmqctl")
+        .arg("version")
+        .output()
+        .await
+    {
+        if output.status.success() {
+            return Some("rabbitmqctl".to_string());
+        }
+    }
+
+    // 2. Windows: scan default install directory
+    #[cfg(target_os = "windows")]
+    {
+        let rabbitmq_base = r"C:\Program Files\RabbitMQ Server";
+        if let Ok(entries) = std::fs::read_dir(rabbitmq_base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("rabbitmq_server-") {
+                    let ctl = format!(r"{}\{}\sbin\rabbitmqctl.bat", rabbitmq_base, name);
+                    if std::path::Path::new(&ctl).exists() {
+                        return Some(ctl);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Step 4: Generate docker-compose.yml and save config
