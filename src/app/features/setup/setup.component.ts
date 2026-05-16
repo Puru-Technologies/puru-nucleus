@@ -289,6 +289,25 @@ interface SetupStep {
               }
             </div>
 
+            <!-- Enabled Services -->
+            @if (enabledServices.length > 0) {
+              <div class="setup-section">
+                <h3>Enabled Services</h3>
+                <div class="enabled-services">
+                  @for (svc of enabledServices; track svc) {
+                    <span class="service-chip">{{ svc }}</span>
+                  }
+                </div>
+                @if (infraNotes.length > 0) {
+                  <div class="infra-notes">
+                    @for (note of infraNotes; track note) {
+                      <span class="infra-note"><mat-icon>info_outline</mat-icon> {{ note }}</span>
+                    }
+                  </div>
+                }
+              </div>
+            }
+
             <!-- Setup Steps -->
             <div class="setup-section">
               <h3>Installation Progress</h3>
@@ -381,6 +400,12 @@ interface SetupStep {
           @if (setupComplete) {
             <button mat-raised-button color="primary" (click)="finish()">
               Finish
+            </button>
+          }
+          @if (configSaved && !setupInProgress) {
+            <button mat-stroked-button color="warn" (click)="resetSetup()">
+              <mat-icon>restart_alt</mat-icon>
+              Reset Setup
             </button>
           }
         </mat-card-actions>
@@ -583,6 +608,43 @@ interface SetupStep {
       .install-hint {
         font-size: 12px;
         color: #666;
+      }
+    }
+
+    .enabled-services {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+
+      .service-chip {
+        padding: 4px 12px;
+        background: #e8f5e9;
+        color: #2e7d32;
+        border-radius: 16px;
+        font-size: 13px;
+        font-weight: 500;
+      }
+    }
+
+    .infra-notes {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+
+      .infra-note {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        color: #1565c0;
+
+        mat-icon {
+          font-size: 16px;
+          width: 16px;
+          height: 16px;
+        }
       }
     }
 
@@ -906,6 +968,8 @@ export class SetupComponent implements OnInit {
   adopting = false;
   mismatchError: string | null = null;
   configMismatches: Array<{ field: string; config_value: string; detected_value: string; choice: 'config' | 'detected' }> = [];
+  enabledServices: string[] = [];
+  infraNotes: string[] = [];
 
   steps: SetupStep[] = [
     { label: 'Check prerequisites', status: 'pending' },
@@ -950,6 +1014,7 @@ export class SetupComponent implements OnInit {
       if (this.config.mysql_password) {
         this.configSaved = true;
         await this.loadPrerequisites();
+        await this.loadEnabledServices();
       }
     } catch {
       // Will show defaults
@@ -1091,6 +1156,42 @@ export class SetupComponent implements OnInit {
       this.prerequisites = prereqs;
       this.installablePrereqs = prereqs.filter(p => !p.installed && p.installable);
       this.detectionResult = detection;
+    } catch {
+      // Error handled by TauriService
+    }
+  }
+
+  async loadEnabledServices(): Promise<void> {
+    try {
+      const modules = await this.tauri.invokeSilent<Record<string, boolean>>('get_service_modules');
+      const serviceNames: Record<string, string> = {
+        auth: 'Auth', xenon: 'Xenon', has: 'HAS', pacs: 'PACS', argon: 'Argon (Pathology)',
+        comm: 'Comm', realtime: 'Realtime', neon: 'Neon (Medical)', mercury: 'Mercury (HRMS)',
+        counter: 'Counter', bridge: 'Bridge', integration: 'Integration', hydrogen: 'Hydrogen (Frontend)',
+      };
+      this.enabledServices = Object.entries(modules)
+        .filter(([_, enabled]) => enabled)
+        .map(([key]) => serviceNames[key] || key);
+
+      // Check infra notes
+      this.infraNotes = [];
+      const mysqlOnHost = this.prerequisites.some(p => p.name === 'MySQL' && p.installed);
+      const rmqOnHost = this.prerequisites.some(p => p.name === 'RabbitMQ' && p.installed);
+      if (mysqlOnHost) this.infraNotes.push('MySQL detected on host — Docker container will be skipped');
+      if (rmqOnHost) this.infraNotes.push('RabbitMQ detected on host — Docker container will be skipped');
+    } catch {
+      // Firestore not reachable or hospital code not set — use defaults
+      this.enabledServices = ['Auth', 'Xenon', 'HAS', 'PACS', 'Argon', 'Comm', 'Realtime', 'Neon', 'Mercury', 'Counter', 'Bridge', 'Integration', 'Hydrogen'];
+    }
+  }
+
+  async resetSetup(): Promise<void> {
+    if (!confirm('This will delete the generated docker-compose.yml and env files. Continue?')) return;
+    try {
+      const msg = await this.tauri.invoke<string>('setup_reset');
+      this.notification.success(msg);
+      this.setupComplete = false;
+      this.steps.forEach(s => s.status = 'pending');
     } catch {
       // Error handled by TauriService
     }

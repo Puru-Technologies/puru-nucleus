@@ -168,6 +168,7 @@ fn run_gui() {
             commands::setup_create_databases,
             commands::setup_configure_rabbitmq,
             commands::setup_generate_config,
+            commands::setup_reset,
             commands::setup_pull_images,
             commands::setup_start_services,
             commands::setup_health_check,
