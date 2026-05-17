@@ -556,6 +556,7 @@ const SERVICE_JAVA_VERSIONS: &[(&str, &str)] = &[
     ("puru-bridge", "21"),
     ("puru-realtime", "21"),
     ("puru-mercury", "25"),
+    ("puru-counter", "21"),
     ("puru-integration", "21"),
 ];
 
