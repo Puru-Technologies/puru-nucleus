@@ -121,6 +121,7 @@ fn run_gui() {
             commands::start_backup,
             commands::get_backup_history,
             commands::restore_backup,
+            commands::restore_pitr,
             // Config
             commands::get_config,
             commands::save_config,

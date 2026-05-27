@@ -70,6 +70,7 @@ pub async fn run_daemon() {
         .route("/api/alerts/:id/ack", post(routes::acknowledge_alert))
         // Restore
         .route("/api/restore", post(routes::trigger_restore))
+        .route("/api/restore/pitr", post(routes::trigger_pitr))
         // Log file reader
         .route("/api/logs/sources", get(routes::log_sources))
         .route("/api/logs/files", get(routes::log_files))

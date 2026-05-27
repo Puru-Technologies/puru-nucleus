@@ -752,6 +752,42 @@ async fn cmd_binlog(args: BinlogArgs) {
 // ── Restore ──────────────────────────────────────────────────────────────────
 
 async fn cmd_restore(args: RestoreArgs) {
+    // Point-in-time recovery mode
+    if let Some(ref stop_datetime) = args.pitr {
+        let backup_id = if args.latest {
+            None
+        } else {
+            args.backup_id.as_deref().map(String::from)
+        };
+
+        println!(
+            "  Point-in-time recovery to {} ...",
+            stop_datetime.cyan()
+        );
+        if let Some(ref id) = backup_id {
+            println!("  Base backup: {}", id.cyan());
+        } else {
+            println!("  Base backup: {}", "latest".cyan());
+        }
+
+        match crate::backup::binlog::restore_pitr(backup_id.as_deref(), stop_datetime).await {
+            Ok(result) => {
+                println!();
+                println!("  {} Point-in-time recovery completed!", "✓".green().bold());
+                println!("  Base backup restored: {}", result.backup_restored.cyan());
+                println!("  Binlogs applied:      {}", result.binlogs_applied.to_string().cyan());
+                println!("  Target time:          {}", result.stop_datetime.cyan());
+                println!("  Duration:             {}s", result.duration_seconds);
+                println!();
+            }
+            Err(e) => {
+                eprintln!("{} {}", "Error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let backup_id = if args.latest {
         // Find the latest completed backup
         match crate::backup::get_backup_history().await {

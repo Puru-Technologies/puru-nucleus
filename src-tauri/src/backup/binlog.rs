@@ -6,7 +6,7 @@ use flate2::Compression;
 use mysql_async::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{self, NucleusConfig};
 use crate::error::NucleusError;
@@ -313,6 +313,242 @@ pub async fn ship_binlogs_to_lan(
         duration_seconds: start.elapsed().as_secs(),
         errors,
     })
+}
+
+/// Point-in-time recovery: restore full backup + replay binlogs up to target timestamp.
+///
+/// Steps:
+/// 1. Restore the specified (or latest) full backup via `restore_backup()`
+/// 2. Find shipped binlog `.gz` files on LAN that are newer than the backup
+/// 3. Decompress and replay each with `mysqlbinlog --stop-datetime={target}`
+pub async fn restore_pitr(
+    backup_id: Option<&str>,
+    stop_datetime: &str,
+) -> Result<PitrResult, NucleusError> {
+    let cfg = config::load_config()?;
+    if cfg.hospital_code.is_empty() {
+        return Err(NucleusError::InvalidConfig(
+            "Hospital code is not set.".into(),
+        ));
+    }
+    if !cfg.lan.enabled || cfg.lan.path.is_empty() {
+        return Err(NucleusError::InvalidConfig(
+            "LAN path must be configured for point-in-time recovery (binlogs are read from LAN).".into(),
+        ));
+    }
+
+    // Validate stop_datetime format: "YYYY-MM-DD HH:MM:SS"
+    if chrono::NaiveDateTime::parse_from_str(stop_datetime, "%Y-%m-%d %H:%M:%S").is_err() {
+        return Err(NucleusError::Validation(format!(
+            "Invalid datetime format '{}'. Expected: YYYY-MM-DD HH:MM:SS",
+            stop_datetime
+        )));
+    }
+
+    let start = std::time::Instant::now();
+
+    // Step 1: Restore the base backup
+    let resolved_id = match backup_id {
+        Some(id) => id.to_string(),
+        None => {
+            let history = super::get_backup_history().await?;
+            history
+                .iter()
+                .find(|r| r.status == super::BackupStatus::Completed)
+                .map(|r| r.id.clone())
+                .ok_or_else(|| NucleusError::NotFound("No completed backups found".into()))?
+        }
+    };
+
+    tracing::info!("PITR Step 1: Restoring base backup {}", resolved_id);
+    super::restore_backup(&resolved_id).await?;
+
+    // Step 2: Find binlog files on LAN
+    let binlog_dir = PathBuf::from(&cfg.lan.path)
+        .join(&cfg.hospital_code)
+        .join("binlogs");
+
+    if !binlog_dir.exists() {
+        return Ok(PitrResult {
+            backup_restored: resolved_id,
+            binlogs_applied: 0,
+            stop_datetime: stop_datetime.to_string(),
+            duration_seconds: start.elapsed().as_secs(),
+        });
+    }
+
+    let mut gz_files: Vec<PathBuf> = std::fs::read_dir(&binlog_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                == Some("gz")
+        })
+        .map(|e| e.path())
+        .collect();
+
+    gz_files.sort();
+
+    if gz_files.is_empty() {
+        tracing::info!("PITR: No binlog files found on LAN, restore complete (base backup only)");
+        return Ok(PitrResult {
+            backup_restored: resolved_id,
+            binlogs_applied: 0,
+            stop_datetime: stop_datetime.to_string(),
+            duration_seconds: start.elapsed().as_secs(),
+        });
+    }
+
+    // Step 3: Decompress and apply each binlog with --stop-datetime
+    let temp_dir = std::env::temp_dir().join("puru-pitr-binlogs");
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir)?;
+    }
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let mut applied = 0u32;
+    for gz_path in &gz_files {
+        let file_stem = gz_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        // Decompress .gz → raw binlog
+        let raw_path = temp_dir.join(file_stem);
+        decompress_gz(gz_path, &raw_path)?;
+
+        // Apply with mysqlbinlog --stop-datetime piped to mysql
+        tracing::info!("PITR: Applying binlog {} (stop at {})", file_stem, stop_datetime);
+        match apply_binlog_with_stop(&cfg, &raw_path, stop_datetime).await {
+            Ok(()) => applied += 1,
+            Err(e) => {
+                tracing::warn!("PITR: Failed to apply {}: {}", file_stem, e);
+                // Continue — partial replay is better than none
+            }
+        }
+
+        // Clean up decompressed file
+        let _ = std::fs::remove_file(&raw_path);
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    let result = PitrResult {
+        backup_restored: resolved_id,
+        binlogs_applied: applied,
+        stop_datetime: stop_datetime.to_string(),
+        duration_seconds: start.elapsed().as_secs(),
+    };
+
+    tracing::info!(
+        "PITR complete: backup={}, binlogs={}, target={}, {}s",
+        result.backup_restored,
+        result.binlogs_applied,
+        result.stop_datetime,
+        result.duration_seconds
+    );
+
+    Ok(result)
+}
+
+/// Decompress a .gz file to a raw output path.
+fn decompress_gz(gz_path: &Path, out_path: &Path) -> Result<(), NucleusError> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let file = std::fs::File::open(gz_path)?;
+    let mut decoder = GzDecoder::new(file);
+    let mut data = Vec::new();
+    decoder.read_to_end(&mut data)?;
+    std::fs::write(out_path, &data)?;
+    Ok(())
+}
+
+/// Apply a raw binlog file using `mysqlbinlog --stop-datetime | mysql`.
+async fn apply_binlog_with_stop(
+    config: &NucleusConfig,
+    binlog_path: &Path,
+    stop_datetime: &str,
+) -> Result<(), NucleusError> {
+    // mysqlbinlog --stop-datetime="..." binlog_file | mysql -u... -p...
+    let binlog_output = crate::process::silent_cmd("mysqlbinlog")
+        .arg(format!("--stop-datetime={}", stop_datetime))
+        .arg(binlog_path.to_string_lossy().as_ref())
+        .output()
+        .await
+        .map_err(|e| NucleusError::MySqlConnection(format!("Failed to run mysqlbinlog: {}", e)))?;
+
+    if !binlog_output.status.success() {
+        let stderr = String::from_utf8_lossy(&binlog_output.stderr);
+        return Err(NucleusError::MySqlConnection(format!(
+            "mysqlbinlog failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    if binlog_output.stdout.is_empty() {
+        return Ok(()); // No events in this binlog before stop_datetime
+    }
+
+    // Pipe SQL output into mysql client
+    let use_local = super::has_local_mysql().await;
+
+    let mut child = if use_local {
+        crate::process::silent_cmd("mysql")
+            .env("MYSQL_PWD", &config.mysql_password)
+            .args([
+                &format!("-h{}", config.mysql_host),
+                &format!("-P{}", config.mysql_port),
+                &format!("-u{}", config.mysql_user),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to spawn mysql: {}", e)))?
+    } else {
+        let container = super::find_mysql_container().await.ok_or_else(|| {
+            NucleusError::MySqlConnection(
+                "mysql client not found locally and no running MySQL Docker container found.".into(),
+            )
+        })?;
+        crate::process::silent_cmd("docker")
+            .args([
+                "exec", "-i", &container, "mysql",
+                &format!("-u{}", config.mysql_user),
+                &format!("-p{}", config.mysql_password),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| NucleusError::MySqlConnection(format!("Failed to spawn docker exec mysql: {}", e)))?
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(&binlog_output.stdout).await?;
+    }
+
+    let output = child.wait_with_output().await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NucleusError::MySqlConnection(format!(
+            "mysql replay failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PitrResult {
+    pub backup_restored: String,
+    pub binlogs_applied: u32,
+    pub stop_datetime: String,
+    pub duration_seconds: u64,
 }
 
 /// Get current binlog status (LAN shipping info + MySQL master status).

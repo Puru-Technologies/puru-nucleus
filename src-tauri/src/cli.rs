@@ -214,6 +214,11 @@ pub struct RestoreArgs {
     /// Restore only databases
     #[arg(long)]
     pub db_only: bool,
+
+    /// Point-in-time recovery: restore backup + replay binlogs up to this timestamp.
+    /// Format: "YYYY-MM-DD HH:MM:SS" (e.g. "2026-05-28 14:30:00")
+    #[arg(long)]
+    pub pitr: Option<String>,
 }
 
 #[derive(Args)]

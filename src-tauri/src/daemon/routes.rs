@@ -367,6 +367,22 @@ pub async fn trigger_restore(
     Ok(Json(serde_json::json!({"ok": true, "backup_id": backup_id})))
 }
 
+#[derive(Deserialize)]
+pub struct PitrRequest {
+    pub backup_id: Option<String>,
+    pub stop_datetime: String,
+}
+
+/// POST /api/restore/pitr — point-in-time recovery
+pub async fn trigger_pitr(
+    Json(body): Json<PitrRequest>,
+) -> Result<Json<crate::backup::binlog::PitrResult>, (StatusCode, String)> {
+    crate::backup::binlog::restore_pitr(body.backup_id.as_deref(), &body.stop_datetime)
+        .await
+        .map_err(|e| internal_err(e.user_message()))
+        .map(Json)
+}
+
 // ── Log File Reader ──────────────────────────────────────────────────────────
 
 /// GET /api/logs/sources — list known log source directories

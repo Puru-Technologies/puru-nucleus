@@ -349,6 +349,17 @@ pub async fn restore_backup(backup_id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Point-in-time recovery: restore backup + replay binlogs up to target timestamp
+#[tauri::command]
+pub async fn restore_pitr(
+    backup_id: Option<String>,
+    stop_datetime: String,
+) -> Result<crate::backup::binlog::PitrResult, String> {
+    crate::backup::binlog::restore_pitr(backup_id.as_deref(), &stop_datetime)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Get configuration
 #[tauri::command]
 pub async fn get_config() -> Result<NucleusConfig, String> {
