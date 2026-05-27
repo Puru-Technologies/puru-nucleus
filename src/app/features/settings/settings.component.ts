@@ -51,15 +51,24 @@ import { open } from '@tauri-apps/plugin-dialog';
                 <input matInput [(ngModel)]="config.hospital_code" readonly>
               </mat-form-field>
 
+              <div class="mode-display">
+                <span class="mode-label">Mode:</span>
+                <span class="mode-value" [class.native]="config.deployment_mode === 'native'">
+                  {{ config.deployment_mode === 'native' ? 'Native (JAR)' : 'Docker' }}
+                </span>
+              </div>
+
               <mat-form-field appearance="outline" class="full-width">
                 <mat-label>Server IP</mat-label>
                 <input matInput [(ngModel)]="config.server_ip">
               </mat-form-field>
 
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>Docker Compose Path</mat-label>
-                <input matInput [(ngModel)]="config.docker_compose_path">
-              </mat-form-field>
+              @if (config.deployment_mode !== 'native') {
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Docker Compose Path</mat-label>
+                  <input matInput [(ngModel)]="config.docker_compose_path">
+                </mat-form-field>
+              }
             </mat-card-content>
           </mat-card>
 
@@ -339,14 +348,16 @@ import { open } from '@tauri-apps/plugin-dialog';
                     </div>
                   </div>
 
-                  <div class="service-row">
-                    <div class="service-label">
-                      <mat-icon [class]="daemonStatusInfo?.docker_connected ? 'status-ok' : 'status-warn'">
-                        {{ daemonStatusInfo?.docker_connected ? 'check_circle' : 'warning' }}
-                      </mat-icon>
-                      <span>Docker: {{ daemonStatusInfo?.docker_connected ? 'Connected' : 'Not connected' }}</span>
+                  @if (config.deployment_mode !== 'native') {
+                    <div class="service-row">
+                      <div class="service-label">
+                        <mat-icon [class]="daemonStatusInfo?.docker_connected ? 'status-ok' : 'status-warn'">
+                          {{ daemonStatusInfo?.docker_connected ? 'check_circle' : 'warning' }}
+                        </mat-icon>
+                        <span>Docker: {{ daemonStatusInfo?.docker_connected ? 'Connected' : 'Not connected' }}</span>
+                      </div>
                     </div>
-                  </div>
+                  }
                 }
 
                 @if (daemonStatusInfo?.service_detail) {
@@ -562,6 +573,32 @@ import { open } from '@tauri-apps/plugin-dialog';
         padding: 8px;
         border-radius: 50%;
         color: #3f51b5;
+      }
+    }
+
+    .mode-display {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0 16px;
+
+      .mode-label {
+        font-size: 0.85rem;
+        color: #666;
+      }
+
+      .mode-value {
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 2px 10px;
+        border-radius: 12px;
+        background: #e3f2fd;
+        color: #1565c0;
+
+        &.native {
+          background: #fff3e0;
+          color: #e65100;
+        }
       }
     }
 

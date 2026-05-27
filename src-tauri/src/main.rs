@@ -180,6 +180,12 @@ fn run_gui() {
             commands::pull_single_jar,
             commands::check_jar_updates,
             commands::get_deployment_mode,
+            commands::update_native_service,
+            commands::rollback_native_service,
+            // Native Setup Steps
+            commands::setup_generate_env_files,
+            commands::setup_pull_jars,
+            commands::setup_start_native_services,
             // Docker Updates
             commands::update_docker_service,
             commands::rollback_docker_service,

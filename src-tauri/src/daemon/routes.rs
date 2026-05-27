@@ -543,6 +543,26 @@ pub async fn check_jar_updates() -> Result<Json<Vec<crate::releases::JarUpdateCh
         .map_err(|e| internal_err(e.user_message()))
 }
 
+/// POST /api/jars/update/:service — update a native service (stop → pull → start)
+pub async fn update_native_service(
+    Path(service): Path<String>,
+) -> Result<Json<crate::releases::JarPullResult>, (StatusCode, String)> {
+    crate::services::update_native_service(&service)
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
+/// POST /api/jars/rollback/:service — rollback a native service to previous JAR
+pub async fn rollback_native_service(
+    Path(service): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    crate::services::rollback_native_service(&service)
+        .await
+        .map(|_| Json(serde_json::json!({"ok": true})))
+        .map_err(|e| internal_err(e.user_message()))
+}
+
 // ── LAN Binlog ──────────────────────────────────────────────────────────────
 
 /// POST /api/lan/binlog/ship — ship binlog files to LAN

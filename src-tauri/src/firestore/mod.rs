@@ -26,6 +26,7 @@ pub struct DaemonInfo {
     pub last_backup_at: Option<String>,
     pub last_backup_status: String,
     pub total_backups: usize,
+    pub deployment_mode: String,
 }
 
 /// High-level Firestore client backed by a service account token source.
@@ -134,6 +135,10 @@ impl FirestoreClient {
         nucleus_fields.insert("version".into(), string_value(env!("CARGO_PKG_VERSION")));
         nucleus_fields.insert("last_seen".into(), timestamp_value(&now));
         nucleus_fields.insert("online".into(), boolean_value(true));
+        nucleus_fields.insert(
+            "deployment_mode".into(),
+            string_value(&format!("{:?}", config.deployment_mode).to_lowercase()),
+        );
 
         let mut sync_fields = serde_json::Map::new();
         sync_fields.insert("pending_count".into(), integer_value(0));
@@ -264,6 +269,10 @@ impl FirestoreClient {
         nucleus_fields.insert(
             "scheduled_backups_enabled".into(),
             boolean_value(daemon_info.scheduled_backups_enabled),
+        );
+        nucleus_fields.insert(
+            "deployment_mode".into(),
+            string_value(&daemon_info.deployment_mode),
         );
 
         // Machine fingerprint (from local license, if available)

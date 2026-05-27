@@ -82,6 +82,8 @@ pub async fn run_daemon() {
         // Native JAR deployment
         .route("/api/jars/pull", post(routes::pull_jars))
         .route("/api/jars/updates", get(routes::check_jar_updates))
+        .route("/api/jars/update/:service", post(routes::update_native_service))
+        .route("/api/jars/rollback/:service", post(routes::rollback_native_service))
         // LAN binlog
         .route("/api/lan/binlog/ship", post(routes::ship_binlogs_lan))
         // Middleware

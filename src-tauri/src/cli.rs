@@ -117,6 +117,18 @@ pub enum Commands {
     /// Check for available JAR updates
     JarUpdates,
 
+    /// Update a native service (stop → pull new JAR → start)
+    Update {
+        /// Service name (e.g. puru-has)
+        service: String,
+    },
+
+    /// Rollback a native service to its previous JAR
+    Rollback {
+        /// Service name (e.g. puru-has)
+        service: String,
+    },
+
     /// Run in daemon mode (background service)
     Daemon,
 }

@@ -250,6 +250,7 @@ async fn status_reporter(interval_minutes: u32, port: u16) {
                 .map(|b| format!("{:?}", b.status).to_lowercase())
                 .unwrap_or_else(|| "none".into()),
             total_backups,
+            deployment_mode: format!("{:?}", config.deployment_mode).to_lowercase(),
         };
 
         // Get current services

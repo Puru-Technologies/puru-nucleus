@@ -227,6 +227,10 @@ export interface NucleusConfig {
   mysql_password: string;
   auto_update_enabled: boolean;
   release_channel: string;
+  deployment_mode: 'docker' | 'native';
+  jars_dir?: string;
+  jres_dir?: string;
+  native_logs_dir?: string;
   puru_data_path?: string;
   daemon?: DaemonConfig;
   lan: LanConfig;

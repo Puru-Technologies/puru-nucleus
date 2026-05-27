@@ -873,14 +873,17 @@ async fn pull_hydrogen_inner(
     // Create dir and extract tarball
     tokio::fs::create_dir_all(&nginx_dir).await?;
 
+    let mut tar_args = vec![
+        "-xzf".to_string(),
+        tmp_tarball.to_string_lossy().to_string(),
+        "-C".to_string(),
+        nginx_dir.to_string_lossy().to_string(),
+    ];
+    if !cfg!(windows) {
+        tar_args.push("--no-same-owner".to_string());
+    }
     let tar_output = crate::process::silent_cmd("tar")
-        .args([
-            "-xzf",
-            &tmp_tarball.to_string_lossy(),
-            "-C",
-            &nginx_dir.to_string_lossy(),
-            "--no-same-owner",
-        ])
+        .args(&tar_args)
         .output()
         .await?;
 
@@ -978,10 +981,10 @@ pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
             ))
         })?;
 
-    // Download tarball
+    // Download archive (tar.gz on Linux/Mac, zip on Windows)
     let gcs_path = format!("jres/{}", filename);
-    let tmp_tarball = std::env::temp_dir().join(filename);
-    let size_mb = download_gcs_to_file(&client, &gcs_path, &tmp_tarball).await?;
+    let tmp_archive = std::env::temp_dir().join(filename);
+    let size_mb = download_gcs_to_file(&client, &gcs_path, &tmp_archive).await?;
 
     tracing::info!(
         "Downloaded JRE {} ({:.1} MB), extracting...",
@@ -989,27 +992,45 @@ pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
         size_mb
     );
 
-    // Extract — tarballs typically have a top-level dir like jdk-21.0.x-jre/
+    // Extract — archives typically have a top-level dir like jdk-21.0.x-jre/
     // We extract to a temp dir and move the contents into our target dir
     let tmp_extract = std::env::temp_dir().join(format!("jre-extract-{}", java_version));
     let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
     tokio::fs::create_dir_all(&tmp_extract).await?;
 
-    let tar_output = crate::process::silent_cmd("tar")
-        .args([
-            "-xzf",
-            &tmp_tarball.to_string_lossy(),
-            "-C",
-            &tmp_extract.to_string_lossy(),
-            "--no-same-owner",
-        ])
-        .output()
-        .await?;
+    let is_zip = filename.ends_with(".zip");
 
-    if !tar_output.status.success() {
-        let stderr = String::from_utf8_lossy(&tar_output.stderr);
+    let extract_output = if is_zip {
+        // Use tar on Windows (Windows 10+ tar handles zip) or PowerShell fallback
+        crate::process::silent_cmd("tar")
+            .args([
+                "-xf",
+                &tmp_archive.to_string_lossy(),
+                "-C",
+                &tmp_extract.to_string_lossy(),
+            ])
+            .output()
+            .await?
+    } else {
+        let mut jre_tar_args = vec![
+            "-xzf".to_string(),
+            tmp_archive.to_string_lossy().to_string(),
+            "-C".to_string(),
+            tmp_extract.to_string_lossy().to_string(),
+        ];
+        if !cfg!(windows) {
+            jre_tar_args.push("--no-same-owner".to_string());
+        }
+        crate::process::silent_cmd("tar")
+            .args(&jre_tar_args)
+            .output()
+            .await?
+    };
+
+    if !extract_output.status.success() {
+        let stderr = String::from_utf8_lossy(&extract_output.stderr);
         return Err(NucleusError::Internal(format!(
-            "Failed to extract JRE {} tarball: {}",
+            "Failed to extract JRE {} archive: {}",
             java_version, stderr
         )));
     }
@@ -1034,7 +1055,7 @@ pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
     tokio::fs::rename(&extracted_dir, &jre_dir).await?;
 
     // Cleanup
-    let _ = tokio::fs::remove_file(&tmp_tarball).await;
+    let _ = tokio::fs::remove_file(&tmp_archive).await;
     let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
 
     // Verify java binary exists

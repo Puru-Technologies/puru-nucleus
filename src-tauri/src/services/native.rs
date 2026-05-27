@@ -66,13 +66,19 @@ fn is_process_alive(pid: u32) -> bool {
         // kill(pid, 0) checks if process exists without sending a signal
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Use sysinfo to check process existence on Windows
-        use sysinfo::{Pid, ProcessExt, System, SystemExt};
-        let mut sys = System::new();
-        sys.refresh_process(Pid::from(pid as usize));
-        sys.process(Pid::from(pid as usize)).is_some()
+        // Use tasklist to check if PID exists — no extra dependencies needed
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .output()
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout);
+                // tasklist output contains the PID if the process exists,
+                // otherwise it says "no tasks" or "INFO: No tasks"
+                out.contains(&pid.to_string()) && !out.contains("No tasks")
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -123,7 +129,11 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     })?;
 
     let jre_dir = config.jres_dir().join(format!("temurin-{}", java_version));
-    let java_bin = jre_dir.join("bin").join("java");
+    let java_bin = if cfg!(windows) {
+        jre_dir.join("bin").join("java.exe")
+    } else {
+        jre_dir.join("bin").join("java")
+    };
 
     if !java_bin.exists() {
         return Err(NucleusError::NotFound(format!(
@@ -190,29 +200,57 @@ pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), Nucl
 
     tracing::info!("Stopping {} (PID {})...", name, pid);
 
-    // Send SIGTERM
     #[cfg(unix)]
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+    {
+        // Send SIGTERM for graceful shutdown
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+
+        // Wait up to 30 seconds for graceful shutdown
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        loop {
+            if !is_process_alive(pid) {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                tracing::warn!("{} did not stop within 30s, sending SIGKILL", name);
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
     }
 
-    // Wait up to 30 seconds for graceful shutdown
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
-    loop {
-        if !is_process_alive(pid) {
-            break;
-        }
-        if tokio::time::Instant::now() > deadline {
-            tracing::warn!("{} did not stop within 30s, sending SIGKILL", name);
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
+    #[cfg(windows)]
+    {
+        // On Windows, use taskkill /PID which sends WM_CLOSE first (graceful)
+        let _ = crate::process::silent_cmd("taskkill")
+            .args(["/PID", &pid.to_string()])
+            .output()
+            .await;
+
+        // Wait up to 30 seconds for graceful shutdown
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        loop {
+            if !is_process_alive(pid) {
+                break;
             }
-            // Wait a moment for SIGKILL to take effect
+            if tokio::time::Instant::now() > deadline {
+                tracing::warn!("{} did not stop within 30s, force killing", name);
+                // Force kill with /F
+                let _ = crate::process::silent_cmd("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output()
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                break;
+            }
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            break;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
     // Remove PID file
@@ -317,6 +355,73 @@ pub async fn get_logs(
     };
 
     Ok(lines[start..].join("\n"))
+}
+
+/// Update a service: stop → pull new JAR → start.
+/// Returns the pull result with new SHA info.
+pub async fn update_service(name: &str, config: &NucleusConfig) -> Result<releases::JarPullResult, NucleusError> {
+    tracing::info!("Updating {} ...", name);
+
+    // Stop if running (ignore errors — might already be stopped)
+    let was_running = read_pid(config, name)
+        .map(is_process_alive)
+        .unwrap_or(false);
+
+    if was_running {
+        stop_service(name, config).await?;
+        // Brief pause to ensure port is released
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    // Pull new JAR (old one is backed up as .bak automatically)
+    let pull_result = releases::pull_jar(name).await?;
+
+    // Restart if it was running before
+    if was_running {
+        start_service(name, config).await?;
+    }
+
+    tracing::info!("Updated {} to build {}", name, pull_result.short_sha);
+    Ok(pull_result)
+}
+
+/// Rollback a service to the previous JAR (.bak file).
+pub async fn rollback_service(name: &str, config: &NucleusConfig) -> Result<(), NucleusError> {
+    let jars_dir = config.jars_dir();
+    let jar = jars_dir.join(format!("{}.jar", name));
+    let bak = jars_dir.join(format!("{}.jar.bak", name));
+
+    if !bak.exists() {
+        return Err(NucleusError::NotFound(format!(
+            "No backup JAR found for {}. Cannot rollback.",
+            name
+        )));
+    }
+
+    let was_running = read_pid(config, name)
+        .map(is_process_alive)
+        .unwrap_or(false);
+
+    if was_running {
+        stop_service(name, config).await?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    // Swap: current → .bad, .bak → current
+    let bad = jars_dir.join(format!("{}.jar.bad", name));
+    if jar.exists() {
+        std::fs::rename(&jar, &bad)?;
+    }
+    std::fs::rename(&bak, &jar)?;
+    // Remove the bad version
+    let _ = std::fs::remove_file(&bad);
+
+    if was_running {
+        start_service(name, config).await?;
+    }
+
+    tracing::info!("Rolled back {} to previous JAR", name);
+    Ok(())
 }
 
 // ── Health probing ──────────────────────────────────────────────────────────

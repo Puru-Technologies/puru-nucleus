@@ -11,6 +11,7 @@ import { MatListModule } from '@angular/material/list';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { Router } from '@angular/router';
 import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult, InstallProgress, InstallResult } from '../../core/services/tauri.service';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -38,7 +39,8 @@ interface SetupStep {
     MatListModule,
     MatFormFieldModule,
     MatInputModule,
-    MatDividerModule
+    MatDividerModule,
+    MatButtonToggleModule
   ],
   template: `
     <div class="setup-page">
@@ -86,16 +88,37 @@ interface SetupStep {
                     </mat-form-field>
                   </div>
 
-                  <div class="browse-row">
-                    <mat-form-field appearance="outline" class="flex-1">
-                      <mat-label>Docker Compose Path</mat-label>
-                      <input matInput [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
-                      <mat-hint>Path to docker-compose.yml</mat-hint>
-                    </mat-form-field>
-                    <button mat-stroked-button type="button" (click)="browseComposePath()">
-                      <mat-icon>folder_open</mat-icon> Browse
-                    </button>
+                  <div class="mode-selector">
+                    <span class="mode-label">Deployment Mode</span>
+                    <mat-button-toggle-group [(ngModel)]="config.deployment_mode" class="mode-toggle">
+                      <mat-button-toggle value="docker">
+                        <mat-icon>cloud</mat-icon> Docker
+                      </mat-button-toggle>
+                      <mat-button-toggle value="native">
+                        <mat-icon>computer</mat-icon> Native (JAR)
+                      </mat-button-toggle>
+                    </mat-button-toggle-group>
+                    <span class="mode-hint">
+                      @if (config.deployment_mode === 'native') {
+                        Runs services as Java processes — no Docker required. Best for low-spec hardware.
+                      } @else {
+                        Runs services as Docker containers. Requires Docker Desktop or Docker Engine.
+                      }
+                    </span>
                   </div>
+
+                  @if (config.deployment_mode !== 'native') {
+                    <div class="browse-row">
+                      <mat-form-field appearance="outline" class="flex-1">
+                        <mat-label>Docker Compose Path</mat-label>
+                        <input matInput [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
+                        <mat-hint>Path to docker-compose.yml</mat-hint>
+                      </mat-form-field>
+                      <button mat-stroked-button type="button" (click)="browseComposePath()">
+                        <mat-icon>folder_open</mat-icon> Browse
+                      </button>
+                    </div>
+                  }
 
                   <div class="browse-row">
                     <mat-form-field appearance="outline" class="flex-1">
@@ -157,8 +180,14 @@ interface SetupStep {
               <button mat-stroked-button (click)="editConfig()">Edit</button>
             </div>
 
-            <!-- Detection Result -->
-            @if (detectionResult?.found) {
+            <!-- Mode Badge -->
+            <div class="mode-badge" [class.native]="config!.deployment_mode === 'native'">
+              <mat-icon>{{ config!.deployment_mode === 'native' ? 'computer' : 'cloud' }}</mat-icon>
+              <span>{{ config!.deployment_mode === 'native' ? 'Native (JAR) Mode' : 'Docker Mode' }}</span>
+            </div>
+
+            <!-- Detection Result (Docker only) -->
+            @if (detectionResult?.found && config!.deployment_mode !== 'native') {
               <div class="detection-banner">
                 <mat-icon>info</mat-icon>
                 <div class="detection-info">
@@ -503,6 +532,61 @@ interface SetupStep {
       gap: 12px;
       padding: 2rem;
       color: #666;
+    }
+
+    /* ── Deployment Mode Selector ────────── */
+    .mode-selector {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px 0;
+      margin-bottom: 0.5rem;
+    }
+
+    .mode-label {
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .mode-toggle {
+      mat-button-toggle {
+        mat-icon {
+          font-size: 18px;
+          width: 18px;
+          height: 18px;
+          margin-right: 4px;
+          vertical-align: middle;
+        }
+      }
+    }
+
+    .mode-hint {
+      font-size: 0.75rem;
+      color: #666;
+    }
+
+    .mode-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      background: #e3f2fd;
+      border-radius: 8px;
+      margin-bottom: 1.5rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: #1565c0;
+
+      mat-icon {
+        font-size: 20px;
+        width: 20px;
+        height: 20px;
+      }
+
+      &.native {
+        background: #fff3e0;
+        color: #e65100;
+      }
     }
 
     /* ── Config Saved Banner ──────────────── */
@@ -971,12 +1055,27 @@ export class SetupComponent implements OnInit {
   enabledServices: string[] = [];
   infraNotes: string[] = [];
 
-  steps: SetupStep[] = [
+  steps: SetupStep[] = [];
+
+  private dockerSteps: SetupStep[] = [
     { label: 'Check prerequisites', status: 'pending' },
     { label: 'Create MySQL databases', status: 'pending' },
     { label: 'Configure RabbitMQ', status: 'pending' },
     { label: 'Generate configuration files', status: 'pending' },
     { label: 'Pull Docker images', status: 'pending' },
+    { label: 'Start services', status: 'pending' },
+    { label: 'Health check', status: 'pending' },
+    { label: 'Configure backups', status: 'pending' },
+    { label: 'Install daemon service', status: 'pending' },
+    { label: 'Configure HTTPS (TLS)', status: 'pending' }
+  ];
+
+  private nativeSteps: SetupStep[] = [
+    { label: 'Check prerequisites', status: 'pending' },
+    { label: 'Create MySQL databases', status: 'pending' },
+    { label: 'Configure RabbitMQ', status: 'pending' },
+    { label: 'Generate environment files', status: 'pending' },
+    { label: 'Pull JARs & JRE from cloud', status: 'pending' },
     { label: 'Start services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
@@ -1010,9 +1109,15 @@ export class SetupComponent implements OnInit {
       // Auto-detect existing setup and populate empty fields
       await this.autoDetectAndPopulate();
 
+      // Ensure deployment_mode has a default
+      if (!this.config.deployment_mode) {
+        this.config.deployment_mode = 'docker';
+      }
+
       // If MySQL password is already set, skip to phase 2 automatically
       if (this.config.mysql_password) {
         this.configSaved = true;
+        this.initSteps();
         await this.loadPrerequisites();
         await this.loadEnabledServices();
       }
@@ -1133,13 +1238,21 @@ export class SetupComponent implements OnInit {
     try {
       await this.tauri.invoke('save_config', { config: this.config });
       this.configSaved = true;
+      this.initSteps();
       this.notification.success('Configuration saved');
       await this.loadPrerequisites();
+      await this.loadEnabledServices();
     } catch (error) {
       this.configError = String(error);
     } finally {
       this.configSaving = false;
     }
+  }
+
+  private initSteps(): void {
+    const isNative = this.config?.deployment_mode === 'native';
+    const source = isNative ? this.nativeSteps : this.dockerSteps;
+    this.steps = source.map(s => ({ ...s, status: 'pending' as const }));
   }
 
   editConfig(): void {
@@ -1148,14 +1261,19 @@ export class SetupComponent implements OnInit {
 
   private async loadPrerequisites(): Promise<void> {
     try {
-      const [prereqs, detection] = await Promise.all([
-        this.tauri.invoke<PrerequisiteStatus[]>('check_prerequisites'),
-        this.tauri.invoke<DetectionResult>('detect_existing_setup')
-      ]);
+      const isNative = this.config?.deployment_mode === 'native';
+      const prereqs = await this.tauri.invoke<PrerequisiteStatus[]>('check_prerequisites');
 
-      this.prerequisites = prereqs;
-      this.installablePrereqs = prereqs.filter(p => !p.installed && p.installable);
-      this.detectionResult = detection;
+      if (isNative) {
+        // In native mode, filter out Docker/Docker Compose — not needed
+        this.prerequisites = prereqs.filter(p => p.name !== 'Docker' && p.name !== 'Docker Compose');
+        this.detectionResult = null;
+      } else {
+        this.prerequisites = prereqs;
+        this.detectionResult = await this.tauri.invoke<DetectionResult>('detect_existing_setup');
+      }
+
+      this.installablePrereqs = this.prerequisites.filter(p => !p.installed && p.installable);
     } catch {
       // Error handled by TauriService
     }
@@ -1175,10 +1293,14 @@ export class SetupComponent implements OnInit {
 
       // Check infra notes
       this.infraNotes = [];
-      const mysqlOnHost = this.prerequisites.some(p => p.name === 'MySQL' && p.installed);
-      const rmqOnHost = this.prerequisites.some(p => p.name === 'RabbitMQ' && p.installed);
-      if (mysqlOnHost) this.infraNotes.push('MySQL detected on host — Docker container will be skipped');
-      if (rmqOnHost) this.infraNotes.push('RabbitMQ detected on host — Docker container will be skipped');
+      if (this.config?.deployment_mode === 'native') {
+        this.infraNotes.push('Native mode — services will run as Java processes (no Docker)');
+      } else {
+        const mysqlOnHost = this.prerequisites.some(p => p.name === 'MySQL' && p.installed);
+        const rmqOnHost = this.prerequisites.some(p => p.name === 'RabbitMQ' && p.installed);
+        if (mysqlOnHost) this.infraNotes.push('MySQL detected on host — Docker container will be skipped');
+        if (rmqOnHost) this.infraNotes.push('RabbitMQ detected on host — Docker container will be skipped');
+      }
     } catch {
       // Firestore not reachable or hospital code not set — use defaults
       this.enabledServices = ['Auth', 'Xenon', 'HAS', 'PACS', 'Argon', 'Comm', 'Realtime', 'Neon', 'Mercury', 'Counter', 'Bridge', 'Integration', 'Hydrogen'];
@@ -1186,12 +1308,16 @@ export class SetupComponent implements OnInit {
   }
 
   async resetSetup(): Promise<void> {
-    if (!confirm('This will delete the generated docker-compose.yml and env files. Continue?')) return;
+    const isNative = this.config?.deployment_mode === 'native';
+    const confirmMsg = isNative
+      ? 'This will delete the generated env files. Continue?'
+      : 'This will delete the generated docker-compose.yml and env files. Continue?';
+    if (!confirm(confirmMsg)) return;
     try {
       const msg = await this.tauri.invoke<string>('setup_reset');
       this.notification.success(msg);
       this.setupComplete = false;
-      this.steps.forEach(s => s.status = 'pending');
+      this.initSteps();
     } catch {
       // Error handled by TauriService
     }
@@ -1359,7 +1485,9 @@ export class SetupComponent implements OnInit {
   }
 
   private async executeStep(index: number): Promise<void> {
-    const stepCommands = [
+    const isNative = this.config?.deployment_mode === 'native';
+
+    const dockerCommands = [
       'setup_check_prerequisites',
       'setup_create_databases',
       'setup_configure_rabbitmq',
@@ -1372,7 +1500,21 @@ export class SetupComponent implements OnInit {
       'setup_tls'
     ];
 
-    await this.tauri.invoke(stepCommands[index]);
+    const nativeCommands = [
+      'setup_check_prerequisites',
+      'setup_create_databases',
+      'setup_configure_rabbitmq',
+      'setup_generate_env_files',
+      'setup_pull_jars',
+      'setup_start_native_services',
+      'setup_health_check',
+      'setup_configure_backups',
+      'setup_install_daemon',
+      'setup_tls'
+    ];
+
+    const commands = isNative ? nativeCommands : dockerCommands;
+    await this.tauri.invoke(commands[index]);
   }
 
   cancel(): void {

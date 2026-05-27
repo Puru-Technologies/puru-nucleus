@@ -481,6 +481,30 @@ pub async fn get_container_logs(
     }
 }
 
+/// Update a native service (stop → pull new JAR → start).
+/// Only available in native mode.
+pub async fn update_native_service(name: &str) -> Result<crate::releases::JarPullResult, crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Native => native::update_service(name, &config).await,
+        DeploymentMode::Docker => Err(crate::error::NucleusError::Validation(
+            "update_native_service is only available in native deployment mode".into(),
+        )),
+    }
+}
+
+/// Rollback a native service to its previous JAR (.bak).
+/// Only available in native mode.
+pub async fn rollback_native_service(name: &str) -> Result<(), crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Native => native::rollback_service(name, &config).await,
+        DeploymentMode::Docker => Err(crate::error::NucleusError::Validation(
+            "rollback_native_service is only available in native deployment mode".into(),
+        )),
+    }
+}
+
 // ── Docker implementation ───────────────────────────────────────────────────
 
 /// Get list of Puru services from Docker
@@ -959,6 +983,50 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
         required_version: None,
         installable: true,
     }
+}
+
+/// Resolve the full path to the `mysql` binary.
+/// Checks PATH first, then common Windows install locations.
+pub(crate) async fn resolve_mysql_bin() -> Option<String> {
+    // 1. Try mysql on PATH
+    if let Ok(output) = crate::process::silent_cmd("mysql")
+        .arg("--version")
+        .output()
+        .await
+    {
+        if output.status.success() {
+            return Some("mysql".to_string());
+        }
+    }
+
+    // 2. Windows: check common install paths
+    #[cfg(target_os = "windows")]
+    {
+        let search_paths = [
+            r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
+            r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe",
+            r"C:\Program Files\MySQL\MySQL Server 9.0\bin\mysql.exe",
+        ];
+        for path in &search_paths {
+            if std::path::Path::new(path).exists() {
+                return Some(path.to_string());
+            }
+        }
+        // Scan for any MySQL Server directory
+        if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\MySQL") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("MySQL Server") {
+                    let mysql_bin = format!(r"C:\Program Files\MySQL\{}\bin\mysql.exe", name);
+                    if std::path::Path::new(&mysql_bin).exists() {
+                        return Some(mysql_bin);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 async fn check_rabbitmq_prereq() -> PrerequisiteStatus {

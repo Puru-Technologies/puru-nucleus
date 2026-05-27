@@ -29,6 +29,8 @@ pub async fn run(command: Commands) {
         Commands::Pull => cmd_pull().await,
         Commands::PullJars { services } => cmd_pull_jars(&services).await,
         Commands::JarUpdates => cmd_jar_updates().await,
+        Commands::Update { service } => cmd_update(&service).await,
+        Commands::Rollback { service } => cmd_rollback(&service).await,
         Commands::Version => cmd_version(),
         Commands::Daemon => {
             // Handled in main.rs before we get here
@@ -1311,6 +1313,43 @@ async fn cmd_jar_updates() {
     }
 }
 
+// ── Update / Rollback (Native) ──────────────────────────────────────────────
+
+async fn cmd_update(service: &str) {
+    println!();
+    println!("  Updating {} ...", service.cyan().bold());
+
+    match services::update_native_service(service).await {
+        Ok(result) => {
+            println!();
+            println!("  {} Updated {} to build {}", "✓".green().bold(), service, result.short_sha.cyan());
+            println!("  Size: {:.1} MB", result.size_mb);
+            println!();
+        }
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_rollback(service: &str) {
+    println!();
+    println!("  Rolling back {} ...", service.cyan().bold());
+
+    match services::rollback_native_service(service).await {
+        Ok(()) => {
+            println!();
+            println!("  {} Rolled back {} to previous JAR", "✓".green().bold(), service);
+            println!();
+        }
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    }
+}
+
 // ── Info ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_info() {
@@ -1325,9 +1364,17 @@ async fn cmd_info() {
     table.load_preset(presets::UTF8_FULL_CONDENSED);
     table.set_header(vec!["Setting", "Value"]);
 
+    let mode_str = format!("{:?}", cfg.deployment_mode);
+    table.add_row(vec!["Deployment Mode", &mode_str]);
     table.add_row(vec!["Hospital Code", &cfg.hospital_code]);
     table.add_row(vec!["Server IP", &cfg.server_ip]);
-    table.add_row(vec!["Docker Compose", &cfg.docker_compose_path]);
+    if cfg.deployment_mode == config::DeploymentMode::Docker {
+        table.add_row(vec!["Docker Compose", &cfg.docker_compose_path]);
+    } else {
+        table.add_row(vec!["JARs Dir", &cfg.jars_dir().display().to_string()]);
+        table.add_row(vec!["JREs Dir", &cfg.jres_dir().display().to_string()]);
+        table.add_row(vec!["Native Logs", &cfg.native_logs_dir().display().to_string()]);
+    }
     table.add_row(vec![
         "MySQL",
         &format!(

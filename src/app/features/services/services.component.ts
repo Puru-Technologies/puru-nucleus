@@ -9,7 +9,7 @@ import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { TauriService, ServiceInfo } from '../../core/services/tauri.service';
+import { TauriService, ServiceInfo, NucleusConfig } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
 @Component({
@@ -34,9 +34,10 @@ import { NotificationService } from '../../core/services/notification.service';
           <h1>Services</h1>
           <p class="page-subtitle">
             @if (!loading) {
-              {{ runningCount }}/{{ services.length }} containers running
+              {{ runningCount }}/{{ services.length }} {{ isNative ? 'services' : 'containers' }} running
+              @if (isNative) { <span class="mode-tag native">Native</span> }
             } @else {
-              Loading containers...
+              Loading services...
             }
           </p>
         </div>
@@ -62,8 +63,8 @@ import { NotificationService } from '../../core/services/notification.service';
             <div class="empty-icon">
               <mat-icon>cloud_off</mat-icon>
             </div>
-            <h3>No Docker Services Found</h3>
-            <p>Docker may not be installed or no Puru containers are running.</p>
+            <h3>No Services Found</h3>
+            <p>{{ isNative ? 'No JARs installed. Run the setup wizard to pull and start services.' : 'Docker may not be installed or no Puru containers are running.' }}</p>
             <button mat-stroked-button routerLink="/setup">
               <mat-icon>build</mat-icon>
               Run Setup Wizard
@@ -110,7 +111,7 @@ import { NotificationService } from '../../core/services/notification.service';
           <table mat-table [dataSource]="services" class="services-table">
             <!-- Container Name -->
             <ng-container matColumnDef="name">
-              <th mat-header-cell *matHeaderCellDef>Container</th>
+              <th mat-header-cell *matHeaderCellDef>{{ isNative ? 'Service' : 'Container' }}</th>
               <td mat-cell *matCellDef="let service">
                 <div class="name-cell">
                   <div class="status-dot" [class]="'dot-' + service.status"></div>
@@ -124,7 +125,7 @@ import { NotificationService } from '../../core/services/notification.service';
 
             <!-- Image -->
             <ng-container matColumnDef="image">
-              <th mat-header-cell *matHeaderCellDef>Image</th>
+              <th mat-header-cell *matHeaderCellDef>{{ isNative ? 'Build' : 'Image' }}</th>
               <td mat-cell *matCellDef="let service">
                 <span class="image-text">{{ shortenImage(service.image) }}</span>
               </td>
@@ -201,6 +202,16 @@ import { NotificationService } from '../../core/services/notification.service';
                     <mat-icon>article</mat-icon>
                     View Logs
                   </button>
+                  @if (isNative) {
+                    <button mat-menu-item (click)="updateService(service)">
+                      <mat-icon class="menu-green">system_update</mat-icon>
+                      Update
+                    </button>
+                    <button mat-menu-item (click)="rollbackService(service)">
+                      <mat-icon class="menu-orange">undo</mat-icon>
+                      Rollback
+                    </button>
+                  }
                 </mat-menu>
               </td>
             </ng-container>
@@ -233,6 +244,20 @@ import { NotificationService } from '../../core/services/notification.service';
       .page-subtitle {
         color: var(--text-secondary);
         font-size: 0.85rem;
+      }
+    }
+
+    .mode-tag {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 1px 8px;
+      border-radius: 10px;
+      margin-left: 6px;
+      vertical-align: middle;
+
+      &.native {
+        background: #fff3e0;
+        color: #e65100;
       }
     }
 
@@ -454,6 +479,7 @@ export class ServicesComponent implements OnInit {
 
   services: ServiceInfo[] = [];
   loading = true;
+  isNative = false;
   logContainer: string | null = null;
   logOutput = '';
   logsLoading = false;
@@ -466,7 +492,17 @@ export class ServicesComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.loadDeploymentMode();
     this.loadServices();
+  }
+
+  private async loadDeploymentMode(): Promise<void> {
+    try {
+      const mode = await this.tauri.invoke<string>('get_deployment_mode');
+      this.isNative = mode === 'Native';
+    } catch {
+      this.isNative = false;
+    }
   }
 
   async loadServices(): Promise<void> {
@@ -595,5 +631,27 @@ export class ServicesComponent implements OnInit {
   closeLogs(): void {
     this.logContainer = null;
     this.logOutput = '';
+  }
+
+  async updateService(service: ServiceInfo): Promise<void> {
+    if (!confirm(`Update ${service.name}? This will stop the service, pull a new JAR, and restart.`)) return;
+    try {
+      const result = await this.tauri.invoke<any>('update_native_service', { serviceName: service.name });
+      this.notification.success(`Updated ${service.name} to build ${result.short_sha}`);
+      await this.loadServices();
+    } catch (error) {
+      // Error handled by TauriService
+    }
+  }
+
+  async rollbackService(service: ServiceInfo): Promise<void> {
+    if (!confirm(`Rollback ${service.name} to previous JAR?`)) return;
+    try {
+      await this.tauri.invoke('rollback_native_service', { serviceName: service.name });
+      this.notification.success(`Rolled back ${service.name}`);
+      await this.loadServices();
+    } catch (error) {
+      // Error handled by TauriService
+    }
   }
 }
