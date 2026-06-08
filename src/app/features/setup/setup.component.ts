@@ -100,15 +100,15 @@ interface SetupStep {
                     </mat-button-toggle-group>
                     <span class="mode-hint">
                       @if (config.deployment_mode === 'native') {
-                        Runs services as Java processes — no Docker required. Best for low-spec hardware.
+                        Everything runs natively — no Docker. MySQL, RabbitMQ, Nginx &amp; Java must be pre-installed on the host.
                       } @else {
-                        Runs services as Docker containers. Requires Docker Desktop or Docker Engine.
+                        All services run as Docker containers.
                       }
                     </span>
                   </div>
 
                   @if (config.deployment_mode !== 'native') {
-                    <div class="browse-row">
+                  <div class="browse-row">
                       <mat-form-field appearance="outline" class="flex-1">
                         <mat-label>Docker Compose Path</mat-label>
                         <input matInput [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
@@ -1076,7 +1076,7 @@ export class SetupComponent implements OnInit {
     { label: 'Configure RabbitMQ', status: 'pending' },
     { label: 'Generate environment files', status: 'pending' },
     { label: 'Pull JARs & JRE from cloud', status: 'pending' },
-    { label: 'Start services', status: 'pending' },
+    { label: 'Start native services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
     { label: 'Install daemon service', status: 'pending' },
@@ -1264,8 +1264,9 @@ export class SetupComponent implements OnInit {
       const isNative = this.config?.deployment_mode === 'native';
       const prereqs = await this.tauri.invoke<PrerequisiteStatus[]>('check_prerequisites');
 
+      const isNative = this.config?.deployment_mode === 'native';
       if (isNative) {
-        // In native mode, filter out Docker/Docker Compose — not needed
+        // Native mode — no Docker needed, filter out Docker prerequisites
         this.prerequisites = prereqs.filter(p => p.name !== 'Docker' && p.name !== 'Docker Compose');
         this.detectionResult = null;
       } else {
@@ -1294,7 +1295,7 @@ export class SetupComponent implements OnInit {
       // Check infra notes
       this.infraNotes = [];
       if (this.config?.deployment_mode === 'native') {
-        this.infraNotes.push('Native mode — services will run as Java processes (no Docker)');
+        this.infraNotes.push('Native mode — all services run as host processes, no Docker');
       } else {
         const mysqlOnHost = this.prerequisites.some(p => p.name === 'MySQL' && p.installed);
         const rmqOnHost = this.prerequisites.some(p => p.name === 'RabbitMQ' && p.installed);

@@ -1394,6 +1394,7 @@ services:
     if modules.integration {
         compose.push_str(&svc("Integration", "puru-integration", "integration", "puru_im", 8088, false));
     }
+
     if modules.hydrogen {
         compose.push_str(
             r#"  frontend:
