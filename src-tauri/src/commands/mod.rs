@@ -979,6 +979,9 @@ const PURU_IMAGES: &[&str] = &[
 pub async fn setup_check_prerequisites() -> Result<(), String> {
     tracing::info!("Setup: checking prerequisites");
 
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    let is_native = config.deployment_mode == crate::config::DeploymentMode::Native;
+
     let prereqs = crate::services::check_prerequisites()
         .await
         .map_err(|e| e.user_message())?;
@@ -986,6 +989,14 @@ pub async fn setup_check_prerequisites() -> Result<(), String> {
     let missing: Vec<&str> = prereqs
         .iter()
         .filter(|p| !p.installed)
+        .filter(|p| {
+            // In native mode, Docker and Docker Compose are not required
+            if is_native {
+                p.name != "Docker" && p.name != "Docker Compose"
+            } else {
+                true
+            }
+        })
         .map(|p| p.name.as_str())
         .collect();
 
