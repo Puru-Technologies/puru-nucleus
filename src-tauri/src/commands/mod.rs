@@ -212,9 +212,31 @@ pub async fn activate_license(email: String, machine_name: String) -> Result<(),
     // Save license locally
     crate::licensing::save_license(&license).map_err(|e| e.user_message())?;
 
-    // Update hospital_code in config
+    // Update hospital_code and cloud-driven config
     let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
     config.hospital_code = hospital_code.clone();
+
+    // Pull deployment_mode from hospital document (set in oxygen admin)
+    if let Some(mode_str) = doc.fields.get("deployment_mode")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+    {
+        match mode_str.as_str() {
+            "native" => config.deployment_mode = crate::config::DeploymentMode::Native,
+            "docker" => config.deployment_mode = crate::config::DeploymentMode::Docker,
+            _ => {}
+        }
+        tracing::info!("Deployment mode from cloud: {}", mode_str);
+    }
+
+    // Pull server_ip from hospital document
+    if let Some(ip) = doc.fields.get("serverIp")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+    {
+        if !ip.is_empty() {
+            config.server_ip = ip;
+        }
+    }
+
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
     tracing::info!(
@@ -304,6 +326,37 @@ pub async fn pull_settings() -> Result<PullSettingsResult, String> {
             "License updated from cloud for hospital: {}",
             config.hospital_code
         );
+    }
+
+    // Sync deployment_mode from cloud if set
+    let mut config_changed = false;
+    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if let Some(mode_str) = doc.fields.get("deployment_mode")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+    {
+        let new_mode = match mode_str.as_str() {
+            "native" => Some(crate::config::DeploymentMode::Native),
+            "docker" => Some(crate::config::DeploymentMode::Docker),
+            _ => None,
+        };
+        if let Some(m) = new_mode {
+            if config.deployment_mode != m {
+                config.deployment_mode = m;
+                config_changed = true;
+            }
+        }
+    }
+    if let Some(ip) = doc.fields.get("serverIp")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+    {
+        if !ip.is_empty() && config.server_ip != ip {
+            config.server_ip = ip;
+            config_changed = true;
+        }
+    }
+    if config_changed {
+        crate::config::save_config(&config).map_err(|e| e.user_message())?;
+        tracing::info!("Config synced from cloud (deployment_mode / server_ip)");
     }
 
     Ok(PullSettingsResult {
