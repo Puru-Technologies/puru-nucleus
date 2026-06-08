@@ -1261,9 +1261,7 @@ export class SetupComponent implements OnInit {
 
   private async loadPrerequisites(): Promise<void> {
     try {
-      const isNative = this.config?.deployment_mode === 'native';
       const prereqs = await this.tauri.invoke<PrerequisiteStatus[]>('check_prerequisites');
-
       const isNative = this.config?.deployment_mode === 'native';
       if (isNative) {
         // Native mode — no Docker needed, filter out Docker prerequisites
