@@ -133,28 +133,43 @@ impl Default for NucleusConfig {
 }
 
 impl NucleusConfig {
-    /// Resolved JARs directory (default: /opt/puru/jars)
+    /// Resolved JARs directory
     pub fn jars_dir(&self) -> PathBuf {
         self.jars_dir
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/opt/puru/jars"))
+            .unwrap_or_else(|| {
+                #[cfg(target_os = "windows")]
+                { PathBuf::from(r"C:\PuruNucleus\jars") }
+                #[cfg(not(target_os = "windows"))]
+                { PathBuf::from("/opt/puru/jars") }
+            })
     }
 
-    /// Resolved JREs directory (default: /opt/puru/jres)
+    /// Resolved JREs directory
     pub fn jres_dir(&self) -> PathBuf {
         self.jres_dir
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/opt/puru/jres"))
+            .unwrap_or_else(|| {
+                #[cfg(target_os = "windows")]
+                { PathBuf::from(r"C:\PuruNucleus\jres") }
+                #[cfg(not(target_os = "windows"))]
+                { PathBuf::from("/opt/puru/jres") }
+            })
     }
 
-    /// Resolved native logs directory (default: /opt/puru/logs)
+    /// Resolved native logs directory
     pub fn native_logs_dir(&self) -> PathBuf {
         self.native_logs_dir
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/opt/puru/logs"))
+            .unwrap_or_else(|| {
+                #[cfg(target_os = "windows")]
+                { PathBuf::from(r"C:\PuruNucleus\logs") }
+                #[cfg(not(target_os = "windows"))]
+                { PathBuf::from("/opt/puru/logs") }
+            })
     }
 
     /// Resolved env files directory

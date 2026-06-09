@@ -536,10 +536,15 @@ export class ServicesComponent implements OnInit {
     }
   }
 
+  /** In native mode use service name; in Docker mode use container_name */
+  private svcId(service: ServiceInfo): string {
+    return this.isNative ? service.name : service.container_name;
+  }
+
   async startService(service: ServiceInfo): Promise<void> {
     try {
-      await this.tauri.invoke('start_service', { name: service.container_name });
-      this.notification.success(`Started ${service.container_name}`);
+      await this.tauri.invoke('start_service', { name: this.svcId(service) });
+      this.notification.success(`Started ${service.name}`);
       await this.loadServices();
     } catch (error) {
       // Error handled by TauriService
@@ -548,8 +553,8 @@ export class ServicesComponent implements OnInit {
 
   async stopService(service: ServiceInfo): Promise<void> {
     try {
-      await this.tauri.invoke('stop_service', { name: service.container_name });
-      this.notification.success(`Stopped ${service.container_name}`);
+      await this.tauri.invoke('stop_service', { name: this.svcId(service) });
+      this.notification.success(`Stopped ${service.name}`);
       await this.loadServices();
     } catch (error) {
       // Error handled by TauriService
@@ -558,8 +563,8 @@ export class ServicesComponent implements OnInit {
 
   async restartService(service: ServiceInfo): Promise<void> {
     try {
-      await this.tauri.invoke('restart_service', { name: service.container_name });
-      this.notification.success(`Restarted ${service.container_name}`);
+      await this.tauri.invoke('restart_service', { name: this.svcId(service) });
+      this.notification.success(`Restarted ${service.name}`);
       await this.loadServices();
     } catch (error) {
       // Error handled by TauriService
@@ -570,7 +575,7 @@ export class ServicesComponent implements OnInit {
     const stoppedServices = this.services.filter(s => s.status !== 'running');
     for (const service of stoppedServices) {
       try {
-        await this.tauri.invoke('start_service', { name: service.container_name });
+        await this.tauri.invoke('start_service', { name: this.svcId(service) });
       } catch (error) {
         // Continue with other services
       }
@@ -580,7 +585,7 @@ export class ServicesComponent implements OnInit {
   }
 
   async viewLogs(service: ServiceInfo): Promise<void> {
-    this.logContainer = service.container_name;
+    this.logContainer = this.isNative ? service.name : service.container_name;
     this.logTimeFilter = 'tail';
     this.logsLoading = true;
     this.logOutput = '';
