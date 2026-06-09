@@ -157,14 +157,20 @@ impl NucleusConfig {
             .unwrap_or_else(|| PathBuf::from("/opt/puru/logs"))
     }
 
-    /// Resolved env files directory (default: /opt/puru/env)
+    /// Resolved env files directory
     pub fn env_dir(&self) -> PathBuf {
-        PathBuf::from("/opt/puru/env")
+        #[cfg(target_os = "windows")]
+        { PathBuf::from(r"C:\PuruNucleus\env") }
+        #[cfg(not(target_os = "windows"))]
+        { PathBuf::from("/opt/puru/env") }
     }
 
-    /// Resolved nginx html directory (default: /opt/puru/nginx/html)
+    /// Resolved nginx html directory
     pub fn nginx_html_dir(&self) -> PathBuf {
-        PathBuf::from("/opt/puru/nginx/html")
+        #[cfg(target_os = "windows")]
+        { PathBuf::from(r"C:\PuruNucleus\nginx\html") }
+        #[cfg(not(target_os = "windows"))]
+        { PathBuf::from("/opt/puru/nginx/html") }
     }
 }
 

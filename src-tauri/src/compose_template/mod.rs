@@ -102,6 +102,27 @@ pub struct ServiceModules {
 impl Default for ServiceModules {
     fn default() -> Self {
         Self {
+            auth: false,
+            xenon: false,
+            has: false,
+            pacs: false,
+            argon: false,
+            comm: false,
+            realtime: false,
+            neon: false,
+            mercury: false,
+            counter: false,
+            bridge: false,
+            integration: false,
+            hydrogen: false,
+        }
+    }
+}
+
+impl ServiceModules {
+    /// All modules enabled — used for Docker mode when no modules are configured.
+    pub fn all_enabled() -> Self {
+        Self {
             auth: true,
             xenon: true,
             has: true,
@@ -865,7 +886,7 @@ services:
         let frag_dir = tmp.path().join("fragments");
         setup_test_fragments(&frag_dir);
 
-        let modules = ServiceModules::default(); // all true
+        let modules = ServiceModules::all_enabled();
         let result = assemble_compose_from_dir(&frag_dir, &modules).unwrap();
 
         // Should have version header
@@ -892,7 +913,7 @@ services:
         let frag_dir = tmp.path().join("fragments");
         setup_test_fragments(&frag_dir);
 
-        let mut modules = ServiceModules::default();
+        let mut modules = ServiceModules::all_enabled();
         modules.pacs = false;
         modules.neon = false;
 

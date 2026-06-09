@@ -537,20 +537,21 @@ impl FirestoreClient {
                 .unwrap_or(default)
         };
 
+        // Default to false — only pull/deploy services explicitly enabled in oxygen
         Ok(crate::compose_template::ServiceModules {
-            auth: read_bool("auth", true),
-            xenon: read_bool("xenon", true),
-            has: read_bool("has", true),
-            pacs: read_bool("pacs", true),
-            argon: read_bool("argon", true),
-            comm: read_bool("comm", true),
-            realtime: read_bool("realtime", true),
-            neon: read_bool("neon", true),
-            mercury: read_bool("mercury", true),
-            counter: read_bool("counter", true),
-            bridge: read_bool("bridge", true),
-            integration: read_bool("integration", true),
-            hydrogen: read_bool("hydrogen", true),
+            auth: read_bool("auth", false),
+            xenon: read_bool("xenon", false),
+            has: read_bool("has", false),
+            pacs: read_bool("pacs", false),
+            argon: read_bool("argon", false),
+            comm: read_bool("comm", false),
+            realtime: read_bool("realtime", false),
+            neon: read_bool("neon", false),
+            mercury: read_bool("mercury", false),
+            counter: read_bool("counter", false),
+            bridge: read_bool("bridge", false),
+            integration: read_bool("integration", false),
+            hydrogen: read_bool("hydrogen", false),
         })
     }
 

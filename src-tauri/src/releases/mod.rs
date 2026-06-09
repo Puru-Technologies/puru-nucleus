@@ -568,8 +568,14 @@ pub struct JarBuildMeta {
     pub commit_sha: String,
     pub build_id: String,
     pub built_at: String,
+    /// JAR filename — absent for Angular builds
+    #[serde(default)]
     pub jar_file: String,
+    /// Original JAR filename — absent for Angular builds
+    #[serde(default)]
     pub original_jar: String,
+    /// Java version — absent for Angular builds
+    #[serde(default)]
     pub java_version: String,
     /// Only present for Angular builds
     #[serde(skip_serializing_if = "Option::is_none")]

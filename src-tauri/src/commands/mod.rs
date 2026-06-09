@@ -1205,8 +1205,9 @@ pub async fn setup_generate_config() -> Result<(), String> {
     // Fetch service modules from Firestore to know which services to include
     let modules = if !config.hospital_code.is_empty() {
         match crate::firestore::FirestoreClient::new_from_config().await {
-            Ok(client) => client.fetch_modules(&config.hospital_code).await.unwrap_or_default(),
-            Err(_) => ServiceModules::default(),
+            Ok(client) => client.fetch_modules(&config.hospital_code).await
+                .unwrap_or_else(|_| ServiceModules::all_enabled()),
+            Err(_) => ServiceModules::all_enabled(),
         }
     } else {
         ServiceModules::default()
@@ -1656,13 +1657,14 @@ pub async fn setup_pull_jars() -> Result<(), String> {
         .await
         .map_err(|e| e.user_message())?;
 
-    let failed: Vec<&str> = result.results.iter()
+    let failed: Vec<String> = result.results.iter()
         .filter(|r| !r.success)
-        .map(|r| r.service.as_str())
+        .map(|r| format!("{}: {}", r.service, r.message))
         .collect();
 
     if !failed.is_empty() {
-        return Err(format!("Failed to pull JARs for: {}", failed.join(", ")));
+        tracing::warn!("Some JARs failed to pull: {}", failed.join("; "));
+        // Don't fail the step — continue with what we have
     }
 
     tracing::info!(
