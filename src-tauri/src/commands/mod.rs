@@ -1615,94 +1615,136 @@ pub async fn setup_generate_env_files() -> Result<(), String> {
 /// Native Step 4: Pull JARs + JRE from GCS
 #[tauri::command]
 pub async fn setup_pull_jars() -> Result<(), String> {
-    tracing::info!("Setup (native): pulling JARs and JRE from GCS");
-
-    // Determine which services to pull based on service modules
     let config = crate::config::load_config().map_err(|e| e.user_message())?;
 
+    // Ensure directories exist
+    let jars_dir = config.jars_dir();
+    let jres_dir = config.jres_dir();
+    let logs_dir = config.native_logs_dir();
+    let nginx_dir = config.nginx_html_dir();
+    tracing::info!("Setup (native): directories — jars={}, jres={}, logs={}, nginx={}",
+        jars_dir.display(), jres_dir.display(), logs_dir.display(), nginx_dir.display());
+    for dir in [&jars_dir, &jres_dir, &logs_dir, &nginx_dir] {
+        tokio::fs::create_dir_all(dir).await
+            .map_err(|e| format!("Failed to create directory {}: {}", dir.display(), e))?;
+    }
+
+    // Fetch enabled modules from Firestore
     let modules = if !config.hospital_code.is_empty() {
         match crate::firestore::FirestoreClient::new_from_config().await {
-            Ok(client) => client.fetch_modules(&config.hospital_code).await.unwrap_or_default(),
-            Err(_) => ServiceModules::default(),
+            Ok(client) => {
+                match client.fetch_modules(&config.hospital_code).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch modules from cloud: {}", e);
+                        return Err(format!("Cannot fetch service modules from cloud: {}. Configure modules in Oxygen admin first.", e));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(format!("Cannot connect to cloud: {}. Check GCS credentials.", e));
+            }
         }
     } else {
-        ServiceModules::default()
+        return Err("Hospital code not configured. Activate a license first.".into());
     };
 
-    // Map modules to service names
-    let mut services: Vec<String> = Vec::new();
-    if modules.auth { services.push("puru-auth".into()); }
-    if modules.xenon { services.push("puru-xenon".into()); }
-    if modules.has { services.push("puru-has".into()); }
-    if modules.pacs { services.push("puru-pacs".into()); }
-    if modules.argon { services.push("puru-argon".into()); }
-    if modules.comm { services.push("puru-comm".into()); }
-    if modules.realtime { services.push("puru-realtime".into()); }
-    if modules.neon { services.push("puru-neon".into()); }
-    if modules.mercury { services.push("puru-mercury".into()); }
-    if modules.counter { services.push("puru-counter".into()); }
-    if modules.bridge { services.push("puru-bridge".into()); }
-    if modules.integration { services.push("puru-integration".into()); }
-    if modules.hydrogen { services.push("puru-hydrogen".into()); }
-
+    let services = modules.enabled_service_names();
     if services.is_empty() {
-        // Default: core services
-        services = vec![
-            "puru-auth".into(), "puru-has".into(), "puru-pacs".into(),
-            "puru-comm".into(), "puru-realtime".into(), "puru-hydrogen".into(),
-        ];
+        return Err("No services enabled. Configure modules in Oxygen admin (Management → Hospital → edit).".into());
     }
+
+    tracing::info!("Setup (native): pulling {} services: {:?}", services.len(), services);
 
     let result = crate::releases::pull_all_with_jres(&services)
         .await
         .map_err(|e| e.user_message())?;
 
+    let succeeded: Vec<&str> = result.results.iter()
+        .filter(|r| r.success)
+        .map(|r| r.service.as_str())
+        .collect();
     let failed: Vec<String> = result.results.iter()
         .filter(|r| !r.success)
         .map(|r| format!("{}: {}", r.service, r.message))
         .collect();
 
-    if !failed.is_empty() {
-        tracing::warn!("Some JARs failed to pull: {}", failed.join("; "));
-        // Don't fail the step — continue with what we have
+    if succeeded.is_empty() {
+        return Err(format!("All JARs failed to download:\n{}", failed.join("\n")));
     }
 
-    tracing::info!(
-        "Setup (native): pulled {} JARs ({:.1} MB total)",
-        result.results.len(),
-        result.total_size_mb
-    );
+    if !failed.is_empty() {
+        tracing::warn!("Some JARs failed: {}", failed.join("; "));
+    }
+
+    // Verify files on disk
+    let mut verified = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&jars_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".jar") && !name.ends_with(".bak") {
+                if let Ok(meta) = entry.metadata() {
+                    verified.push(format!("{} ({:.1} MB)", name, meta.len() as f64 / 1_048_576.0));
+                }
+            }
+        }
+    }
+
+    if verified.is_empty() {
+        return Err(format!(
+            "Pull reported success but no JAR files found in {}. Check GCS credentials and network.",
+            jars_dir.display()
+        ));
+    }
+
+    tracing::info!("Setup (native): verified {} JARs in {}: {:?}",
+        verified.len(), jars_dir.display(), verified);
+
     Ok(())
 }
 
 /// Native Step 5: Start all services as java -jar processes
 #[tauri::command]
 pub async fn setup_start_native_services() -> Result<(), String> {
-    tracing::info!("Setup (native): starting services");
-
     let config = crate::config::load_config().map_err(|e| e.user_message())?;
     let jars_dir = config.jars_dir();
 
-    // Find all installed JARs
-    let mut started = Vec::new();
-    let mut errors = Vec::new();
+    tracing::info!("Setup (native): scanning for JARs in {}", jars_dir.display());
 
-    for entry in std::fs::read_dir(&jars_dir).map_err(|e| format!("Cannot read jars dir: {}", e))? {
+    if !jars_dir.exists() {
+        return Err(format!("JARs directory does not exist: {}. Run 'Pull JARs' step first.", jars_dir.display()));
+    }
+
+    // Find all installed JARs
+    let mut jar_files = Vec::new();
+    for entry in std::fs::read_dir(&jars_dir).map_err(|e| format!("Cannot read jars dir {}: {}", jars_dir.display(), e))? {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
         };
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jar") || name.ends_with(".bak") {
-            continue;
+        if name.ends_with(".jar") && !name.ends_with(".bak") && name != "puru-hydrogen" {
+            jar_files.push(name);
         }
+    }
+
+    if jar_files.is_empty() {
+        return Err(format!("No JAR files found in {}. Run 'Pull JARs' step first.", jars_dir.display()));
+    }
+
+    tracing::info!("Setup (native): found {} JARs: {:?}", jar_files.len(), jar_files);
+
+    let mut started = Vec::new();
+    let mut errors = Vec::new();
+
+    for name in &jar_files {
         let service_name = name.trim_end_matches(".jar");
 
-        // Skip hydrogen (it's an Angular app, not a JAR)
-        if service_name == "puru-hydrogen" { continue; }
-
         match crate::services::native::start_service(service_name, &config).await {
-            Ok(_) => started.push(service_name.to_string()),
+            Ok(_) => {
+                tracing::info!("Started {}", service_name);
+                started.push(service_name.to_string());
+            }
             Err(e) => {
                 tracing::warn!("Failed to start {}: {}", service_name, e.user_message());
                 errors.push(format!("{}: {}", service_name, e.user_message()));
@@ -1710,16 +1752,16 @@ pub async fn setup_start_native_services() -> Result<(), String> {
         }
     }
 
-    if started.is_empty() && !errors.is_empty() {
-        return Err(format!("Failed to start any services: {}", errors.join("; ")));
+    if started.is_empty() {
+        return Err(format!("Failed to start any services:\n{}", errors.join("\n")));
     }
 
     // Wait for Spring Boot initialization
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    tracing::info!("Setup (native): started {} services", started.len());
+    tracing::info!("Setup (native): started {}/{} services", started.len(), jar_files.len());
     if !errors.is_empty() {
-        tracing::warn!("Setup (native): {} services failed to start", errors.len());
+        tracing::warn!("Failed to start: {}", errors.join("; "));
     }
 
     Ok(())
@@ -1730,6 +1772,9 @@ pub async fn setup_start_native_services() -> Result<(), String> {
 pub async fn setup_health_check() -> Result<(), String> {
     tracing::info!("Setup: running health check");
 
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    let is_native = config.deployment_mode == crate::config::DeploymentMode::Native;
+
     // Give services time to start up (Spring Boot takes a while)
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
@@ -1738,7 +1783,12 @@ pub async fn setup_health_check() -> Result<(), String> {
         .map_err(|e| e.user_message())?;
 
     if services.is_empty() {
-        return Err("No Puru services detected. Ensure Docker is running and services started.".to_string());
+        let hint = if is_native {
+            "No services detected. Check that JARs were downloaded and started."
+        } else {
+            "No services detected. Ensure Docker is running and services started."
+        };
+        return Err(hint.to_string());
     }
 
     let running_count = services
@@ -1749,7 +1799,12 @@ pub async fn setup_health_check() -> Result<(), String> {
     let total = services.len();
 
     if running_count == 0 {
-        return Err("No services are running. Check Docker logs for errors.".to_string());
+        let logs_hint = if is_native {
+            format!("No services are running. Check logs in {}", config.native_logs_dir().display())
+        } else {
+            "No services are running. Check Docker logs for errors.".to_string()
+        };
+        return Err(logs_hint);
     }
 
     if running_count < total {
@@ -1764,7 +1819,6 @@ pub async fn setup_health_check() -> Result<(), String> {
             total,
             stopped.join(", ")
         );
-        // Non-fatal — some services may still be starting
     }
 
     tracing::info!("Setup: health check passed ({}/{} running)", running_count, total);

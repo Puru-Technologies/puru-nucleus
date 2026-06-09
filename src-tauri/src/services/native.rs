@@ -270,13 +270,25 @@ pub async fn restart_service(name: &str, config: &NucleusConfig) -> Result<(), N
 
 /// List all services with status (running/stopped), PID, port, health.
 pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, NucleusError> {
-    let all_services = releases::all_updatable_services();
+    // Fetch enabled modules from Firestore — only show configured services
+    let enabled_services = if !config.hospital_code.is_empty() {
+        match crate::firestore::FirestoreClient::new_from_config().await {
+            Ok(client) => match client.fetch_modules(&config.hospital_code).await {
+                Ok(modules) => modules.enabled_service_names(),
+                Err(_) => releases::all_updatable_services(),
+            },
+            Err(_) => releases::all_updatable_services(),
+        }
+    } else {
+        releases::all_updatable_services()
+    };
+
     let mut services = Vec::new();
 
     // Collect probe targets for concurrent health checks
     let mut probe_targets: Vec<(String, u16)> = Vec::new();
 
-    for svc_name in &all_services {
+    for svc_name in &enabled_services {
         let pid = read_pid(config, svc_name);
         let alive = pid.map(is_process_alive).unwrap_or(false);
         let jar_exists = jar_path(config, svc_name).exists();
@@ -286,7 +298,7 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
         } else if jar_exists {
             ServiceStatus::Stopped
         } else {
-            ServiceStatus::Error // JAR not installed
+            ServiceStatus::Error // Enabled but not installed
         };
 
         let port = service_port(svc_name);

@@ -138,6 +138,25 @@ impl ServiceModules {
             hydrogen: true,
         }
     }
+
+    /// Returns service names for all enabled modules.
+    pub fn enabled_service_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.auth { names.push("puru-auth".into()); }
+        if self.xenon { names.push("puru-xenon".into()); }
+        if self.has { names.push("puru-has".into()); }
+        if self.pacs { names.push("puru-pacs".into()); }
+        if self.argon { names.push("puru-argon".into()); }
+        if self.comm { names.push("puru-comm".into()); }
+        if self.realtime { names.push("puru-realtime".into()); }
+        if self.neon { names.push("puru-neon".into()); }
+        if self.mercury { names.push("puru-mercury".into()); }
+        if self.counter { names.push("puru-counter".into()); }
+        if self.bridge { names.push("puru-bridge".into()); }
+        if self.integration { names.push("puru-integration".into()); }
+        if self.hydrogen { names.push("puru-hydrogen".into()); }
+        names
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
