@@ -156,6 +156,12 @@ fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::Ha
 
 /// Start a service as a java -jar process.
 pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), NucleusError> {
+    // puru-hydrogen is the Angular UI: not a JAR, but static files served by a
+    // managed nginx. Starting it means provisioning + (re)starting nginx.
+    if name == "puru-hydrogen" {
+        return crate::webserver::start(config).await;
+    }
+
     // Check if already running
     if let Some(pid) = read_pid(config, name) {
         if is_process_alive(pid) {
@@ -235,6 +241,10 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
 
 /// Stop a running service. SIGTERM → 30s wait → SIGKILL.
 pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), NucleusError> {
+    if name == "puru-hydrogen" {
+        return crate::webserver::stop(config).await;
+    }
+
     let pid = read_pid(config, name).ok_or_else(|| {
         NucleusError::NotFound(format!("No PID file for {}. Is it running?", name))
     })?;

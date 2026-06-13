@@ -32,6 +32,7 @@ mod platform;
 mod process;
 mod remote_shell;
 mod seed;
+mod webserver;
 mod tls;
 mod installer;
 
