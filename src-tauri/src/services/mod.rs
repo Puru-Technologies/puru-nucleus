@@ -988,28 +988,37 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
 /// Resolve the full path to the `mysql` binary.
 /// Checks PATH first, then common Windows install locations.
 pub(crate) async fn resolve_mysql_bin() -> Option<String> {
-    // 1. Try mysql on PATH
-    if let Ok(output) = crate::process::silent_cmd("mysql")
+    resolve_mysql_tool("mysql").await
+}
+
+/// Resolve a MySQL client tool (`mysql`, `mysqldump`, `mysqlbinlog`, …) to a
+/// runnable path. Tries PATH first, then the standard Windows MySQL install
+/// dirs — those `bin\` folders are NOT on PATH by default, which is why a bare
+/// `mysqldump` lookup fails even when MySQL Server is installed.
+pub(crate) async fn resolve_mysql_tool(tool: &str) -> Option<String> {
+    // 1. Try the tool on PATH
+    if let Ok(output) = crate::process::silent_cmd(tool)
         .arg("--version")
         .output()
         .await
     {
         if output.status.success() {
-            return Some("mysql".to_string());
+            return Some(tool.to_string());
         }
     }
 
     // 2. Windows: check common install paths
     #[cfg(target_os = "windows")]
     {
+        let exe = format!("{}.exe", tool);
         let search_paths = [
-            r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
-            r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe",
-            r"C:\Program Files\MySQL\MySQL Server 9.0\bin\mysql.exe",
+            format!(r"C:\Program Files\MySQL\MySQL Server 8.0\bin\{}", exe),
+            format!(r"C:\Program Files\MySQL\MySQL Server 8.4\bin\{}", exe),
+            format!(r"C:\Program Files\MySQL\MySQL Server 9.0\bin\{}", exe),
         ];
         for path in &search_paths {
             if std::path::Path::new(path).exists() {
-                return Some(path.to_string());
+                return Some(path.clone());
             }
         }
         // Scan for any MySQL Server directory
@@ -1017,9 +1026,9 @@ pub(crate) async fn resolve_mysql_bin() -> Option<String> {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("MySQL Server") {
-                    let mysql_bin = format!(r"C:\Program Files\MySQL\{}\bin\mysql.exe", name);
-                    if std::path::Path::new(&mysql_bin).exists() {
-                        return Some(mysql_bin);
+                    let bin = format!(r"C:\Program Files\MySQL\{}\bin\{}", name, exe);
+                    if std::path::Path::new(&bin).exists() {
+                        return Some(bin);
                     }
                 }
             }

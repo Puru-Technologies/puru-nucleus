@@ -327,6 +327,30 @@ impl FirestoreClient {
         .await
     }
 
+    /// Lightweight liveness heartbeat — refreshes ONLY `nucleus.last_seen` and
+    /// `nucleus.online` via a nested field mask, without re-collecting telemetry
+    /// or services. Called every 60s by the watchdog so the cloud dashboard's
+    /// online status stays current between the (15-min) rich status pushes.
+    pub async fn push_heartbeat(&self, code: &str) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut nucleus_fields = serde_json::Map::new();
+        nucleus_fields.insert("last_seen".into(), timestamp_value(&now));
+        nucleus_fields.insert("online".into(), boolean_value(true));
+
+        let fields = json!({ "nucleus": map_value(nucleus_fields) });
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            fields,
+            &["nucleus.last_seen", "nucleus.online"],
+        )
+        .await
+    }
+
     /// Push an alert to the hospital's alerts subcollection.
     pub async fn push_alert(
         &self,

@@ -176,7 +176,7 @@ pub async fn ensure_nginx(config: &NucleusConfig) -> Result<PathBuf, NucleusErro
 pub fn is_running() -> bool {
     #[cfg(windows)]
     {
-        std::process::Command::new("tasklist")
+        crate::process::silent_std_cmd("tasklist")
             .args(["/FI", "IMAGENAME eq nginx.exe", "/NH"])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains("nginx.exe"))
@@ -184,7 +184,7 @@ pub fn is_running() -> bool {
     }
     #[cfg(not(windows))]
     {
-        std::process::Command::new("pgrep")
+        crate::process::silent_std_cmd("pgrep")
             .args(["-x", "nginx"])
             .output()
             .map(|o| !o.stdout.is_empty())

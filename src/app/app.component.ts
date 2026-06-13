@@ -5,6 +5,9 @@ import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
 import { filter, map } from 'rxjs/operators';
 import { interval, Subscription } from 'rxjs';
+import { ConnectionService } from './core/services/connection.service';
+import { RemoteTransportService } from './core/services/remote-transport';
+import { resetLicenseCache } from './core/guards/init.guard';
 // @ts-ignore
 import packageJson from '../../package.json';
 
@@ -92,6 +95,18 @@ import packageJson from '../../package.json';
 
           <!-- Footer -->
           <div class="sidebar-footer">
+            <button class="conn-chip" [class.remote]="conn.isRemote()" (click)="goConnect()"
+                    [title]="conn.isRemote() ? 'Connected to a remote daemon — click to manage' : 'Managing this machine — click to connect to a remote server'">
+              <span class="conn-dot"
+                    [class.up]="conn.isRemote() && conn.health()?.reachable"
+                    [class.down]="conn.isRemote() && conn.health() && !conn.health()?.reachable"></span>
+              @if (conn.isRemote()) {
+                <span class="conn-text">{{ conn.activeServer()?.name }}<span class="conn-ver">v{{ conn.health()?.version || '?' }}</span></span>
+              } @else {
+                <span class="conn-text">Local</span>
+              }
+              <mat-icon>swap_horiz</mat-icon>
+            </button>
             <div class="version">v{{ version }}</div>
           </div>
         </mat-sidenav>
@@ -247,6 +262,64 @@ import packageJson from '../../package.json';
       color: #475569;
       font-weight: 500;
     }
+
+    /* ── Connection chip ────────────────────────── */
+    .conn-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      color: #cbd5e1;
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease;
+
+      &:hover { background: rgba(255, 255, 255, 0.08); }
+
+      &.remote {
+        border-color: rgba(99, 102, 241, 0.4);
+        color: #c7d2fe;
+      }
+
+      mat-icon {
+        font-size: 16px;
+        width: 16px;
+        height: 16px;
+        margin-left: auto;
+        color: #64748b;
+      }
+    }
+
+    .conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+      flex-shrink: 0;
+
+      &.up { background: #22c55e; }
+      &.down { background: #ef4444; }
+    }
+
+    .conn-text {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .conn-ver {
+      font-size: 0.65rem;
+      color: #64748b;
+    }
   `]
 })
 export class AppComponent implements OnInit, OnDestroy {
@@ -256,16 +329,27 @@ export class AppComponent implements OnInit, OnDestroy {
   showShell = true;
   unreadCount = 0;
 
+  conn = inject(ConnectionService);
+  private remote = inject(RemoteTransportService);
   private router = inject(Router);
   private unreadSub?: Subscription;
+  private healthSub?: Subscription;
 
   constructor() {
-    // Hide sidebar on activation page
+    // Hide sidebar on activation + connect pages (full-screen layouts)
     this.router.events.pipe(
       filter((e): e is NavigationEnd => e instanceof NavigationEnd),
       map(e => e.urlAfterRedirects || e.url)
     ).subscribe(url => {
-      this.showShell = !url.startsWith('/activation');
+      this.showShell = !url.startsWith('/activation') && !url.startsWith('/connect');
+    });
+
+    // Re-evaluate identity + license whenever the connection changes.
+    this.conn.onChange(() => {
+      resetLicenseCache();
+      this.hospitalCode = '';
+      this.loadHospitalCode();
+      this.refreshHealth();
     });
 
     // Load hospital code for display
@@ -275,13 +359,45 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadUnreadCount();
     this.unreadSub = interval(60_000).subscribe(() => this.loadUnreadCount());
+    // Keep the connection indicator live when remote.
+    this.refreshHealth();
+    this.healthSub = interval(30_000).subscribe(() => this.refreshHealth());
   }
 
   ngOnDestroy(): void {
     this.unreadSub?.unsubscribe();
+    this.healthSub?.unsubscribe();
+  }
+
+  goConnect(): void {
+    this.router.navigate(['/connect']);
+  }
+
+  private async refreshHealth(): Promise<void> {
+    const server = this.conn.activeServer();
+    if (!this.conn.isRemote() || !server) {
+      this.conn.setHealth(null);
+      return;
+    }
+    try {
+      const h = await this.conn.testConnection(server);
+      this.conn.setHealth({
+        reachable: true,
+        version: h.version,
+        dockerConnected: h.docker_connected,
+        checkedAt: new Date().toISOString(),
+      });
+    } catch {
+      this.conn.setHealth({ reachable: false, checkedAt: new Date().toISOString() });
+    }
   }
 
   private async loadUnreadCount(): Promise<void> {
+    // No REST route for unread count — skip in remote mode.
+    if (this.conn.isRemote()) {
+      this.unreadCount = 0;
+      return;
+    }
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       this.unreadCount = await invoke<number>('get_unread_count');
@@ -292,11 +408,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private async loadHospitalCode(): Promise<void> {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const config = await invoke<{ hospital_code: string }>('get_config');
+      const config = this.conn.isRemote()
+        ? await this.remote.execute<{ hospital_code: string }>('get_config')
+        : await (await import('@tauri-apps/api/core')).invoke<{ hospital_code: string }>('get_config');
       if (config?.hospital_code) {
         this.hospitalCode = config.hospital_code;
-        // Update window title
+        // Update window title (the GUI is still a local Tauri window)
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().setTitle(`Puru Nucleus — ${config.hospital_code}`);
       }

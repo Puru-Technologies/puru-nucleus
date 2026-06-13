@@ -12,6 +12,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/activation/activation.component').then(m => m.ActivationComponent)
   },
   {
+    path: 'connect',
+    loadComponent: () => import('./features/connect/connect.component').then(m => m.ConnectComponent)
+  },
+  {
     path: 'dashboard',
     canActivate: [initGuard],
     loadComponent: () => import('./features/dashboard/dashboard.component').then(m => m.DashboardComponent)

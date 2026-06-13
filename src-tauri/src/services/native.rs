@@ -91,8 +91,10 @@ fn is_process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        // Use tasklist to check if PID exists — no extra dependencies needed
-        std::process::Command::new("tasklist")
+        // Use tasklist to check if PID exists — no extra dependencies needed.
+        // silent_std_cmd suppresses the console window the watchdog would
+        // otherwise flash for every service on every health cycle.
+        crate::process::silent_std_cmd("tasklist")
             .args(["/FI", &format!("PID eq {}", pid), "/NH"])
             .output()
             .map(|o| {

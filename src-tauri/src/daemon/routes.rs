@@ -62,6 +62,22 @@ fn internal_err(e: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
+/// Map a unit-returning command result to `{"ok": true}` or a 500.
+fn ok_json(r: Result<(), String>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    r.map(|_| Json(serde_json::json!({ "ok": true })))
+        .map_err(internal_err)
+}
+
+/// Map any Serialize-returning command result to JSON or a 500, without needing
+/// the concrete type at the handler site.
+fn to_value_json<T: Serialize>(
+    r: Result<T, String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    r.and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+        .map(Json)
+        .map_err(internal_err)
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// GET /api/health — public, no auth required
@@ -559,6 +575,79 @@ pub async fn run_seed(
         .await
         .map(Json)
         .map_err(|e| internal_err(e.user_message()))
+}
+
+// ── Remote setup / detection / templates / config ─────────────────────────────
+// These call the same #[tauri::command] functions the local GUI uses, so the
+// remote setup wizard runs identical logic on the daemon host. setup_install_daemon
+// is deliberately NOT exposed — the daemon is already installed where it runs.
+
+pub async fn setup_check_prerequisites() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_check_prerequisites().await)
+}
+pub async fn setup_create_databases() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_create_databases().await)
+}
+pub async fn setup_configure_rabbitmq() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_configure_rabbitmq().await)
+}
+pub async fn setup_generate_config() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_generate_config().await)
+}
+pub async fn setup_pull_images() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_pull_images().await)
+}
+pub async fn setup_start_services() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_start_services().await)
+}
+pub async fn setup_generate_env_files() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_generate_env_files().await)
+}
+pub async fn setup_pull_jars() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_pull_jars().await)
+}
+pub async fn setup_start_native_services() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_start_native_services().await)
+}
+pub async fn setup_health_check() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_health_check().await)
+}
+pub async fn setup_configure_backups() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_configure_backups().await)
+}
+pub async fn setup_tls() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_tls().await)
+}
+pub async fn setup_reset() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::setup_reset().await)
+}
+
+pub async fn detect_existing_setup() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::detect_existing_setup().await)
+}
+pub async fn check_prerequisites() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::check_prerequisites().await)
+}
+pub async fn get_deployment_mode() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::get_deployment_mode().await)
+}
+pub async fn get_service_modules() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::get_service_modules().await)
+}
+pub async fn save_config(
+    Json(config): Json<crate::config::NucleusConfig>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::save_config(config).await)
+}
+
+pub async fn finalise_templates() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::finalise_templates().await)
+}
+pub async fn check_template_updates() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::check_template_updates().await)
+}
+pub async fn apply_template_updates() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    to_value_json(crate::commands::apply_template_updates().await)
 }
 
 // ── Native JAR Deployment ────────────────────────────────────────────────────

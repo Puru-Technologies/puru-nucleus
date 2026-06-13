@@ -280,14 +280,15 @@ pub(crate) async fn list_gcs_objects(
     Ok(names)
 }
 
-async fn download_gcs_bytes(
+async fn download_gcs_bytes_from(
     client: &google_cloud_storage::client::Client,
+    bucket: &str,
     object_path: &str,
 ) -> Result<Vec<u8>, NucleusError> {
     client
         .download_object(
             &google_cloud_storage::http::objects::get::GetObjectRequest {
-                bucket: RELEASES_BUCKET.to_string(),
+                bucket: bucket.to_string(),
                 object: object_path.to_string(),
                 ..Default::default()
             },
@@ -297,12 +298,21 @@ async fn download_gcs_bytes(
         .map_err(|e| NucleusError::GcsConnection(format!("GCS download failed: {}", e)))
 }
 
-pub(crate) async fn download_gcs_to_file(
+async fn download_gcs_bytes(
     client: &google_cloud_storage::client::Client,
+    object_path: &str,
+) -> Result<Vec<u8>, NucleusError> {
+    download_gcs_bytes_from(client, RELEASES_BUCKET, object_path).await
+}
+
+/// Download an object from an arbitrary bucket to a local file.
+pub(crate) async fn download_gcs_to_file_from(
+    client: &google_cloud_storage::client::Client,
+    bucket: &str,
     object_path: &str,
     local_path: &PathBuf,
 ) -> Result<f64, NucleusError> {
-    let data = download_gcs_bytes(client, object_path).await?;
+    let data = download_gcs_bytes_from(client, bucket, object_path).await?;
 
     if let Some(parent) = local_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -312,6 +322,97 @@ pub(crate) async fn download_gcs_to_file(
 
     let size_mb = data.len() as f64 / (1024.0 * 1024.0);
     Ok(size_mb)
+}
+
+pub(crate) async fn download_gcs_to_file(
+    client: &google_cloud_storage::client::Client,
+    object_path: &str,
+    local_path: &PathBuf,
+) -> Result<f64, NucleusError> {
+    download_gcs_to_file_from(client, RELEASES_BUCKET, object_path, local_path).await
+}
+
+/// Metadata for a GCS object — enough to detect content changes cheaply.
+#[derive(Debug, Clone)]
+pub(crate) struct GcsObjectMeta {
+    pub name: String,
+    pub size: i64,
+    pub md5_hash: String,
+    pub generation: i64,
+}
+
+/// Like `list_gcs_objects` but also returns each object's size/md5/generation,
+/// so callers can diff a remote prefix against a previously-pulled snapshot.
+pub(crate) async fn list_gcs_objects_with_meta(
+    client: &google_cloud_storage::client::Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Vec<GcsObjectMeta>, NucleusError> {
+    use google_cloud_storage::http::objects::list::ListObjectsRequest;
+
+    let mut out = Vec::new();
+    let mut page_token: Option<String> = None;
+
+    loop {
+        let resp = client
+            .list_objects(&ListObjectsRequest {
+                bucket: bucket.to_string(),
+                prefix: Some(prefix.to_string()),
+                page_token: page_token.clone(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| NucleusError::GcsConnection(format!("GCS list failed: {}", e)))?;
+
+        if let Some(items) = resp.items {
+            for obj in items {
+                if obj.name.ends_with('/') {
+                    continue;
+                }
+                out.push(GcsObjectMeta {
+                    name: obj.name,
+                    size: obj.size,
+                    md5_hash: obj.md5_hash.unwrap_or_default(),
+                    generation: obj.generation,
+                });
+            }
+        }
+
+        match resp.next_page_token {
+            Some(token) if !token.is_empty() => page_token = Some(token),
+            _ => break,
+        }
+    }
+
+    Ok(out)
+}
+
+/// Upload a local file to an object key in the given bucket.
+pub(crate) async fn upload_gcs_file(
+    client: &google_cloud_storage::client::Client,
+    bucket: &str,
+    local_path: &std::path::Path,
+    object_path: &str,
+) -> Result<(), NucleusError> {
+    let data = tokio::fs::read(local_path).await?;
+
+    let upload_type = google_cloud_storage::http::objects::upload::UploadType::Simple(
+        google_cloud_storage::http::objects::upload::Media::new(object_path.to_string()),
+    );
+
+    client
+        .upload_object(
+            &google_cloud_storage::http::objects::upload::UploadObjectRequest {
+                bucket: bucket.to_string(),
+                ..Default::default()
+            },
+            data,
+            &upload_type,
+        )
+        .await
+        .map_err(|e| NucleusError::GcsConnection(format!("GCS upload failed: {}", e)))?;
+
+    Ok(())
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────

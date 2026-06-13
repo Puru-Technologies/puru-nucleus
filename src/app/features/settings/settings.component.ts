@@ -10,8 +10,9 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { TauriService, NucleusConfig, DaemonStatus, DaemonConfig, PullSettingsResult } from '../../core/services/tauri.service';
+import { TauriService, NucleusConfig, DaemonStatus, DaemonConfig, PullSettingsResult, SeedReport, FinaliseReport, TemplateUpdate, ApplyReport } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
+import { ConnectionService } from '../../core/services/connection.service';
 import { open } from '@tauri-apps/plugin-dialog';
 
 @Component({
@@ -91,10 +92,12 @@ import { open } from '@tauri-apps/plugin-dialog';
                     <span>No credentials file found</span>
                   </div>
                 }
-                <button mat-stroked-button (click)="browseCredentials()">
-                  <mat-icon>folder_open</mat-icon>
-                  {{ credsExists ? 'Replace' : 'Browse' }}
-                </button>
+                @if (!isRemote) {
+                  <button mat-stroked-button (click)="browseCredentials()">
+                    <mat-icon>folder_open</mat-icon>
+                    {{ credsExists ? 'Replace' : 'Browse' }}
+                  </button>
+                }
               </div>
 
               <div class="toggle-row">
@@ -282,7 +285,13 @@ import { open } from '@tauri-apps/plugin-dialog';
               <mat-card-subtitle>{{ daemonStatusInfo?.platform || 'Background service' }}</mat-card-subtitle>
             </mat-card-header>
             <mat-card-content>
+              @if (isRemote) {
+                <div class="service-detail" style="padding:8px 0 12px">
+                  Daemon lifecycle (install / start / stop) is managed on the server itself, not from a remote session.
+                </div>
+              }
               <!-- Service Installation Status -->
+              @if (!isRemote) {
               <div class="service-status-panel">
                 <div class="service-row">
                   <div class="service-label">
@@ -364,6 +373,7 @@ import { open } from '@tauri-apps/plugin-dialog';
                   <div class="service-detail">{{ daemonStatusInfo?.service_detail }}</div>
                 }
               </div>
+              }
 
               @if (daemonError) {
                 <div class="daemon-error">
@@ -471,6 +481,105 @@ import { open } from '@tauri-apps/plugin-dialog';
               }
             </mat-card-content>
           </mat-card>
+          <!-- Data Seeding -->
+          <mat-card class="settings-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>spa</mat-icon>
+              <mat-card-title>Data Seeding</mat-card-title>
+              <mat-card-subtitle>Populate fresh-install defaults (idempotent — never overwrites existing values)</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <p class="seed-hint">
+                <mat-icon>info_outline</mat-icon>
+                Run once after the services have started for the first time, so their database tables exist.
+              </p>
+
+              <button mat-raised-button color="primary" (click)="seedAll()" [disabled]="!!seeding">
+                @if (seeding === 'all') { <mat-spinner diameter="18"></mat-spinner> }
+                <mat-icon>auto_fix_high</mat-icon> Seed All
+              </button>
+
+              <div class="seed-advanced">
+                <div class="seed-advanced-header">Advanced — seed individually</div>
+                <div class="toggle-row compact">
+                  <mat-slide-toggle [(ngModel)]="seedDb">Databases (config, ref data, document master)</mat-slide-toggle>
+                  <mat-slide-toggle [(ngModel)]="seedQueues">RabbitMQ Queues</mat-slide-toggle>
+                  <mat-slide-toggle [(ngModel)]="seedTemplates">Report Templates</mat-slide-toggle>
+                </div>
+                <button mat-stroked-button (click)="seedSelected()"
+                        [disabled]="!!seeding || (!seedDb && !seedQueues && !seedTemplates)">
+                  @if (seeding === 'selected') { <mat-spinner diameter="18"></mat-spinner> }
+                  <mat-icon>play_arrow</mat-icon> Seed Selected
+                </button>
+              </div>
+
+              @if (seedReport) {
+                <div class="seed-results">
+                  @for (section of seedReport.sections; track section.name) {
+                    <div class="seed-section" [class.has-errors]="section.errors.length > 0">
+                      <div class="seed-section-head">
+                        <mat-icon>{{ section.errors.length > 0 ? 'error' : 'check_circle' }}</mat-icon>
+                        <span class="seed-section-name">{{ section.name }}</span>
+                        <span class="seed-counts">{{ section.created }} created · {{ section.skipped }} skipped</span>
+                      </div>
+                      @if (section.errors.length > 0) {
+                        <ul class="seed-errors">
+                          @for (err of section.errors; track err) {
+                            <li>{{ err }}</li>
+                          }
+                        </ul>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- Hospital template channel -->
+              <div class="seed-advanced">
+                <div class="seed-advanced-header">Hospital templates</div>
+                <p class="seed-hint">
+                  <mat-icon>info_outline</mat-icon>
+                  Finalise uploads the local templates to this hospital's cloud folder. Master jrxml stays generic — per-hospital values come from config.
+                </p>
+                <div class="tpl-actions">
+                  <button mat-stroked-button (click)="finaliseTemplates()" [disabled]="!!tplBusy">
+                    @if (tplBusy === 'finalise') { <mat-spinner diameter="18"></mat-spinner> }
+                    <mat-icon>cloud_upload</mat-icon> Finalise Templates
+                  </button>
+                  <button mat-stroked-button (click)="checkTemplateUpdates()" [disabled]="!!tplBusy">
+                    @if (tplBusy === 'check') { <mat-spinner diameter="18"></mat-spinner> }
+                    <mat-icon>sync</mat-icon> Check for Updates
+                  </button>
+                </div>
+
+                @if (tplChecked && templateUpdates.length === 0) {
+                  <div class="tpl-uptodate">
+                    <mat-icon>check_circle</mat-icon> Templates are up to date
+                  </div>
+                }
+
+                @if (templateUpdates.length > 0) {
+                  <div class="tpl-updates">
+                    <div class="tpl-updates-head">
+                      <mat-icon>system_update_alt</mat-icon>
+                      <span>{{ templateUpdates.length }} update(s) available</span>
+                    </div>
+                    @for (u of templateUpdates; track u.path) {
+                      <div class="tpl-update-row">
+                        <span class="tpl-badge" [class.new]="u.status === 'new'">{{ u.status }}</span>
+                        <span class="tpl-path">{{ u.path }}</span>
+                      </div>
+                    }
+                    <button mat-raised-button color="primary" class="tpl-apply" (click)="applyTemplateUpdates()" [disabled]="!!tplBusy">
+                      @if (tplBusy === 'apply') { <mat-spinner diameter="18"></mat-spinner> }
+                      <mat-icon>download</mat-icon> Apply (overwrite local)
+                    </button>
+                  </div>
+                }
+              </div>
+            </mat-card-content>
+          </mat-card>
+
           <!-- Daemon Log -->
           <mat-card class="settings-card daemon-log-card">
             <mat-card-header>
@@ -931,6 +1040,143 @@ import { open } from '@tauri-apps/plugin-dialog';
       margin: 0;
     }
 
+    /* ── Data Seeding ───────────────────── */
+    .seed-hint {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: #666;
+      margin: 0 0 1rem;
+
+      mat-icon { font-size: 18px; width: 18px; height: 18px; margin-top: 1px; color: #1565c0; }
+    }
+
+    .seed-advanced {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid #eee;
+    }
+
+    .seed-advanced-header {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 0.75rem;
+    }
+
+    .toggle-row.compact {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0 0 1rem;
+    }
+
+    .seed-results {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .seed-section {
+      padding: 0.6rem 0.75rem;
+      background: #e8f5e9;
+      border-radius: 8px;
+      font-size: 0.85rem;
+
+      &.has-errors { background: #ffebee; }
+    }
+
+    .seed-section-head {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+
+      mat-icon { font-size: 18px; width: 18px; height: 18px; color: #4caf50; }
+      .seed-section-name { font-weight: 500; }
+      .seed-counts { margin-left: auto; color: #666; font-size: 0.78rem; }
+    }
+
+    .seed-section.has-errors .seed-section-head mat-icon { color: #f44336; }
+
+    .seed-errors {
+      margin: 0.5rem 0 0;
+      padding-left: 1.5rem;
+      color: #c62828;
+      font-size: 0.78rem;
+
+      li { margin-bottom: 2px; word-break: break-word; }
+    }
+
+    .tpl-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+
+    .tpl-uptodate {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: #4caf50;
+      margin-top: 0.75rem;
+
+      mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    }
+
+    .tpl-updates {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: #fff8e1;
+      border-radius: 8px;
+    }
+
+    .tpl-updates-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      font-size: 0.85rem;
+      color: #e65100;
+      margin-bottom: 0.5rem;
+
+      mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    }
+
+    .tpl-update-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      padding: 2px 0;
+    }
+
+    .tpl-badge {
+      text-transform: uppercase;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: #ffe0b2;
+      color: #e65100;
+
+      &.new { background: #c8e6c9; color: #2e7d32; }
+    }
+
+    .tpl-path {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      word-break: break-all;
+    }
+
+    .tpl-apply {
+      margin-top: 0.75rem;
+    }
+
     .danger-zone-card {
       margin-top: 2rem;
       border: 1px solid #ffcdd2;
@@ -958,6 +1204,12 @@ import { open } from '@tauri-apps/plugin-dialog';
 export class SettingsComponent implements OnInit {
   private tauri = inject(TauriService);
   private notification = inject(NotificationService);
+  private conn = inject(ConnectionService);
+
+  /** Daemon lifecycle and local file pickers have no remote equivalent. */
+  get isRemote(): boolean {
+    return this.conn.isRemote();
+  }
 
   config: NucleusConfig | null = null;
   loading = true;
@@ -1002,6 +1254,18 @@ export class SettingsComponent implements OnInit {
   // Danger zone
   confirmingReset = false;
   resetting = false;
+
+  // Data seeding
+  seeding: 'all' | 'selected' | null = null;
+  seedDb = true;
+  seedQueues = true;
+  seedTemplates = true;
+  seedReport: SeedReport | null = null;
+
+  // Hospital template channel
+  tplBusy: 'finalise' | 'check' | 'apply' | null = null;
+  tplChecked = false;
+  templateUpdates: TemplateUpdate[] = [];
 
   ngOnInit(): void {
     this.loadConfig();
@@ -1284,6 +1548,91 @@ export class SettingsComponent implements OnInit {
       this.notification.success('Nginx HTTPS config copied to clipboard');
     } catch {
       // Error handled by TauriService
+    }
+  }
+
+  // ── Data Seeding ───────────────────────────────────────────────────────────
+
+  async seedAll(): Promise<void> {
+    await this.runSeed('all', true, true, true);
+  }
+
+  async seedSelected(): Promise<void> {
+    if (!this.seedDb && !this.seedQueues && !this.seedTemplates) return;
+    await this.runSeed('selected', this.seedDb, this.seedQueues, this.seedTemplates);
+  }
+
+  private async runSeed(mode: 'all' | 'selected', db: boolean, queues: boolean, templates: boolean): Promise<void> {
+    this.seeding = mode;
+    this.seedReport = null;
+    try {
+      this.seedReport = await this.tauri.invoke<SeedReport>('seed_data', { db, queues, templates });
+      const totals = this.seedReport.sections.reduce(
+        (acc, s) => ({ created: acc.created + s.created, errors: acc.errors + s.errors.length }),
+        { created: 0, errors: 0 }
+      );
+      if (totals.errors > 0) {
+        this.notification.warning(`Seeding finished with ${totals.errors} error(s) — see details below`);
+      } else {
+        this.notification.success(`Seeding complete — ${totals.created} value(s) created`);
+      }
+    } catch (error) {
+      this.notification.error('Seeding failed: ' + String(error));
+    } finally {
+      this.seeding = null;
+    }
+  }
+
+  // ── Hospital template channel ──────────────────────────────────────────────
+
+  async finaliseTemplates(): Promise<void> {
+    if (!confirm('Upload the local templates to this hospital\'s cloud folder? This publishes them as the hospital\'s source of truth.')) return;
+    this.tplBusy = 'finalise';
+    try {
+      const report = await this.tauri.invoke<FinaliseReport>('finalise_templates');
+      if (report.errors.length > 0) {
+        this.notification.warning(`Finalised ${report.uploaded} file(s) with ${report.errors.length} error(s)`);
+      } else {
+        this.notification.success(`Finalised ${report.uploaded} template(s) to the cloud`);
+      }
+      // After finalising, local matches the folder — clear any stale update list.
+      this.templateUpdates = [];
+      this.tplChecked = false;
+    } catch (error) {
+      this.notification.error('Finalise failed: ' + String(error));
+    } finally {
+      this.tplBusy = null;
+    }
+  }
+
+  async checkTemplateUpdates(): Promise<void> {
+    this.tplBusy = 'check';
+    try {
+      this.templateUpdates = await this.tauri.invoke<TemplateUpdate[]>('check_template_updates');
+      this.tplChecked = true;
+    } catch (error) {
+      this.notification.error('Update check failed: ' + String(error));
+    } finally {
+      this.tplBusy = null;
+    }
+  }
+
+  async applyTemplateUpdates(): Promise<void> {
+    if (!confirm(`Overwrite ${this.templateUpdates.length} local template file(s) with the cloud version? Local edits to these files will be lost.`)) return;
+    this.tplBusy = 'apply';
+    try {
+      const report = await this.tauri.invoke<ApplyReport>('apply_template_updates');
+      if (report.errors.length > 0) {
+        this.notification.warning(`Applied ${report.applied} file(s) with ${report.errors.length} error(s)`);
+      } else {
+        this.notification.success(`Applied ${report.applied} template update(s)`);
+      }
+      this.templateUpdates = [];
+      this.tplChecked = false;
+    } catch (error) {
+      this.notification.error('Apply failed: ' + String(error));
+    } finally {
+      this.tplBusy = null;
     }
   }
 

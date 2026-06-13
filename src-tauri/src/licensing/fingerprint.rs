@@ -79,7 +79,7 @@ fn get_machine_id_linux() -> Result<String, NucleusError> {
 
 #[cfg(target_os = "windows")]
 fn get_machine_id_windows() -> Result<String, NucleusError> {
-    let output = std::process::Command::new("reg")
+    let output = crate::process::silent_std_cmd("reg")
         .args([
             "query",
             r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",

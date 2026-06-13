@@ -1,15 +1,23 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { invoke } from '@tauri-apps/api/core';
 import { MatSnackBar, MatSnackBarConfig } from '@angular/material/snack-bar';
 import { AppError, ErrorSeverity } from '../models/app-error';
+import { ConnectionService } from './connection.service';
+import { RemoteTransportService } from './remote-transport';
 
 /**
- * Service for invoking Tauri commands with error handling
+ * Service for invoking Tauri commands with error handling.
+ *
+ * Transport-aware: in local mode it calls Tauri IPC; in remote mode it routes
+ * to the connected daemon's REST API via {@link RemoteTransportService}.
  */
 @Injectable({
   providedIn: 'root'
 })
 export class TauriService {
+  private conn = inject(ConnectionService);
+  private remote = inject(RemoteTransportService);
+
   constructor(private snackBar: MatSnackBar) {}
 
   /**
@@ -17,6 +25,9 @@ export class TauriService {
    */
   async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     try {
+      if (this.conn.isRemote()) {
+        return await this.remote.execute<T>(command, args ?? {});
+      }
       return await invoke<T>(command, args);
     } catch (error) {
       this.handleError(error as string, command);
@@ -28,6 +39,9 @@ export class TauriService {
    * Invoke without showing error (for silent operations)
    */
   async invokeSilent<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+    if (this.conn.isRemote()) {
+      return this.remote.execute<T>(command, args ?? {});
+    }
     return invoke<T>(command, args);
   }
 
@@ -480,6 +494,36 @@ export interface PullSettingsResult {
   hospital_info: HospitalInfo;
   license: import('../models/license.model').License;
   license_changed: boolean;
+}
+
+// Seeding types
+export interface SeedSection {
+  name: string;
+  created: number;
+  skipped: number;
+  errors: string[];
+}
+
+export interface SeedReport {
+  sections: SeedSection[];
+}
+
+export interface FinaliseReport {
+  uploaded: number;
+  prefix: string;
+  errors: string[];
+}
+
+export interface TemplateUpdate {
+  path: string;
+  status: 'new' | 'changed';
+  old_size: number;
+  new_size: number;
+}
+
+export interface ApplyReport {
+  applied: number;
+  errors: string[];
 }
 
 // Network types

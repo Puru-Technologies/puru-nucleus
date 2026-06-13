@@ -579,6 +579,20 @@ async fn watchdog_loop() {
             continue; // No hospital configured yet
         }
 
+        // ── Lightweight liveness heartbeat ──────────────────────────────
+        // Refresh nucleus.last_seen every 60s so the cloud dashboard's
+        // online/offline status stays current between the 15-min status pushes.
+        if config.telemetry_enabled {
+            match crate::firestore::FirestoreClient::new_from_config().await {
+                Ok(client) => {
+                    if let Err(e) = client.push_heartbeat(&config.hospital_code).await {
+                        tracing::debug!("Heartbeat push failed: {}", e);
+                    }
+                }
+                Err(e) => tracing::debug!("Heartbeat: Firestore unavailable: {}", e),
+            }
+        }
+
         // ── Service health check & auto-restart ─────────────────────────
         match crate::services::get_services().await {
             Ok(services) => {

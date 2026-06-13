@@ -16,6 +16,7 @@ import { Router } from '@angular/router';
 import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult, InstallProgress, InstallResult } from '../../core/services/tauri.service';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { NotificationService } from '../../core/services/notification.service';
+import { ConnectionService } from '../../core/services/connection.service';
 import { open } from '@tauri-apps/plugin-dialog';
 
 interface SetupStep {
@@ -114,9 +115,11 @@ interface SetupStep {
                         <input matInput [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
                         <mat-hint>Path to docker-compose.yml</mat-hint>
                       </mat-form-field>
-                      <button mat-stroked-button type="button" (click)="browseComposePath()">
-                        <mat-icon>folder_open</mat-icon> Browse
-                      </button>
+                      @if (!isRemote) {
+                        <button mat-stroked-button type="button" (click)="browseComposePath()">
+                          <mat-icon>folder_open</mat-icon> Browse
+                        </button>
+                      }
                     </div>
                   }
 
@@ -126,9 +129,11 @@ interface SetupStep {
                       <input matInput [(ngModel)]="puruDataPath" placeholder="/home/puru/puru-data">
                       <mat-hint>Root directory for hospital data, documents, and uploads</mat-hint>
                     </mat-form-field>
-                    <button mat-stroked-button type="button" (click)="browsePuruDataPath()">
-                      <mat-icon>folder_open</mat-icon> Browse
-                    </button>
+                    @if (!isRemote) {
+                      <button mat-stroked-button type="button" (click)="browsePuruDataPath()">
+                        <mat-icon>folder_open</mat-icon> Browse
+                      </button>
+                    }
                   </div>
 
                   <mat-form-field appearance="outline" class="full-width">
@@ -147,10 +152,14 @@ interface SetupStep {
                     } @else {
                       <span class="creds-missing">Not set</span>
                     }
-                    <button mat-stroked-button type="button" (click)="browseCredentials()">
-                      <mat-icon>folder_open</mat-icon>
-                      {{ credsExists ? 'Replace' : 'Browse' }}
-                    </button>
+                    @if (!isRemote) {
+                      <button mat-stroked-button type="button" (click)="browseCredentials()">
+                        <mat-icon>folder_open</mat-icon>
+                        {{ credsExists ? 'Replace' : 'Browse' }}
+                      </button>
+                    } @else {
+                      <span class="creds-missing">Using credentials configured on the server</span>
+                    }
                   </div>
 
                   @if (configError) {
@@ -1030,7 +1039,14 @@ interface SetupStep {
 export class SetupComponent implements OnInit {
   private tauri = inject(TauriService);
   private notification = inject(NotificationService);
+  private conn = inject(ConnectionService);
   private router = inject(Router);
+
+  /** When connected to a remote daemon, local-only steps (file pickers, daemon
+   *  install) are hidden/skipped — setup runs on the server, not this machine. */
+  get isRemote(): boolean {
+    return this.conn.isRemote();
+  }
 
   config: NucleusConfig | null = null;
   configSaved = false;
@@ -1513,7 +1529,16 @@ export class SetupComponent implements OnInit {
     ];
 
     const commands = isNative ? nativeCommands : dockerCommands;
-    await this.tauri.invoke(commands[index]);
+    const command = commands[index];
+
+    // The daemon is already installed on the server it runs on — there's no
+    // remote equivalent, so skip this step (rather than error) in remote mode.
+    if (this.isRemote && command === 'setup_install_daemon') {
+      this.steps[index].message = 'Skipped — daemon already running on the server';
+      return;
+    }
+
+    await this.tauri.invoke(command);
   }
 
   cancel(): void {

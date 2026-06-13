@@ -1767,6 +1767,72 @@ pub async fn setup_start_native_services() -> Result<(), String> {
     Ok(())
 }
 
+/// Manually seed fresh-install data: service databases (puru_config, ref_data,
+/// charge categories, document master, bootstrap services), RabbitMQ queues, and
+/// Jasper report templates. Idempotent — existing values are never overwritten.
+///
+/// Run this once after the services have booted for the first time (so their
+/// tables exist). Passing all-false is treated as "seed everything", matching the
+/// `puru seed` CLI with no flags.
+#[tauri::command]
+pub async fn seed_data(
+    db: bool,
+    queues: bool,
+    templates: bool,
+) -> Result<crate::seed::SeedReport, String> {
+    let (db, queues, templates) = if !db && !queues && !templates {
+        (true, true, true)
+    } else {
+        (db, queues, templates)
+    };
+
+    tracing::info!(
+        "Seeding data (db={}, queues={}, templates={})",
+        db,
+        queues,
+        templates
+    );
+
+    crate::seed::run_seed(db, queues, templates)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+// ── Hospital template channel ─────────────────────────────────────────────────
+
+/// Upload the finalized local templates to the hospital's GCS folder, making it
+/// that hospital's source of truth. Publishes content to the cloud.
+#[tauri::command]
+pub async fn finalise_templates() -> Result<crate::templates::FinaliseReport, String> {
+    crate::templates::with_config(|config| async move {
+        crate::templates::finalise(&config).await
+    })
+    .await
+    .map_err(|e| e.user_message())
+}
+
+/// Diff the hospital template folder against the local manifest. Returns the
+/// new/changed files ("update available") without touching anything.
+#[tauri::command]
+pub async fn check_template_updates() -> Result<Vec<crate::templates::TemplateUpdate>, String> {
+    crate::templates::with_config(|config| async move {
+        crate::templates::check_updates(&config).await
+    })
+    .await
+    .map_err(|e| e.user_message())
+}
+
+/// Force-overwrite local templates from the hospital folder. Call only after the
+/// user has confirmed the overwrite.
+#[tauri::command]
+pub async fn apply_template_updates() -> Result<crate::templates::ApplyReport, String> {
+    crate::templates::with_config(|config| async move {
+        crate::templates::apply_updates(&config).await
+    })
+    .await
+    .map_err(|e| e.user_message())
+}
+
 /// Step 7: Health check — verify all services are running
 #[tauri::command]
 pub async fn setup_health_check() -> Result<(), String> {

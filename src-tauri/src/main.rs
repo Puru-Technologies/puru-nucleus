@@ -32,6 +32,7 @@ mod platform;
 mod process;
 mod remote_shell;
 mod seed;
+mod templates;
 mod webserver;
 mod tls;
 mod installer;
@@ -100,10 +101,119 @@ pub(crate) fn init_daemon_logging() {
     }
 }
 
+/// Build a 32×32 RGBA round "dot" icon in the given colour on a transparent
+/// background — used as the tray health indicator (green = up, red = down).
+fn dot_icon(r: u8, g: u8, b: u8) -> tauri::image::Image<'static> {
+    const SIZE: u32 = 32;
+    let radius = 13.0_f32;
+    let center = SIZE as f32 / 2.0;
+    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - center;
+            let dy = y as f32 + 0.5 - center;
+            if dx * dx + dy * dy <= radius * radius {
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            } else {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
+}
+
+/// Reveal and focus the main dashboard window (used by the tray click/menu).
+fn show_main(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Install a system-tray health indicator that polls the daemon's
+/// `/api/health` and recolours the icon (green = up, red = down).
+fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let status_i = MenuItem::with_id(&app, "status", "Daemon: checking…", false, None::<&str>)?;
+    let open_i = MenuItem::with_id(&app, "open", "Open Dashboard", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(&app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(&app, &[&status_i, &open_i, &quit_i])?;
+
+    let tray = TrayIconBuilder::with_id("health")
+        .icon(dot_icon(0x9e, 0x9e, 0x9e)) // grey = unknown until first poll
+        .tooltip("Puru Nucleus — checking…")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        })
+        .build(&app)?;
+
+    // Poll the daemon health endpoint forever; the running task also keeps the
+    // tray + status menu-item handles alive for the life of the app.
+    let port = crate::config::load_config()
+        .ok()
+        .and_then(|c| c.daemon)
+        .map(|d| d.port)
+        .unwrap_or(9090);
+
+    tauri::async_runtime::spawn(async move {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/api/health", port);
+        loop {
+            let (icon, tip) = match client
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                    let ver = body.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                    (
+                        dot_icon(0x4c, 0xaf, 0x50),
+                        format!("Puru Nucleus — daemon up · v{}", ver),
+                    )
+                }
+                _ => (
+                    dot_icon(0xf4, 0x43, 0x36),
+                    "Puru Nucleus — daemon DOWN".to_string(),
+                ),
+            };
+            let _ = tray.set_icon(Some(icon));
+            let _ = tray.set_tooltip(Some(tip.as_str()));
+            let _ = status_i.set_text(tip.as_str());
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        }
+    });
+
+    Ok(())
+}
+
 fn run_gui() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            setup_tray(app.handle().clone())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // System
             commands::get_system_info,
@@ -189,6 +299,10 @@ fn run_gui() {
             commands::setup_generate_env_files,
             commands::setup_pull_jars,
             commands::setup_start_native_services,
+            commands::seed_data,
+            commands::finalise_templates,
+            commands::check_template_updates,
+            commands::apply_template_updates,
             // Docker Updates
             commands::update_docker_service,
             commands::rollback_docker_service,
@@ -229,6 +343,14 @@ fn run_gui() {
             commands::generate_client_setup_script,
             commands::generate_nginx_https_config,
         ])
+        .on_window_event(|window, event| {
+            // Close-to-tray: hide the window instead of quitting so the tray
+            // health indicator keeps running in the background.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

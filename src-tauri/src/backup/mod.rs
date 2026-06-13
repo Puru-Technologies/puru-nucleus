@@ -475,20 +475,17 @@ async fn find_mysql_container() -> Option<String> {
     None
 }
 
-/// Check if mysqldump is available locally (cached after first check).
-async fn has_local_mysqldump() -> bool {
+/// Resolve a local `mysqldump` binary (cached). Checks PATH *and* the standard
+/// Windows MySQL install dirs (which aren't on PATH), so a normal MySQL Server
+/// install is found without the docker fallback.
+async fn local_mysqldump() -> Option<String> {
     use std::sync::OnceLock;
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    if let Some(&val) = CACHED.get() {
-        return val;
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    if let Some(val) = CACHED.get() {
+        return val.clone();
     }
-    let result = crate::process::silent_cmd("mysqldump")
-        .arg("--version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    let _ = CACHED.set(result);
+    let result = crate::services::resolve_mysql_tool("mysqldump").await;
+    let _ = CACHED.set(result.clone());
     result
 }
 
@@ -501,8 +498,10 @@ async fn dump_table(
     backup_type: &BackupType,
     output_path: &Path,
 ) -> Result<(), NucleusError> {
+    let local_bin = local_mysqldump().await;
+
     let mut dump_args = vec![
-        format!("-h{}", if has_local_mysqldump().await { config.mysql_host.clone() } else { "127.0.0.1".to_string() }),
+        format!("-h{}", if local_bin.is_some() { config.mysql_host.clone() } else { "127.0.0.1".to_string() }),
         format!("-P{}", config.mysql_port),
         format!("-u{}", config.mysql_user),
         format!("-p{}", config.mysql_password),
@@ -517,14 +516,14 @@ async fn dump_table(
     dump_args.push(db.to_string());
     dump_args.push(table.to_string());
 
-    let output = if has_local_mysqldump().await {
-        // Local mysqldump
+    let output = if let Some(ref mysqldump_bin) = local_bin {
+        // Local mysqldump (resolved from PATH or the MySQL install dir)
         let mut args = dump_args.clone();
         // Use --result-file for local
         args.insert(5, format!("--result-file={}", output_path.display()));
         // Remove -p flag, use env var instead
         args.retain(|a| !a.starts_with("-p") || a.starts_with("-P"));
-        crate::process::silent_cmd("mysqldump")
+        crate::process::silent_cmd(mysqldump_bin)
             .env("MYSQL_PWD", &config.mysql_password)
             .args(&args)
             .output()
