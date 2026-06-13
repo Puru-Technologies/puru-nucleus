@@ -12,11 +12,19 @@ use mysql_async::prelude::*;
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// GCS prefix under which report templates live, laid out exactly as they
-/// should appear on disk relative to puru_data_path. e.g. the object
-/// `config-data/templates/opd/Invoice_Main.jrxml` lands at
+/// GCS prefix under which jrxml report templates are published. The bucket
+/// already uses `templates/` for other assets, so jrxml templates get their
+/// own prefix. This is intentionally decoupled from the local path: files are
+/// always laid down under `config-data/templates/` (see TEMPLATES_LOCAL_SUBDIR),
+/// because puru-has hardcodes that location and we can't rename it here.
+/// e.g. `jrxml-templates/opd/Invoice_Main.jrxml` ->
 /// `{puru_data}/config-data/templates/opd/Invoice_Main.jrxml`.
-const TEMPLATES_GCS_PREFIX: &str = "config-data/templates/";
+const TEMPLATES_GCS_PREFIX: &str = "jrxml-templates/";
+
+/// Local destination for templates, relative to puru_data_path. puru-has's
+/// JasperService reads jrxml from `{puru_data}/config-data/templates/...`,
+/// so this must not change even though the GCS prefix differs.
+const TEMPLATES_LOCAL_SUBDIR: &[&str] = &["config-data", "templates"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SeedSection {
@@ -767,11 +775,21 @@ async fn download_templates(data_root: &str) -> Result<(u64, u64), NucleusError>
     let (mut created, mut skipped) = (0u64, 0u64);
 
     for key in objects {
-        // The object key is the path relative to puru_data (it already starts
-        // with `config-data/templates/`). Build the local path component by
-        // component so the '/' separators resolve correctly on every platform.
+        // Strip the GCS prefix; the remainder is the path under the local
+        // config-data/templates directory. Re-root it there (the bucket prefix
+        // and the local path are deliberately different).
+        let rel = key.strip_prefix(TEMPLATES_GCS_PREFIX).unwrap_or(key.as_str());
+        if rel.is_empty() {
+            continue;
+        }
+
+        // Build the local path component by component so '/' separators in the
+        // object key resolve correctly on every platform.
         let mut local = root.to_path_buf();
-        for comp in key.split('/').filter(|c| !c.is_empty()) {
+        for part in TEMPLATES_LOCAL_SUBDIR {
+            local.push(part);
+        }
+        for comp in rel.split('/').filter(|c| !c.is_empty()) {
             local.push(comp);
         }
 
