@@ -129,6 +129,21 @@ pub enum Commands {
         service: String,
     },
 
+    /// Seed databases, RabbitMQ queues, and report templates for a fresh install
+    Seed {
+        /// Seed only the databases (puru_config, ref_data, charge categories, document master)
+        #[arg(long)]
+        db: bool,
+
+        /// Seed only the RabbitMQ queues
+        #[arg(long)]
+        queues: bool,
+
+        /// Seed only the Jasper report templates (download from GCS)
+        #[arg(long)]
+        templates: bool,
+    },
+
     /// Run in daemon mode (background service)
     Daemon,
 }

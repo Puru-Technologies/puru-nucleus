@@ -80,6 +80,8 @@ pub async fn run_daemon() {
         // Network
         .route("/api/network", get(routes::network_check))
         .route("/api/network/speedtest", post(routes::network_speed_test))
+        // Seed (fresh-install data)
+        .route("/api/seed", post(routes::run_seed))
         // Native JAR deployment
         .route("/api/jars/pull", post(routes::pull_jars))
         .route("/api/jars/updates", get(routes::check_jar_updates))
@@ -107,6 +109,13 @@ pub async fn run_daemon() {
         }
     };
 
+    // On Windows, spawned service processes (java -jar with redirected stdio)
+    // inherit every inheritable handle — including this listening socket.
+    // An inherited listener keeps the port bound after the daemon dies, so a
+    // restarted daemon can't bind until all child services are killed too.
+    #[cfg(windows)]
+    disable_listener_inheritance(&listener);
+
     if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -115,6 +124,26 @@ pub async fn run_daemon() {
     }
 
     tracing::info!("Daemon shut down gracefully");
+}
+
+/// Strip the inherit flag from the listening socket so child processes
+/// (java services spawned with redirected stdio) cannot inherit it.
+#[cfg(windows)]
+fn disable_listener_inheritance(listener: &tokio::net::TcpListener) {
+    use std::os::windows::io::AsRawSocket;
+
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
+    }
+
+    let handle = listener.as_raw_socket() as isize;
+    let ok = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    if ok == 0 {
+        tracing::warn!("Could not clear inherit flag on the listener socket");
+    }
 }
 
 /// Wait for Ctrl-C or SIGTERM for graceful shutdown

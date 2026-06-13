@@ -31,10 +31,66 @@ pub async fn run(command: Commands) {
         Commands::JarUpdates => cmd_jar_updates().await,
         Commands::Update { service } => cmd_update(&service).await,
         Commands::Rollback { service } => cmd_rollback(&service).await,
+        Commands::Seed { db, queues, templates } => cmd_seed(db, queues, templates).await,
         Commands::Version => cmd_version(),
         Commands::Daemon => {
             // Handled in main.rs before we get here
             unreachable!("daemon mode is handled in main.rs");
+        }
+    }
+}
+
+// ── Seed ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_seed(db: bool, queues: bool, templates: bool) {
+    // No flags = seed everything
+    let all = !db && !queues && !templates;
+    let (do_db, do_queues, do_templates) = (db || all, queues || all, templates || all);
+
+    println!();
+    println!("  Seeding fresh-install data (existing values are never overwritten)...");
+    println!();
+
+    match crate::seed::run_seed(do_db, do_queues, do_templates).await {
+        Ok(report) => {
+            let mut table = Table::new();
+            table.load_preset(presets::UTF8_FULL_CONDENSED);
+            table.set_header(vec![
+                Cell::new("Section").set_alignment(CellAlignment::Left),
+                Cell::new("Created").set_alignment(CellAlignment::Right),
+                Cell::new("Skipped").set_alignment(CellAlignment::Right),
+                Cell::new("Errors").set_alignment(CellAlignment::Right),
+            ]);
+
+            let mut all_errors: Vec<(String, String)> = Vec::new();
+            for s in &report.sections {
+                let error_cell = if s.errors.is_empty() {
+                    Cell::new("0").fg(Color::Green)
+                } else {
+                    Cell::new(s.errors.len().to_string()).fg(Color::Red)
+                };
+                table.add_row(vec![
+                    Cell::new(&s.name),
+                    Cell::new(s.created.to_string()),
+                    Cell::new(s.skipped.to_string()),
+                    error_cell,
+                ]);
+                for e in &s.errors {
+                    all_errors.push((s.name.clone(), e.clone()));
+                }
+            }
+            println!("{table}");
+
+            if !all_errors.is_empty() {
+                println!();
+                for (section, error) in &all_errors {
+                    println!("  {} [{}] {}", "!".red(), section, error);
+                }
+            }
+            println!();
+        }
+        Err(e) => {
+            eprintln!("  {} Seed failed: {}", "✗".red(), e.user_message());
         }
     }
 }

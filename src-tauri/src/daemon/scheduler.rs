@@ -591,6 +591,13 @@ async fn watchdog_loop() {
                     );
 
                     if is_down || is_unhealthy {
+                        // A persistently-unhealthy (but running) service gets one
+                        // restart attempt, not one per cycle — restarting it every
+                        // 60s won't fix an unhealthy dependency.
+                        if !is_down && alerted_services.contains(&svc.name) {
+                            continue;
+                        }
+
                         let reason = if is_down {
                             format!("{} is {:?}", svc.name, svc.status)
                         } else {
@@ -600,15 +607,15 @@ async fn watchdog_loop() {
                         tracing::warn!("Watchdog: {} — attempting restart", reason);
 
                         // Attempt auto-restart
-                        match crate::services::start_service(&svc.container_name).await {
+                        match crate::services::start_service(&svc.name).await {
                             Ok(()) => {
                                 tracing::info!(
                                     "Watchdog: auto-restarted {}",
-                                    svc.container_name
+                                    svc.name
                                 );
 
                                 // Push alert only on first detection (not on every cycle)
-                                if !alerted_services.contains(&svc.container_name) {
+                                if !alerted_services.contains(&svc.name) {
                                     push_watchdog_alert(
                                         &config.hospital_code,
                                         "warning",
@@ -621,17 +628,17 @@ async fn watchdog_loop() {
                                         ),
                                     )
                                     .await;
-                                    alerted_services.insert(svc.container_name.clone());
+                                    alerted_services.insert(svc.name.clone());
                                 }
                             }
                             Err(e) => {
                                 tracing::error!(
                                     "Watchdog: failed to restart {}: {}",
-                                    svc.container_name,
+                                    svc.name,
                                     e
                                 );
 
-                                if !alerted_services.contains(&svc.container_name) {
+                                if !alerted_services.contains(&svc.name) {
                                     push_watchdog_alert(
                                         &config.hospital_code,
                                         "critical",
@@ -645,13 +652,13 @@ async fn watchdog_loop() {
                                         ),
                                     )
                                     .await;
-                                    alerted_services.insert(svc.container_name.clone());
+                                    alerted_services.insert(svc.name.clone());
                                 }
                             }
                         }
                     } else if svc.status == crate::services::ServiceStatus::Running {
                         // Service recovered — clear its alert state
-                        if alerted_services.remove(&svc.container_name) {
+                        if alerted_services.remove(&svc.name) {
                             tracing::info!(
                                 "Watchdog: {} recovered, clearing alert state",
                                 svc.name

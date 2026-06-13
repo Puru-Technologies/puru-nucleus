@@ -527,6 +527,40 @@ pub async fn network_speed_test() -> Result<Json<crate::network::SpeedTestResult
         .map_err(|e| internal_err(e.user_message()))
 }
 
+// ── Seed ─────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SeedRequest {
+    #[serde(default)]
+    pub db: Option<bool>,
+    #[serde(default)]
+    pub queues: Option<bool>,
+    #[serde(default)]
+    pub templates: Option<bool>,
+}
+
+/// POST /api/seed — seed databases, RabbitMQ queues, and report templates.
+/// Idempotent: existing values are never overwritten. Omitting all flags
+/// (or an empty body) seeds everything.
+pub async fn run_seed(
+    body: Option<Json<SeedRequest>>,
+) -> Result<Json<crate::seed::SeedReport>, (StatusCode, String)> {
+    let req = body.map(|Json(r)| r).unwrap_or(SeedRequest {
+        db: None,
+        queues: None,
+        templates: None,
+    });
+    let all = req.db.is_none() && req.queues.is_none() && req.templates.is_none();
+    let do_db = req.db.unwrap_or(all);
+    let do_queues = req.queues.unwrap_or(all);
+    let do_templates = req.templates.unwrap_or(all);
+
+    crate::seed::run_seed(do_db, do_queues, do_templates)
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
 // ── Native JAR Deployment ────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

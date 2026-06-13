@@ -31,6 +31,7 @@ mod logs;
 mod platform;
 mod process;
 mod remote_shell;
+mod seed;
 mod tls;
 mod installer;
 

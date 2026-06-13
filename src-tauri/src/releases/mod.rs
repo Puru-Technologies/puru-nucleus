@@ -210,7 +210,7 @@ fn downloads_dir() -> PathBuf {
 
 // ── GCS helpers ──────────────────────────────────────────────────────────────
 
-fn get_credentials_path() -> Result<String, NucleusError> {
+pub(crate) fn get_credentials_path() -> Result<String, NucleusError> {
     let cfg = config::load_config()?;
     cfg.gcs_credentials_path
         .filter(|p| !p.is_empty())
@@ -221,7 +221,7 @@ fn get_credentials_path() -> Result<String, NucleusError> {
         })
 }
 
-async fn create_gcs_client(
+pub(crate) async fn create_gcs_client(
     credentials_path: &str,
 ) -> Result<google_cloud_storage::client::Client, NucleusError> {
     let cred_file =
@@ -241,6 +241,45 @@ async fn create_gcs_client(
     Ok(google_cloud_storage::client::Client::new(client_config))
 }
 
+/// List every object key under a prefix in the releases bucket (paginated).
+/// Directory-placeholder objects (keys ending in `/`) are filtered out.
+pub(crate) async fn list_gcs_objects(
+    client: &google_cloud_storage::client::Client,
+    prefix: &str,
+) -> Result<Vec<String>, NucleusError> {
+    use google_cloud_storage::http::objects::list::ListObjectsRequest;
+
+    let mut names = Vec::new();
+    let mut page_token: Option<String> = None;
+
+    loop {
+        let resp = client
+            .list_objects(&ListObjectsRequest {
+                bucket: RELEASES_BUCKET.to_string(),
+                prefix: Some(prefix.to_string()),
+                page_token: page_token.clone(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| NucleusError::GcsConnection(format!("GCS list failed: {}", e)))?;
+
+        if let Some(items) = resp.items {
+            for obj in items {
+                if !obj.name.ends_with('/') {
+                    names.push(obj.name);
+                }
+            }
+        }
+
+        match resp.next_page_token {
+            Some(token) if !token.is_empty() => page_token = Some(token),
+            _ => break,
+        }
+    }
+
+    Ok(names)
+}
+
 async fn download_gcs_bytes(
     client: &google_cloud_storage::client::Client,
     object_path: &str,
@@ -258,7 +297,7 @@ async fn download_gcs_bytes(
         .map_err(|e| NucleusError::GcsConnection(format!("GCS download failed: {}", e)))
 }
 
-async fn download_gcs_to_file(
+pub(crate) async fn download_gcs_to_file(
     client: &google_cloud_storage::client::Client,
     object_path: &str,
     local_path: &PathBuf,
@@ -958,7 +997,11 @@ pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
     let cfg = config::load_config()?;
     let jres_dir = cfg.jres_dir();
     let jre_dir = jres_dir.join(format!("temurin-{}", java_version));
-    let java_bin = jre_dir.join("bin").join("java");
+    let java_bin = if cfg!(windows) {
+        jre_dir.join("bin").join("java.exe")
+    } else {
+        jre_dir.join("bin").join("java")
+    };
 
     // Already installed?
     if java_bin.exists() {
@@ -1093,8 +1136,11 @@ pub async fn pull_all_with_jres(services: &[String]) -> Result<PullAllResult, Nu
         }
     }
 
-    // Download missing JREs
+    // Download missing JREs (non-JAR artifacts like puru-hydrogen have no java version)
     for version in &java_versions {
+        if version.is_empty() {
+            continue;
+        }
         if let Err(e) = ensure_jre(version).await {
             tracing::warn!("Failed to ensure JRE {}: {}", version, e);
         }

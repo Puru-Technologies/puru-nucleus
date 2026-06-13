@@ -25,3 +25,6 @@ npm-debug.log*
 # Environment
 .env
 .env.local
+
+# stray Lucene index created by a service in the wrong cwd
+idx_patientX/

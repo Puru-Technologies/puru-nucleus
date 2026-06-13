@@ -22,9 +22,25 @@ const SERVICE_PORTS: &[(&str, u16)] = &[
     ("puru-realtime", 8086),
     ("puru-neon", 8087),
     ("puru-bridge", 8094),
-    ("puru-auth", 8095),
-    ("puru-mercury", 8096),
+    ("puru-auth", 8080),
+    ("puru-mercury", 8089),
     ("puru-integration", 8088),
+];
+
+/// MySQL database used by each service (same mapping as the Docker compose generator)
+const SERVICE_DBS: &[(&str, &str)] = &[
+    ("puru-auth", "puru_auth"),
+    ("puru-xenon", "puru_im"),
+    ("puru-has", "puru_has"),
+    ("puru-pacs", "puru_dicom"),
+    ("puru-argon", "puru_path"),
+    ("puru-comm", "puru_im"),
+    ("puru-realtime", "puru_im"),
+    ("puru-neon", "puru_med"),
+    ("puru-mercury", "puru_im"),
+    ("puru-counter", "puru_im"),
+    ("puru-bridge", "puru_bridge"),
+    ("puru-integration", "puru_im"),
 ];
 
 /// Health endpoint for Spring Boot services
@@ -49,6 +65,13 @@ fn service_port(service: &str) -> Option<u16> {
         .iter()
         .find(|(s, _)| *s == service)
         .map(|(_, p)| *p)
+}
+
+fn db_for_service(service: &str) -> Option<&'static str> {
+    SERVICE_DBS
+        .iter()
+        .find(|(s, _)| *s == service)
+        .map(|(_, d)| *d)
 }
 
 /// Read PID from pid file, returns None if file doesn't exist or is invalid
@@ -83,7 +106,7 @@ fn is_process_alive(pid: u32) -> bool {
 }
 
 /// Load environment variables from env files
-fn load_env_files(config: &NucleusConfig, _service: &str) -> std::collections::HashMap<String, String> {
+fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::HashMap<String, String> {
     let env_dir = config.env_dir();
     let mut vars = std::collections::HashMap::new();
 
@@ -99,6 +122,28 @@ fn load_env_files(config: &NucleusConfig, _service: &str) -> std::collections::H
                 }
                 if let Some((key, value)) = line.split_once('=') {
                     vars.insert(key.trim().to_string(), value.trim().to_string());
+                }
+            }
+        }
+    }
+
+    // database.env carries a shared URL template — `jdbc:mysql://host:{}/{}`.
+    // Fill in the port and the per-service database here; each service has its
+    // own schema, so a literal shared URL can never be correct for all of them.
+    if let Some(url) = vars.get("SPRING_DATASOURCE_URL").cloned() {
+        if url.contains("{}") {
+            match db_for_service(service) {
+                Some(db) => {
+                    let port = vars
+                        .get("MYSQL_PORT")
+                        .cloned()
+                        .unwrap_or_else(|| "3306".to_string());
+                    let fixed = url.replacen("{}", &port, 1).replacen("{}", db, 1);
+                    vars.insert("SPRING_DATASOURCE_URL".to_string(), fixed);
+                }
+                None => {
+                    // Unknown service — a malformed URL is worse than none at all
+                    vars.remove("SPRING_DATASOURCE_URL");
                 }
             }
         }
@@ -167,10 +212,12 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     // Load env vars
     let env_vars = load_env_files(config, name);
 
-    // Spawn process
+    // Spawn process from the config dir — services resolve relative paths
+    // (e.g. credential files) against their working directory
     let child = crate::process::silent_cmd(&java_bin.to_string_lossy())
         .args(["-jar", &jar.to_string_lossy()])
         .envs(env_vars)
+        .current_dir(crate::config::config_dir())
         .stdout(log_file)
         .stderr(stderr_file)
         .spawn()
@@ -291,11 +338,26 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
     for svc_name in &enabled_services {
         let pid = read_pid(config, svc_name);
         let alive = pid.map(is_process_alive).unwrap_or(false);
-        let jar_exists = jar_path(config, svc_name).exists();
 
-        let status = if alive {
+        // puru-hydrogen is static files served by an external web server,
+        // not a JAR process — judge it by deployment + whether port 80 answers
+        let status = if svc_name == "puru-hydrogen" {
+            let deployed = config.nginx_html_dir().join("index.html").exists();
+            let served = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], 80)),
+                std::time::Duration::from_millis(500),
+            )
+            .is_ok();
+            if deployed && served {
+                ServiceStatus::Running
+            } else if deployed {
+                ServiceStatus::Stopped // deployed but no web server on :80
+            } else {
+                ServiceStatus::Error // not installed
+            }
+        } else if alive {
             ServiceStatus::Running
-        } else if jar_exists {
+        } else if jar_path(config, svc_name).exists() {
             ServiceStatus::Stopped
         } else {
             ServiceStatus::Error // Enabled but not installed
@@ -310,7 +372,12 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
         }
 
         let image = if let Ok(Some(meta)) = releases::read_local_jar_meta(svc_name) {
-            format!("{}@{}", meta.jar_file, meta.short_sha)
+            let artifact = if meta.jar_file.is_empty() {
+                "angular"
+            } else {
+                meta.jar_file.as_str()
+            };
+            format!("{}@{}", artifact, meta.short_sha)
         } else if svc_name == "puru-hydrogen" {
             "angular".to_string()
         } else {
@@ -465,20 +532,31 @@ async fn probe_native_health(
                 match client.get(&url).send().await {
                     Ok(resp) => {
                         let elapsed_ms = start.elapsed().as_millis() as u64;
-                        if resp.status().is_success() {
-                            if let Ok(body) = resp.text().await {
-                                // Parse JSON properly: look for {"status":"UP"}
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                    if json.get("status").and_then(|v| v.as_str()) == Some("UP") {
-                                        return (name, Some((HealthStatus::Healthy, elapsed_ms)));
-                                    }
-                                    return (name, Some((HealthStatus::Unhealthy, elapsed_ms)));
-                                }
-                                // Fallback for non-JSON 200 responses
-                                return (name, Some((HealthStatus::Healthy, elapsed_ms)));
+                        let http_status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+
+                        // Actuator-style JSON beats the HTTP status code:
+                        // a 503 with {"status":"DOWN"} is a real health verdict
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                            if let Some(status) = json.get("status").and_then(|v| v.as_str()) {
+                                let health = if status == "UP" {
+                                    HealthStatus::Healthy
+                                } else {
+                                    HealthStatus::Unhealthy
+                                };
+                                return (name, Some((health, elapsed_ms)));
                             }
                         }
-                        (name, Some((HealthStatus::Unhealthy, elapsed_ms)))
+
+                        if http_status.is_success() {
+                            (name, Some((HealthStatus::Healthy, elapsed_ms)))
+                        } else if matches!(http_status.as_u16(), 401 | 403 | 404 | 405) {
+                            // The port answers but no health endpoint is exposed
+                            // (or it requires auth) — that is not "unhealthy"
+                            (name, None)
+                        } else {
+                            (name, Some((HealthStatus::Unhealthy, elapsed_ms)))
+                        }
                     }
                     Err(_) => (name, None),
                 }
