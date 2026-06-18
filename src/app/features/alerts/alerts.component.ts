@@ -1,10 +1,5 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { HospitalAlert } from '../../core/models/hospital.model';
 import { TauriService } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
@@ -13,25 +8,20 @@ import { NotificationService } from '../../core/services/notification.service';
   selector: 'app-alerts',
   standalone: true,
   imports: [
-    CommonModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatChipsModule,
-    MatProgressSpinnerModule
+    CommonModule
   ],
   template: `
     <div class="alerts-page p-4">
       <div class="header flex justify-between items-center">
         <h1>Alerts</h1>
         <div class="actions">
-          <button mat-stroked-button (click)="loadAlerts()">
-            <mat-icon>refresh</mat-icon>
+          <button class="btn btn-stroked" (click)="loadAlerts()">
+            <span class="material-icons">refresh</span>
             Refresh
           </button>
           @if (unacknowledgedCount > 0) {
-            <button mat-stroked-button (click)="acknowledgeAll()">
-              <mat-icon>done_all</mat-icon>
+            <button class="btn btn-stroked" (click)="acknowledgeAll()">
+              <span class="material-icons">done_all</span>
               Acknowledge All
             </button>
           }
@@ -39,68 +29,64 @@ import { NotificationService } from '../../core/services/notification.service';
       </div>
 
       <div class="alert-summary">
-        <mat-card class="summary-card critical" [class.active]="criticalCount > 0">
-          <mat-card-content>
-            <mat-icon>error</mat-icon>
+        <div class="card card-pad summary-card critical" [class.active]="criticalCount > 0">
+          <div class="summary-content">
+            <span class="material-icons">error</span>
             <span class="count">{{ criticalCount }}</span>
             <span class="label">Critical</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
 
-        <mat-card class="summary-card warning" [class.active]="warningCount > 0">
-          <mat-card-content>
-            <mat-icon>warning</mat-icon>
+        <div class="card card-pad summary-card warning" [class.active]="warningCount > 0">
+          <div class="summary-content">
+            <span class="material-icons">warning</span>
             <span class="count">{{ warningCount }}</span>
             <span class="label">Warning</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
 
-        <mat-card class="summary-card info" [class.active]="infoCount > 0">
-          <mat-card-content>
-            <mat-icon>info</mat-icon>
+        <div class="card card-pad summary-card info" [class.active]="infoCount > 0">
+          <div class="summary-content">
+            <span class="material-icons">info</span>
             <span class="count">{{ infoCount }}</span>
             <span class="label">Info</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       </div>
 
       @if (loading) {
         <div class="loading-container">
-          <mat-spinner diameter="48"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
         </div>
       } @else if (alerts.length === 0) {
-        <mat-card class="empty-state">
-          <mat-card-content>
-            <mat-icon>notifications_off</mat-icon>
-            <p>No alerts</p>
-            <span>All systems are running normally</span>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad empty-state">
+          <span class="material-icons">notifications_off</span>
+          <p>No alerts</p>
+          <span>All systems are running normally</span>
+        </div>
       } @else {
         <div class="alerts-list">
           @for (alert of alerts; track alert.id) {
-            <mat-card class="alert-card" [class]="'severity-' + alert.severity" [class.acknowledged]="alert.acknowledged">
-              <mat-card-content>
-                <div class="alert-header">
-                  <mat-icon>{{ getIcon(alert.severity) }}</mat-icon>
-                  <div class="alert-info">
-                    <div class="alert-title">{{ alert.title }}</div>
-                    <div class="alert-meta">
-                      <mat-chip size="small">{{ alert.category }}</mat-chip>
-                      <span class="timestamp">{{ alert.created_at | date:'short' }}</span>
-                    </div>
+            <div class="card card-pad alert-card" [class]="'card card-pad alert-card severity-' + alert.severity" [class.acknowledged]="alert.acknowledged">
+              <div class="alert-header">
+                <span class="material-icons">{{ getIcon(alert.severity) }}</span>
+                <div class="alert-info">
+                  <div class="alert-title">{{ alert.title }}</div>
+                  <div class="alert-meta">
+                    <span class="chip">{{ alert.category }}</span>
+                    <span class="timestamp">{{ alert.created_at | date:'short' }}</span>
                   </div>
-                  @if (!alert.acknowledged) {
-                    <button mat-icon-button (click)="acknowledgeAlert(alert)">
-                      <mat-icon>check</mat-icon>
-                    </button>
-                  } @else {
-                    <mat-icon class="acknowledged-icon">check_circle</mat-icon>
-                  }
                 </div>
-                <p class="alert-message">{{ alert.message }}</p>
-              </mat-card-content>
-            </mat-card>
+                @if (!alert.acknowledged) {
+                  <button class="btn-icon" (click)="acknowledgeAlert(alert)">
+                    <span class="material-icons">check</span>
+                  </button>
+                } @else {
+                  <span class="material-icons acknowledged-icon">check_circle</span>
+                }
+              </div>
+              <p class="alert-message">{{ alert.message }}</p>
+            </div>
           }
         </div>
       }
@@ -142,14 +128,14 @@ import { NotificationService } from '../../core/services/notification.service';
         opacity: 1;
       }
 
-      mat-card-content {
+      .summary-content {
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 0.25rem;
       }
 
-      mat-icon {
+      .material-icons {
         font-size: 2rem;
         width: 2rem;
         height: 2rem;
@@ -166,17 +152,17 @@ import { NotificationService } from '../../core/services/notification.service';
       }
 
       &.critical {
-        mat-icon, .count { color: #f44336; }
+        .material-icons, .count { color: #f44336; }
         &.active { border-left: 4px solid #f44336; }
       }
 
       &.warning {
-        mat-icon, .count { color: #ff9800; }
+        .material-icons, .count { color: #ff9800; }
         &.active { border-left: 4px solid #ff9800; }
       }
 
       &.info {
-        mat-icon, .count { color: #2196f3; }
+        .material-icons, .count { color: #2196f3; }
         &.active { border-left: 4px solid #2196f3; }
       }
     }
@@ -192,7 +178,7 @@ import { NotificationService } from '../../core/services/notification.service';
       padding: 3rem;
       color: #4caf50;
 
-      mat-icon {
+      .material-icons {
         font-size: 4rem;
         width: 4rem;
         height: 4rem;
@@ -217,17 +203,17 @@ import { NotificationService } from '../../core/services/notification.service';
     .alert-card {
       &.severity-critical {
         border-left: 4px solid #f44336;
-        mat-icon:first-child { color: #f44336; }
+        .material-icons:first-child { color: #f44336; }
       }
 
       &.severity-warning {
         border-left: 4px solid #ff9800;
-        mat-icon:first-child { color: #ff9800; }
+        .material-icons:first-child { color: #ff9800; }
       }
 
       &.severity-info {
         border-left: 4px solid #2196f3;
-        mat-icon:first-child { color: #2196f3; }
+        .material-icons:first-child { color: #2196f3; }
       }
 
       &.acknowledged {

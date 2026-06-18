@@ -1,13 +1,11 @@
 import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive, Router, NavigationEnd } from '@angular/router';
-import { MatSidenavModule } from '@angular/material/sidenav';
-import { MatListModule } from '@angular/material/list';
-import { MatIconModule } from '@angular/material/icon';
 import { filter, map } from 'rxjs/operators';
 import { interval, Subscription } from 'rxjs';
 import { ConnectionService } from './core/services/connection.service';
 import { RemoteTransportService } from './core/services/remote-transport';
 import { resetLicenseCache } from './core/guards/init.guard';
+import { ToastHostComponent } from './core/components/toast-host.component';
 // @ts-ignore
 import packageJson from '../../package.json';
 
@@ -18,18 +16,16 @@ import packageJson from '../../package.json';
     RouterOutlet,
     RouterLink,
     RouterLinkActive,
-    MatSidenavModule,
-    MatListModule,
-    MatIconModule,
+    ToastHostComponent,
   ],
   template: `
     @if (showShell) {
-      <mat-sidenav-container class="shell">
-        <mat-sidenav mode="side" opened class="sidebar">
+      <div class="shell">
+        <aside class="sidebar">
           <!-- Brand -->
           <div class="brand">
             <div class="brand-icon">
-              <mat-icon>hub</mat-icon>
+              <span class="material-icons">hub</span>
             </div>
             <div class="brand-text">
               <span class="brand-name">Nucleus</span>
@@ -42,53 +38,53 @@ import packageJson from '../../package.json';
             <span class="nav-section">Menu</span>
 
             <a class="nav-item" routerLink="/dashboard" routerLinkActive="active">
-              <mat-icon>grid_view</mat-icon>
+              <span class="material-icons">grid_view</span>
               <span>Dashboard</span>
             </a>
             <a class="nav-item" routerLink="/services" routerLinkActive="active">
-              <mat-icon>dns</mat-icon>
+              <span class="material-icons">dns</span>
               <span>Services</span>
             </a>
             <a class="nav-item" routerLink="/logs" routerLinkActive="active">
-              <mat-icon>description</mat-icon>
+              <span class="material-icons">description</span>
               <span>Logs</span>
             </a>
             <a class="nav-item" routerLink="/backups" routerLinkActive="active">
-              <mat-icon>backup</mat-icon>
+              <span class="material-icons">backup</span>
               <span>Backups</span>
             </a>
             <a class="nav-item" routerLink="/alerts" routerLinkActive="active">
-              <mat-icon>notifications_none</mat-icon>
+              <span class="material-icons">notifications_none</span>
               <span>Alerts</span>
             </a>
             <a class="nav-item" routerLink="/inbox" routerLinkActive="active">
-              <mat-icon>mail</mat-icon>
+              <span class="material-icons">mail</span>
               <span>Inbox</span>
               @if (unreadCount > 0) {
                 <span class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
               }
             </a>
             <a class="nav-item" routerLink="/updates" routerLinkActive="active">
-              <mat-icon>system_update</mat-icon>
+              <span class="material-icons">system_update</span>
               <span>Updates</span>
             </a>
 
             <span class="nav-section">System</span>
 
             <a class="nav-item" routerLink="/settings" routerLinkActive="active">
-              <mat-icon>tune</mat-icon>
+              <span class="material-icons">tune</span>
               <span>Settings</span>
             </a>
             <a class="nav-item" routerLink="/compose" routerLinkActive="active">
-              <mat-icon>description</mat-icon>
+              <span class="material-icons">description</span>
               <span>Compose</span>
             </a>
             <a class="nav-item" routerLink="/setup" routerLinkActive="active">
-              <mat-icon>build</mat-icon>
+              <span class="material-icons">build</span>
               <span>Setup</span>
             </a>
             <a class="nav-item" routerLink="/remote-shell" routerLinkActive="active">
-              <mat-icon>terminal</mat-icon>
+              <span class="material-icons">terminal</span>
               <span>Shell</span>
             </a>
           </nav>
@@ -105,36 +101,70 @@ import packageJson from '../../package.json';
               } @else {
                 <span class="conn-text">Local</span>
               }
-              <mat-icon>swap_horiz</mat-icon>
+              <span class="material-icons">swap_horiz</span>
             </button>
             <div class="version">v{{ version }}</div>
           </div>
-        </mat-sidenav>
+        </aside>
 
-        <mat-sidenav-content class="content">
+        <main class="content">
+          @if (!isAdmin && !conn.isRemote()) {
+            <div class="admin-banner">
+              <span class="material-icons">shield</span>
+              <span class="admin-banner-text">
+                Not running as administrator — installing services, MySQL/RabbitMQ, and certificates need elevation.
+              </span>
+              <button class="btn btn-primary btn-sm" (click)="restartAsAdmin()" [disabled]="elevating">
+                {{ elevating ? 'Restarting…' : 'Restart as Admin' }}
+              </button>
+            </div>
+          }
           <router-outlet></router-outlet>
-        </mat-sidenav-content>
-      </mat-sidenav-container>
+        </main>
+      </div>
     } @else {
       <!-- Full-screen layout for activation page -->
       <router-outlet></router-outlet>
     }
+
+    <app-toast-host></app-toast-host>
   `,
   styles: [`
     .shell {
+      display: flex;
       height: 100vh;
+      overflow: hidden;
     }
 
     .sidebar {
       width: 240px;
+      flex-shrink: 0;
       background: var(--bg-sidebar);
-      border-right: none !important;
       display: flex;
       flex-direction: column;
+      overflow-y: auto;
     }
 
     .content {
+      flex: 1;
+      height: 100vh;
+      overflow-y: auto;
       background: var(--bg-primary);
+    }
+
+    .admin-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      background: #fff7ed;
+      border-bottom: 1px solid #fed7aa;
+      color: #9a3412;
+      font-size: 0.8rem;
+
+      .material-icons { font-size: 18px; color: #ea580c; }
+      .admin-banner-text { flex: 1; }
+      .btn { flex-shrink: 0; }
     }
 
     /* ── Brand ──────────────────────────────────── */
@@ -155,11 +185,9 @@ import packageJson from '../../package.json';
       justify-content: center;
       flex-shrink: 0;
 
-      mat-icon {
+      .material-icons {
         color: white;
         font-size: 20px;
-        width: 20px;
-        height: 20px;
       }
     }
 
@@ -210,13 +238,11 @@ import packageJson from '../../package.json';
       text-decoration: none;
       font-size: 0.875rem;
       font-weight: 500;
-      transition: all 0.15s ease;
+      transition: background-color 0.15s ease, color 0.15s ease;
       margin-bottom: 2px;
 
-      mat-icon {
+      .material-icons {
         font-size: 20px;
-        width: 20px;
-        height: 20px;
         color: inherit;
       }
 
@@ -229,7 +255,7 @@ import packageJson from '../../package.json';
         background: var(--bg-sidebar-active);
         color: #a5b4fc;
 
-        mat-icon {
+        .material-icons {
           color: #818cf8;
         }
       }
@@ -287,10 +313,8 @@ import packageJson from '../../package.json';
         color: #c7d2fe;
       }
 
-      mat-icon {
+      .material-icons {
         font-size: 16px;
-        width: 16px;
-        height: 16px;
         margin-left: auto;
         color: #64748b;
       }
@@ -328,6 +352,8 @@ export class AppComponent implements OnInit, OnDestroy {
   hospitalCode = '';
   showShell = true;
   unreadCount = 0;
+  isAdmin = true;      // assume true until checked, so the banner doesn't flash
+  elevating = false;
 
   conn = inject(ConnectionService);
   private remote = inject(RemoteTransportService);
@@ -362,6 +388,31 @@ export class AppComponent implements OnInit, OnDestroy {
     // Keep the connection indicator live when remote.
     this.refreshHealth();
     this.healthSub = interval(30_000).subscribe(() => this.refreshHealth());
+    this.checkElevation();
+  }
+
+  /** Detect whether the local app is elevated (Windows admin). */
+  private async checkElevation(): Promise<void> {
+    if (this.conn.isRemote()) return; // only relevant for the local machine
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      this.isAdmin = await invoke<boolean>('is_elevated');
+    } catch {
+      this.isAdmin = true; // can't determine → don't nag
+    }
+  }
+
+  /** Relaunch elevated via UAC; on success the app exits and reopens as admin. */
+  async restartAsAdmin(): Promise<void> {
+    this.elevating = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('restart_as_admin');
+      // Success → this instance is exiting; the elevated one is starting.
+    } catch {
+      // UAC cancelled or failed — stay running.
+      this.elevating = false;
+    }
   }
 
   ngOnDestroy(): void {

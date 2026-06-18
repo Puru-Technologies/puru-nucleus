@@ -1,9 +1,9 @@
 import { Injectable, inject } from '@angular/core';
 import { invoke } from '@tauri-apps/api/core';
-import { MatSnackBar, MatSnackBarConfig } from '@angular/material/snack-bar';
-import { AppError, ErrorSeverity } from '../models/app-error';
+import { ErrorSeverity } from '../models/app-error';
 import { ConnectionService } from './connection.service';
 import { RemoteTransportService } from './remote-transport';
+import { NotificationService } from './notification.service';
 
 /**
  * Service for invoking Tauri commands with error handling.
@@ -17,8 +17,7 @@ import { RemoteTransportService } from './remote-transport';
 export class TauriService {
   private conn = inject(ConnectionService);
   private remote = inject(RemoteTransportService);
-
-  constructor(private snackBar: MatSnackBar) {}
+  private notify = inject(NotificationService);
 
   /**
    * Invoke a Tauri command with automatic error handling
@@ -49,14 +48,11 @@ export class TauriService {
     const severity = this.parseSeverity(message);
     const action = this.getSuggestedAction(message);
 
-    const config: MatSnackBarConfig = {
+    this.notify.show({
+      message: action ? `${message} (${action})` : message,
+      severity,
       duration: severity === 'critical' ? 0 : 5000,
-      panelClass: `snackbar-${severity}`,
-      horizontalPosition: 'end',
-      verticalPosition: 'bottom'
-    };
-
-    this.snackBar.open(message, action || 'Dismiss', config);
+    });
 
     // Log error to Tauri backend
     this.logError(command, message).catch(() => {
@@ -197,11 +193,12 @@ export interface ServiceInfo {
   name: string;
   container_name: string;
   image: string;
-  status: 'running' | 'stopped' | 'starting' | 'error';
+  status: 'running' | 'stopped' | 'starting' | 'notinstalled' | 'error';
   health?: 'healthy' | 'unhealthy' | 'starting';
   ports: string[];
   uptime?: string;
   health_response_ms?: number;
+  detail?: string;
 }
 
 export interface BackupResult {

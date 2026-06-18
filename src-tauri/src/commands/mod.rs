@@ -1111,6 +1111,26 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
                 }
             }
         }
+
+        // Enable required plugins. `rabbitmq_management` ships with RabbitMQ and
+        // powers the API our queue seeding uses (port 15672) — enabling is
+        // idempotent. `rabbitmq_delayed_message_exchange` is a community .ez that
+        // may be absent; warn (don't fail) so the operator knows to install it.
+        for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
+            let out = crate::process::silent_cmd("docker")
+                .args(["exec", "rabbitmq", "rabbitmq-plugins", "enable", plugin])
+                .output()
+                .await;
+            match out {
+                Ok(o) if o.status.success() => tracing::info!("RabbitMQ: enabled {}", plugin),
+                Ok(o) => tracing::warn!(
+                    "RabbitMQ: could not enable {} — {}",
+                    plugin,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
+            }
+        }
     } else {
         // Fallback: try host-installed rabbitmqctl
         let rabbitmqctl = find_rabbitmqctl().await
@@ -1149,10 +1169,40 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
                 }
             }
         }
+
+        // Enable required plugins via the sibling `rabbitmq-plugins` binary.
+        // `rabbitmq_management` is bundled with RabbitMQ and powers the API our
+        // queue seeding uses (port 15672) — enabling is idempotent.
+        // `rabbitmq_delayed_message_exchange` is a community .ez that may be
+        // absent; warn (don't fail) so the operator knows to install it.
+        let plugins_bin = rabbitmq_plugins_from_ctl(&rabbitmqctl);
+        for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
+            let out = crate::process::silent_cmd(&plugins_bin)
+                .args(["enable", plugin])
+                .output()
+                .await;
+            match out {
+                Ok(o) if o.status.success() => tracing::info!("RabbitMQ: enabled {}", plugin),
+                Ok(o) => tracing::warn!(
+                    "RabbitMQ: could not enable {} — {}",
+                    plugin,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
+            }
+        }
     }
 
     tracing::info!("Setup: RabbitMQ configured (vhost=puru, user=puru)");
     Ok(())
+}
+
+/// Derive the `rabbitmq-plugins` binary from a resolved `rabbitmqctl` path —
+/// they sit side by side (same PATH entry or the same `sbin` dir), so swapping
+/// the name yields the plugins tool: `rabbitmqctl` → `rabbitmq-plugins`,
+/// `…\sbin\rabbitmqctl.bat` → `…\sbin\rabbitmq-plugins.bat`.
+fn rabbitmq_plugins_from_ctl(ctl: &str) -> String {
+    ctl.replace("rabbitmqctl", "rabbitmq-plugins")
 }
 
 /// Find rabbitmqctl binary — checks PATH first, then Windows default install directory.
@@ -1654,27 +1704,74 @@ pub async fn setup_pull_jars() -> Result<(), String> {
         return Err("No services enabled. Configure modules in Oxygen admin (Management → Hospital → edit).".into());
     }
 
-    tracing::info!("Setup (native): pulling {} services: {:?}", services.len(), services);
-
-    let result = crate::releases::pull_all_with_jres(&services)
-        .await
-        .map_err(|e| e.user_message())?;
-
-    let succeeded: Vec<&str> = result.results.iter()
-        .filter(|r| r.success)
-        .map(|r| r.service.as_str())
-        .collect();
-    let failed: Vec<String> = result.results.iter()
-        .filter(|r| !r.success)
-        .map(|r| format!("{}: {}", r.service, r.message))
-        .collect();
-
-    if succeeded.is_empty() {
-        return Err(format!("All JARs failed to download:\n{}", failed.join("\n")));
+    // Only pull services that aren't deployed yet — i.e. whatever got *added*
+    // since the last setup. Already-installed services are left exactly as they
+    // are: a setup re-run never overwrites a running JAR. For those we only
+    // check whether a newer build exists and report it, so upgrades stay an
+    // explicit choice (the Update action), not a side effect of re-running setup.
+    let mut to_pull: Vec<String> = Vec::new();
+    let mut existing: Vec<String> = Vec::new();
+    for svc in &services {
+        if crate::services::native::is_installed(&config, svc) {
+            existing.push(svc.clone());
+        } else {
+            to_pull.push(svc.clone());
+        }
     }
 
-    if !failed.is_empty() {
-        tracing::warn!("Some JARs failed: {}", failed.join("; "));
+    if to_pull.is_empty() {
+        tracing::info!(
+            "Setup (native): no new services to pull ({} already installed)",
+            existing.len()
+        );
+    } else {
+        tracing::info!("Setup (native): pulling {} new service(s): {:?}", to_pull.len(), to_pull);
+
+        let result = crate::releases::pull_all_with_jres(&to_pull)
+            .await
+            .map_err(|e| e.user_message())?;
+
+        let succeeded: Vec<&str> = result.results.iter()
+            .filter(|r| r.success)
+            .map(|r| r.service.as_str())
+            .collect();
+        let failed: Vec<String> = result.results.iter()
+            .filter(|r| !r.success)
+            .map(|r| format!("{}: {}", r.service, r.message))
+            .collect();
+
+        // Hard failure only when nothing we tried to add could be pulled.
+        if succeeded.is_empty() {
+            return Err(format!("All new JARs failed to download:\n{}", failed.join("\n")));
+        }
+        if !failed.is_empty() {
+            tracing::warn!("Some new JARs failed: {}", failed.join("; "));
+        }
+    }
+
+    // Already-installed services: check (don't pull) whether a newer build is
+    // available and leave the deployed JAR running untouched.
+    if !existing.is_empty() {
+        match crate::releases::check_jar_updates_available(&existing).await {
+            Ok(checks) => {
+                let updatable: Vec<&str> = checks.iter()
+                    .filter(|c| c.update_available)
+                    .map(|c| c.service.as_str())
+                    .collect();
+                if updatable.is_empty() {
+                    tracing::info!(
+                        "Setup (native): {} existing service(s) already up to date",
+                        existing.len()
+                    );
+                } else {
+                    tracing::info!(
+                        "Setup (native): newer build available for {:?} — left as-is (use the Update action to upgrade)",
+                        updatable
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("Setup (native): update check skipped: {}", e.user_message()),
+        }
     }
 
     // Verify files on disk
@@ -1703,68 +1800,203 @@ pub async fn setup_pull_jars() -> Result<(), String> {
     Ok(())
 }
 
-/// Native Step 5: Start all services as java -jar processes
+/// Per-service outcome of the native start/sync step. Surfaced to the UI so the
+/// setup wizard can show each service individually.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NativeServiceAction {
+    pub service: String,
+    /// "started" | "already-running" | "removed" | "not-installed" | "failed"
+    pub action: String,
+    pub success: bool,
+    pub message: String,
+}
+
+/// Native Step 5: bring the installed JAR services in line with the cloud
+/// config. Enabled services are started (or left running); services that have
+/// been **de-selected** (a JAR on disk that's no longer enabled) are stopped and
+/// removed. Emits a `native-service-progress` event per service so the UI can
+/// show each one as it happens.
 #[tauri::command]
-pub async fn setup_start_native_services() -> Result<(), String> {
+pub async fn setup_start_native_services(
+    app: tauri::AppHandle,
+) -> Result<Vec<NativeServiceAction>, String> {
+    sync_native_services(Some(&app)).await
+}
+
+/// Core of the native start/sync step, shared by the GUI command (which passes
+/// an AppHandle to emit progress) and the daemon route (which passes None).
+pub(crate) async fn sync_native_services(
+    app: Option<&tauri::AppHandle>,
+) -> Result<Vec<NativeServiceAction>, String> {
+    use tauri::Emitter;
+
     let config = crate::config::load_config().map_err(|e| e.user_message())?;
     let jars_dir = config.jars_dir();
 
-    tracing::info!("Setup (native): scanning for JARs in {}", jars_dir.display());
-
     if !jars_dir.exists() {
-        return Err(format!("JARs directory does not exist: {}. Run 'Pull JARs' step first.", jars_dir.display()));
+        return Err(format!(
+            "JARs directory does not exist: {}. Run 'Pull JARs' step first.",
+            jars_dir.display()
+        ));
     }
 
-    // Find all installed JARs
-    let mut jar_files = Vec::new();
-    for entry in std::fs::read_dir(&jars_dir).map_err(|e| format!("Cannot read jars dir {}: {}", jars_dir.display(), e))? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".jar") && !name.ends_with(".bak") && name != "puru-hydrogen" {
-            jar_files.push(name);
-        }
-    }
-
-    if jar_files.is_empty() {
-        return Err(format!("No JAR files found in {}. Run 'Pull JARs' step first.", jars_dir.display()));
-    }
-
-    tracing::info!("Setup (native): found {} JARs: {:?}", jar_files.len(), jar_files);
-
-    let mut started = Vec::new();
-    let mut errors = Vec::new();
-
-    for name in &jar_files {
-        let service_name = name.trim_end_matches(".jar");
-
-        match crate::services::native::start_service(service_name, &config).await {
-            Ok(_) => {
-                tracing::info!("Started {}", service_name);
-                started.push(service_name.to_string());
-            }
+    // The enabled set is authoritative. If the cloud is unreachable we fall back
+    // to None and never remove anything (start-what's-installed only) — tearing
+    // a service down on a transient fetch failure would be dangerous.
+    let enabled: Option<Vec<String>> = if config.hospital_code.is_empty() {
+        None
+    } else {
+        match crate::firestore::FirestoreClient::new_from_config().await {
+            Ok(client) => match client.fetch_modules(&config.hospital_code).await {
+                Ok(m) => Some(m.enabled_service_names()),
+                Err(e) => {
+                    tracing::warn!("Setup (native): module fetch failed, not removing anything: {}", e);
+                    None
+                }
+            },
             Err(e) => {
-                tracing::warn!("Failed to start {}: {}", service_name, e.user_message());
-                errors.push(format!("{}: {}", service_name, e.user_message()));
+                tracing::warn!("Setup (native): cloud unreachable, not removing anything: {}", e);
+                None
             }
+        }
+    };
+
+    // Installed JAR services on disk (hydrogen is the static frontend, handled
+    // separately by the managed nginx — not a JAR process).
+    let mut jar_services: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&jars_dir)
+        .map_err(|e| format!("Cannot read jars dir {}: {}", jars_dir.display(), e))?
+    {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".jar") && !name.ends_with(".bak") && name != "puru-hydrogen.jar" {
+            jar_services.push(name.trim_end_matches(".jar").to_string());
         }
     }
 
-    if started.is_empty() {
-        return Err(format!("Failed to start any services:\n{}", errors.join("\n")));
+    if jar_services.is_empty() {
+        return Err(format!(
+            "No JAR files found in {}. Run 'Pull JARs' step first.",
+            jars_dir.display()
+        ));
     }
 
-    // Wait for Spring Boot initialization
+    let is_enabled = |svc: &str| -> bool {
+        match &enabled {
+            Some(set) => set.iter().any(|e| e == svc),
+            None => true, // unknown → treat as enabled, never remove
+        }
+    };
+
+    let mut actions: Vec<NativeServiceAction> = Vec::new();
+    let mut start_attempts = 0usize;
+    let mut start_ok = 0usize;
+
+    let emit = |app: Option<&tauri::AppHandle>, action: &NativeServiceAction| {
+        if let Some(app) = app {
+            let _ = app.emit("native-service-progress", action.clone());
+        }
+    };
+
+    for svc in &jar_services {
+        let action = if is_enabled(svc) {
+            // Enabled and being synced — supersede any prior manual stop.
+            crate::services::clear_manually_stopped(svc);
+            // Enabled: ensure it's running.
+            if crate::services::native::is_running(&config, svc) {
+                NativeServiceAction {
+                    service: svc.clone(),
+                    action: "already-running".into(),
+                    success: true,
+                    message: "Already running".into(),
+                }
+            } else {
+                start_attempts += 1;
+                match crate::services::native::start_service(svc, &config).await {
+                    Ok(_) => {
+                        start_ok += 1;
+                        tracing::info!("Setup (native): started {}", svc);
+                        NativeServiceAction {
+                            service: svc.clone(),
+                            action: "started".into(),
+                            success: true,
+                            message: "Started".into(),
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Setup (native): failed to start {}: {}", svc, e.user_message());
+                        NativeServiceAction {
+                            service: svc.clone(),
+                            action: "failed".into(),
+                            success: false,
+                            message: e.user_message(),
+                        }
+                    }
+                }
+            }
+        } else {
+            // De-selected: stop and remove it (and drop any stop marker — it's gone).
+            crate::services::clear_manually_stopped(svc);
+            match crate::services::native::remove_service(&config, svc).await {
+                Ok(_) => {
+                    tracing::info!("Setup (native): removed de-selected service {}", svc);
+                    NativeServiceAction {
+                        service: svc.clone(),
+                        action: "removed".into(),
+                        success: true,
+                        message: "Stopped and removed (no longer enabled)".into(),
+                    }
+                }
+                Err(e) => NativeServiceAction {
+                    service: svc.clone(),
+                    action: "failed".into(),
+                    success: false,
+                    message: format!("Remove failed: {}", e.user_message()),
+                },
+            }
+        };
+
+        emit(app, &action);
+        actions.push(action);
+    }
+
+    // Enabled services that have no JAR on disk yet — report so the operator
+    // knows the Pull JARs step still needs to run for them.
+    if let Some(set) = &enabled {
+        for svc in set {
+            if svc == "puru-hydrogen" || jar_services.iter().any(|j| j == svc) {
+                continue;
+            }
+            let action = NativeServiceAction {
+                service: svc.clone(),
+                action: "not-installed".into(),
+                success: false,
+                message: "Enabled but no JAR — run the Pull JARs step".into(),
+            };
+            emit(app, &action);
+            actions.push(action);
+        }
+    }
+
+    // Only a hard failure if we tried to start services and every one failed.
+    if start_attempts > 0 && start_ok == 0 {
+        let reasons: Vec<String> = actions
+            .iter()
+            .filter(|a| a.action == "failed")
+            .map(|a| format!("{}: {}", a.service, a.message))
+            .collect();
+        return Err(format!("Failed to start any services:\n{}", reasons.join("\n")));
+    }
+
+    // Give Spring Boot a moment to initialize before the health-check step.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    tracing::info!("Setup (native): started {}/{} services", started.len(), jar_files.len());
-    if !errors.is_empty() {
-        tracing::warn!("Failed to start: {}", errors.join("; "));
-    }
-
-    Ok(())
+    tracing::info!(
+        "Setup (native): sync complete — {} action(s), {} started",
+        actions.len(),
+        start_ok
+    );
+    Ok(actions)
 }
 
 /// Manually seed fresh-install data: service databases (puru_config, ref_data,
@@ -1796,6 +2028,69 @@ pub async fn seed_data(
     crate::seed::run_seed(db, queues, templates)
         .await
         .map_err(|e| e.user_message())
+}
+
+/// Native setup step: seed RabbitMQ queues. Runs BEFORE services start — the
+/// Spring services passively declare their queues at boot and crash if missing.
+/// Strict: any queue-declare error fails the step so the operator sees it before
+/// the services crash-loop.
+#[tauri::command]
+pub async fn setup_seed_queues() -> Result<(), String> {
+    let report = crate::seed::run_seed(false, true, false)
+        .await
+        .map_err(|e| e.user_message())?;
+
+    let errs: Vec<String> = report
+        .sections
+        .iter()
+        .flat_map(|s| s.errors.iter().cloned())
+        .collect();
+    if !errs.is_empty() {
+        return Err(format!("Queue seeding failed:\n{}", errs.join("\n")));
+    }
+
+    let created: u64 = report.sections.iter().map(|s| s.created).sum();
+    let skipped: u64 = report.sections.iter().map(|s| s.skipped).sum();
+    tracing::info!(
+        "Setup (native): message queues seeded ({} created, {} already present)",
+        created,
+        skipped
+    );
+    Ok(())
+}
+
+/// Native setup step: seed database defaults + Jasper report templates. Runs
+/// AFTER services boot (their tables must exist first). Idempotent and
+/// supplementary — issues are logged but don't fail the whole setup.
+#[tauri::command]
+pub async fn setup_seed_database() -> Result<(), String> {
+    match crate::seed::run_seed(true, false, true).await {
+        Ok(report) => {
+            for s in &report.sections {
+                if s.errors.is_empty() {
+                    tracing::info!(
+                        "Setup (native): seed '{}' — {} created, {} skipped",
+                        s.name, s.created, s.skipped
+                    );
+                } else {
+                    tracing::warn!(
+                        "Setup (native): seed '{}' had {} issue(s): {}",
+                        s.name,
+                        s.errors.len(),
+                        s.errors.join("; ")
+                    );
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Setup (native): database/template seed skipped: {}",
+                e.user_message()
+            );
+            Ok(())
+        }
+    }
 }
 
 // ── Hospital template channel ─────────────────────────────────────────────────
@@ -2116,6 +2411,64 @@ pub async fn check_jar_updates(services: Vec<String>) -> Result<Vec<JarUpdateChe
 pub async fn get_deployment_mode() -> Result<String, String> {
     let cfg = crate::config::load_config().map_err(|e| e.to_string())?;
     Ok(format!("{:?}", cfg.deployment_mode))
+}
+
+/// Whether this process is running elevated (Administrator on Windows / root
+/// elsewhere). Used by the GUI to offer a "Restart as Administrator" action.
+#[tauri::command]
+pub fn is_elevated() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // The process token's integrity level reflects elevation:
+        // High Mandatory Level (S-1-16-12288) == elevated/admin;
+        // Medium (S-1-16-8192) == normal. `whoami /groups` lists it.
+        match crate::process::silent_std_cmd("whoami").args(["/groups"]).output() {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).contains("S-1-16-12288"),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Feature is Windows-only; report elevated elsewhere so the button hides.
+        true
+    }
+}
+
+/// Relaunch the app elevated via UAC, then exit this (non-elevated) instance.
+/// Returns an error (and stays running) if the UAC prompt is cancelled.
+#[tauri::command]
+pub async fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("Cannot locate the executable: {}", e))?;
+        // Single-quote the path for PowerShell, escaping embedded quotes.
+        let exe_arg = format!("'{}'", exe.to_string_lossy().replace('\'', "''"));
+
+        let status = crate::process::silent_cmd("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Start-Process -FilePath {} -Verb RunAs", exe_arg),
+            ])
+            .status()
+            .await
+            .map_err(|e| format!("Failed to relaunch: {}", e))?;
+
+        if !status.success() {
+            // PowerShell exits non-zero when the user declines the UAC prompt.
+            return Err("Elevation was cancelled.".into());
+        }
+
+        // The elevated instance is launching — close this one.
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("Restart as administrator is only available on Windows.".into())
+    }
 }
 
 /// Update a native service (stop → pull new JAR → start)

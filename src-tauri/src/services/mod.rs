@@ -23,6 +23,11 @@ pub struct ServiceInfo {
     pub ports: Vec<String>,
     pub uptime: Option<String>,
     pub health_response_ms: Option<u64>,
+    /// Human-readable reason for a non-healthy state (e.g. "actuator not
+    /// reachable on :9082 — is the management endpoint enabled?"). Shown in the
+    /// UI so an operator sees *why* a service isn't green.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,6 +36,9 @@ pub enum ServiceStatus {
     Running,
     Stopped,
     Starting,
+    /// Enabled for this hospital but its build is not present on disk yet —
+    /// distinct from a crash. The watchdog must NOT try to restart these.
+    NotInstalled,
     Error,
 }
 
@@ -442,6 +450,8 @@ pub async fn get_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusErr
 
 /// Start a service — dispatches based on deployment mode.
 pub async fn start_service(name: &str) -> Result<(), crate::error::NucleusError> {
+    // An explicit start clears any "manually stopped" marker.
+    clear_manually_stopped(name);
     let config = crate::config::load_config()?;
     match config.deployment_mode {
         DeploymentMode::Docker => start_docker_service(name).await,
@@ -452,19 +462,81 @@ pub async fn start_service(name: &str) -> Result<(), crate::error::NucleusError>
 /// Stop a service — dispatches based on deployment mode.
 pub async fn stop_service(name: &str) -> Result<(), crate::error::NucleusError> {
     let config = crate::config::load_config()?;
-    match config.deployment_mode {
+    let result = match config.deployment_mode {
         DeploymentMode::Docker => stop_docker_service(name).await,
         DeploymentMode::Native => native::stop_service(name, &config).await,
+    };
+    // Record the operator's intent so the watchdog doesn't auto-restart it.
+    if result.is_ok() {
+        mark_manually_stopped(name);
     }
+    result
 }
 
 /// Restart a service — dispatches based on deployment mode.
 pub async fn restart_service(name: &str) -> Result<(), crate::error::NucleusError> {
+    // A restart means the operator wants it running — clear any stop marker.
+    clear_manually_stopped(name);
     let config = crate::config::load_config()?;
     match config.deployment_mode {
         DeploymentMode::Docker => restart_docker_service(name).await,
         DeploymentMode::Native => native::restart_service(name, &config).await,
     }
+}
+
+// ── Manual-stop marker ────────────────────────────────────────────────────────
+// Services an operator intentionally stopped (from the UI/CLI/API). The daemon
+// watchdog consults this set and will NOT auto-restart anything in it, so a
+// manual stop actually stays stopped. The marker is keyed by the same
+// identifier `stop_service`/`start_service` receive (native service name, or
+// Docker container name). Persisted so it survives daemon/app restarts.
+
+fn manual_stop_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("stopped-services.json")
+}
+
+/// Load the set of intentionally-stopped service identifiers.
+pub fn load_manually_stopped() -> std::collections::HashSet<String> {
+    match std::fs::read_to_string(manual_stop_path()) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => std::collections::HashSet::new(),
+    }
+}
+
+fn save_manually_stopped(set: &std::collections::HashSet<String>) {
+    let path = manual_stop_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string(set) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!("Failed to persist manual-stop set: {}", e);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to serialize manual-stop set: {}", e),
+    }
+}
+
+/// Mark a service as intentionally stopped.
+pub fn mark_manually_stopped(name: &str) {
+    let mut set = load_manually_stopped();
+    if set.insert(name.to_string()) {
+        save_manually_stopped(&set);
+    }
+}
+
+/// Clear a service's manual-stop marker (called when it's (re)started).
+pub fn clear_manually_stopped(name: &str) {
+    let mut set = load_manually_stopped();
+    if set.remove(name) {
+        save_manually_stopped(&set);
+    }
+}
+
+/// Whether a service was intentionally stopped by an operator.
+pub fn is_manually_stopped(name: &str) -> bool {
+    load_manually_stopped().contains(name)
 }
 
 /// Get logs — dispatches based on deployment mode.
@@ -590,6 +662,7 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
             ports,
             uptime: extract_uptime(status_str, state),
             health_response_ms: None,
+            detail: None,
         });
     }
 

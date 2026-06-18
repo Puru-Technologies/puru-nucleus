@@ -1153,17 +1153,11 @@ async fn restore_from_directory(
 async fn create_gcs_client(
     credentials_path: &str,
 ) -> Result<google_cloud_storage::client::Client, NucleusError> {
-    let cred_file =
-        google_cloud_auth::credentials::CredentialsFile::new_from_file(credentials_path.to_string())
-            .await
-            .map_err(|e| NucleusError::GcsConnection(format!("Failed to load credentials: {}", e)))?;
-
-    let client_config = google_cloud_storage::client::ClientConfig::default()
-        .with_credentials(cred_file)
-        .await
-        .map_err(|e| NucleusError::GcsConnection(format!("Failed to configure GCS client: {}", e)))?;
-
-    Ok(google_cloud_storage::client::Client::new(client_config))
+    // Reuse the releases client builder — it requests only the narrow
+    // `devstorage.read_write` scope (see releases::create_gcs_client), which
+    // avoids the broad cloud-platform scope that some service accounts reject
+    // at the token endpoint. read_write is enough to upload backups.
+    crate::releases::create_gcs_client(credentials_path).await
 }
 
 async fn upload_to_gcs(

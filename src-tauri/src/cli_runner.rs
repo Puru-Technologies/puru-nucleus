@@ -206,6 +206,9 @@ async fn cmd_status() {
                     services::ServiceStatus::Starting => {
                         Cell::new("◐ Starting").fg(Color::Yellow)
                     }
+                    services::ServiceStatus::NotInstalled => {
+                        Cell::new("⊘ Not installed").fg(Color::DarkGrey)
+                    }
                     services::ServiceStatus::Error => {
                         Cell::new("✗ Error").fg(Color::Red)
                     }
@@ -525,6 +528,7 @@ async fn cmd_health(service: Option<&str>) {
                     services::ServiceStatus::Running => "Running",
                     services::ServiceStatus::Stopped => "Stopped",
                     services::ServiceStatus::Starting => "Starting",
+                    services::ServiceStatus::NotInstalled => "Not installed",
                     services::ServiceStatus::Error => "Error",
                 };
 

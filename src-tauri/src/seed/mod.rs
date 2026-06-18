@@ -671,7 +671,8 @@ async fn seed_rabbitmq_queues(config: &NucleusConfig) -> SeedSection {
     // Management plugin API (default port 15672). An existing queue may have
     // been declared with different arguments (x-queue-type, delays, ...) and a
     // blind PUT would 400 on it — so check existence first and never touch
-    // queues that already exist.
+    // queues that already exist. Setup auto-enables rabbitmq_management so 15672
+    // is reachable on a fresh deploy.
     let encoded_vhost = vhost.replace('/', "%2F");
     for queue in QUEUES {
         let url = format!(

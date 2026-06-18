@@ -1,13 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatTableModule } from '@angular/material/table';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatSelectModule } from '@angular/material/select';
-import { MatFormFieldModule } from '@angular/material/form-field';
 import {
   TauriService,
   LogSource,
@@ -20,14 +13,7 @@ import {
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatTableModule,
-    MatProgressSpinnerModule,
-    MatSelectModule,
-    MatFormFieldModule
+    FormsModule
   ],
   template: `
     <div class="page">
@@ -37,17 +23,17 @@ import {
           <p class="page-subtitle">Browse and read host log files</p>
         </div>
         <div class="header-actions">
-          <mat-form-field class="source-select" appearance="outline" subscriptSizing="dynamic">
-            <mat-label>Source</mat-label>
-            <mat-select [(ngModel)]="selectedSource" (ngModelChange)="onSourceChange()">
-              <mat-option value="all">All Sources</mat-option>
+          <div class="field source-select">
+            <label>Source</label>
+            <select class="select" [(ngModel)]="selectedSource" (ngModelChange)="onSourceChange()">
+              <option value="all">All Sources</option>
               @for (source of sources; track source.path) {
-                <mat-option [value]="source.path">{{ source.name }}</mat-option>
+                <option [value]="source.path">{{ source.name }}</option>
               }
-            </mat-select>
-          </mat-form-field>
-          <button mat-stroked-button (click)="loadFiles()">
-            <mat-icon>refresh</mat-icon>
+            </select>
+          </div>
+          <button class="btn btn-stroked" (click)="loadFiles()">
+            <span class="material-icons">refresh</span>
             Refresh
           </button>
         </div>
@@ -55,10 +41,10 @@ import {
 
       <!-- Log Viewer Panel -->
       @if (viewerContent) {
-        <mat-card class="log-card">
+        <div class="card log-card">
           <div class="log-header">
             <div class="log-title">
-              <mat-icon>article</mat-icon>
+              <span class="material-icons">article</span>
               <span>{{ viewerFileName }}</span>
               <span class="log-line-info">
                 Lines {{ viewerContent.offset + 1 }}-{{ viewerContent.offset + viewerContent.lines_returned }}
@@ -66,86 +52,78 @@ import {
               </span>
             </div>
             <div class="log-actions">
-              <button mat-icon-button (click)="prevPage()" [disabled]="viewerContent.offset === 0 || viewerLoading">
-                <mat-icon>chevron_left</mat-icon>
+              <button class="btn-icon" (click)="prevPage()" [disabled]="viewerContent.offset === 0 || viewerLoading">
+                <span class="material-icons">chevron_left</span>
               </button>
-              <button mat-icon-button (click)="nextPage()"
+              <button class="btn-icon" (click)="nextPage()"
                 [disabled]="viewerContent.offset + viewerContent.lines_returned >= viewerContent.total_lines || viewerLoading">
-                <mat-icon>chevron_right</mat-icon>
+                <span class="material-icons">chevron_right</span>
               </button>
-              <button mat-icon-button (click)="closeViewer()">
-                <mat-icon>close</mat-icon>
+              <button class="btn-icon" (click)="closeViewer()">
+                <span class="material-icons">close</span>
               </button>
             </div>
           </div>
           @if (viewerLoading) {
             <div class="log-loading">
-              <mat-spinner diameter="24"></mat-spinner>
+              <span class="spinner"></span>
             </div>
           } @else {
             <pre class="log-content">{{ viewerContent.content || 'File is empty.' }}</pre>
           }
-        </mat-card>
+        </div>
       }
 
       @if (loading) {
         <div class="loading-state">
-          <mat-spinner diameter="40"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
         </div>
       } @else if (files.length === 0) {
-        <mat-card class="empty-card">
+        <div class="card empty-card">
           <div class="empty-state">
             <div class="empty-icon">
-              <mat-icon>description</mat-icon>
+              <span class="material-icons">description</span>
             </div>
             <h3>No Log Files Found</h3>
             <p>No .log, .err, .out, or .gz files found in the selected source directory.</p>
           </div>
-        </mat-card>
+        </div>
       } @else {
-        <mat-card class="table-card">
-          <table mat-table [dataSource]="files" class="files-table">
-            <ng-container matColumnDef="name">
-              <th mat-header-cell *matHeaderCellDef>File</th>
-              <td mat-cell *matCellDef="let file">
-                <div class="name-cell">
-                  <mat-icon class="file-icon">description</mat-icon>
-                  <div class="name-info">
-                    <span class="name-primary">{{ file.name }}</span>
-                    <span class="name-secondary">{{ file.path }}</span>
-                  </div>
-                </div>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="size">
-              <th mat-header-cell *matHeaderCellDef>Size</th>
-              <td mat-cell *matCellDef="let file">
-                <span class="mono-text">{{ formatSize(file.size_bytes) }}</span>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="modified">
-              <th mat-header-cell *matHeaderCellDef>Modified</th>
-              <td mat-cell *matCellDef="let file">
-                <span class="mono-text">{{ file.modified_at }}</span>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="actions">
-              <th mat-header-cell *matHeaderCellDef></th>
-              <td mat-cell *matCellDef="let file">
-                <button mat-stroked-button class="view-btn" (click)="viewFile(file)">
-                  <mat-icon>visibility</mat-icon>
-                  View
-                </button>
-              </td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+        <div class="card table-card">
+          <table class="data-table files-table">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Size</th>
+                <th>Modified</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (file of files; track file.path) {
+                <tr>
+                  <td>
+                    <div class="name-cell">
+                      <span class="material-icons file-icon">description</span>
+                      <div class="name-info">
+                        <span class="name-primary">{{ file.name }}</span>
+                        <span class="name-secondary">{{ file.path }}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td><span class="mono-text">{{ formatSize(file.size_bytes) }}</span></td>
+                  <td><span class="mono-text">{{ file.modified_at }}</span></td>
+                  <td>
+                    <button class="btn btn-stroked btn-sm view-btn" (click)="viewFile(file)">
+                      <span class="material-icons">visibility</span>
+                      View
+                    </button>
+                  </td>
+                </tr>
+              }
+            </tbody>
           </table>
-        </mat-card>
+        </div>
       }
     </div>
   `,
@@ -182,6 +160,7 @@ import {
     .source-select {
       width: 200px;
       font-size: 0.85rem;
+      margin-bottom: 0;
     }
 
     .loading-state {
@@ -210,7 +189,7 @@ import {
         display: flex;
         align-items: center;
         justify-content: center;
-        mat-icon {
+        .material-icons {
           font-size: 32px;
           width: 32px;
           height: 32px;
@@ -234,7 +213,6 @@ import {
 
     /* ── Table ────────────────────────────────── */
     .table-card {
-      padding: 0 !important;
       overflow: hidden;
     }
 
@@ -253,6 +231,9 @@ import {
       font-size: 20px;
       width: 20px;
       height: 20px;
+    }
+    .material-icons.file-icon {
+      font-size: 20px;
     }
 
     .name-info {
@@ -307,7 +288,7 @@ import {
       font-size: 0.85rem;
       font-weight: 600;
 
-      mat-icon {
+      .material-icons {
         font-size: 18px;
         width: 18px;
         height: 18px;
@@ -327,8 +308,9 @@ import {
       align-items: center;
       gap: 2px;
 
-      button {
+      .btn-icon {
         color: #94a3b8;
+        &:hover:not(:disabled) { background: rgba(148, 163, 184, 0.15); color: #e2e8f0; }
       }
     }
 

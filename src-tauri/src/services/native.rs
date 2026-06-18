@@ -27,6 +27,19 @@ const SERVICE_PORTS: &[(&str, u16)] = &[
     ("puru-integration", 8088),
 ];
 
+/// Separate management/actuator port for services that run actuator on a
+/// dedicated port (Spring Boot `management.server.port`) instead of the app
+/// port. Health/readiness is probed here. Services NOT listed are assumed to
+/// expose actuator on their app port (see SERVICE_PORTS) and fall back to it.
+///
+/// NOTE: only `puru-auth` is confirmed (management.server.port=9082). Add other
+/// services here if they also use a dedicated management port — otherwise their
+/// actuator will be probed on the app port and, if absent there, reported as a
+/// "actuator not reachable" error.
+const SERVICE_MGMT_PORTS: &[(&str, u16)] = &[
+    ("puru-auth", 9082),
+];
+
 /// MySQL database used by each service (same mapping as the Docker compose generator)
 const SERVICE_DBS: &[(&str, &str)] = &[
     ("puru-auth", "puru_auth"),
@@ -43,8 +56,17 @@ const SERVICE_DBS: &[(&str, &str)] = &[
     ("puru-integration", "puru_im"),
 ];
 
-/// Health endpoint for Spring Boot services
+/// Aggregate health endpoint for Spring Boot services (liveness-ish).
 const HEALTH_ENDPOINT: &str = "/actuator/health";
+
+/// Readiness probe — UP only once the app has *fully* started and is accepting
+/// traffic. A crash-looping or never-fully-started service never reaches this,
+/// which is exactly what distinguishes "the JVM is alive" from "the app works".
+const READINESS_ENDPOINT: &str = "/actuator/health/readiness";
+
+/// An alive process that hasn't reported ready within this many seconds is
+/// treated as failing (stuck / crash-looping), not merely "starting".
+const STARTUP_GRACE_SECS: u64 = 150;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,11 +89,39 @@ fn service_port(service: &str) -> Option<u16> {
         .map(|(_, p)| *p)
 }
 
+/// Port to probe actuator on: the dedicated management port if the service has
+/// one, otherwise the app port.
+fn health_probe_port(service: &str) -> Option<u16> {
+    SERVICE_MGMT_PORTS
+        .iter()
+        .find(|(s, _)| *s == service)
+        .map(|(_, p)| *p)
+        .or_else(|| service_port(service))
+}
+
 fn db_for_service(service: &str) -> Option<&'static str> {
     SERVICE_DBS
         .iter()
         .find(|(s, _)| *s == service)
         .map(|(_, d)| *d)
+}
+
+/// Whether a service's build is present on disk. For JAR services that means
+/// the `.jar` exists; for puru-hydrogen it means the nginx html root is laid
+/// down. Used by the setup re-run to decide what needs pulling.
+pub(crate) fn is_installed(config: &NucleusConfig, service: &str) -> bool {
+    if service == "puru-hydrogen" {
+        config.nginx_html_dir().join("index.html").exists()
+    } else {
+        jar_path(config, service).exists()
+    }
+}
+
+/// Whether a JAR service's process is currently alive (by its PID file).
+pub(crate) fn is_running(config: &NucleusConfig, service: &str) -> bool {
+    read_pid(config, service)
+        .map(is_process_alive)
+        .unwrap_or(false)
 }
 
 /// Read PID from pid file, returns None if file doesn't exist or is invalid
@@ -286,14 +336,17 @@ pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), Nucl
 
     #[cfg(windows)]
     {
-        // On Windows, use taskkill /PID which sends WM_CLOSE first (graceful)
+        // On Windows, taskkill /PID sends WM_CLOSE (graceful). A headless
+        // `java.exe` (spawned with CREATE_NO_WINDOW) has no window to receive it,
+        // so this is usually a no-op — keep the grace window short and then force
+        // kill, otherwise every stop appears to hang for the full timeout.
         let _ = crate::process::silent_cmd("taskkill")
             .args(["/PID", &pid.to_string()])
             .output()
             .await;
 
-        // Wait up to 30 seconds for graceful shutdown
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        // Wait a short window for graceful shutdown before force killing.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(8);
         loop {
             if !is_process_alive(pid) {
                 break;
@@ -365,20 +418,22 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             } else if deployed {
                 ServiceStatus::Stopped // deployed but no web server on :80
             } else {
-                ServiceStatus::Error // not installed
+                ServiceStatus::NotInstalled // enabled but not deployed
             }
         } else if alive {
             ServiceStatus::Running
         } else if jar_path(config, svc_name).exists() {
             ServiceStatus::Stopped
         } else {
-            ServiceStatus::Error // Enabled but not installed
+            ServiceStatus::NotInstalled // enabled but JAR not pulled yet
         };
 
         let port = service_port(svc_name);
 
+        // Health/readiness is probed on the management port if the service uses
+        // a dedicated one, else the app port.
         if alive {
-            if let Some(p) = port {
+            if let Some(p) = health_probe_port(svc_name) {
                 probe_targets.push((svc_name.clone(), p));
             }
         }
@@ -407,16 +462,83 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             ports: vec![port_str],
             uptime: None, // Could be computed from PID start time
             health_response_ms: None,
+            detail: None,
         });
     }
 
-    // Run HTTP health probes concurrently for running services
+    // Run HTTP health/readiness probes concurrently, then derive the *displayed*
+    // status from the verdict — not from PID liveness alone. A live JVM that
+    // isn't ready (crash-looping, failing to start beans, dependency down) must
+    // not read as a green "Running".
     if !probe_targets.is_empty() {
-        let health_results = probe_native_health(&probe_targets).await;
+        let probe_results = probe_native_health(&probe_targets).await;
         for svc in &mut services {
-            if let Some((health, ms)) = health_results.get(&svc.name) {
-                svc.health = Some(health.clone());
-                svc.health_response_ms = Some(*ms);
+            // Only services we actually probed (alive + known port). Leave
+            // hydrogen and port-less services on their PID-based status.
+            let Some(outcome) = probe_results.get(&svc.name) else { continue };
+            if svc.status != ServiceStatus::Running {
+                continue;
+            }
+
+            svc.health_response_ms = if outcome.response_ms > 0 {
+                Some(outcome.response_ms)
+            } else {
+                None
+            };
+
+            // Still inside the startup grace window? (compute before mutating svc)
+            let booting = read_pid(config, &svc.name)
+                .and_then(process_uptime_secs)
+                .map_or(false, |u| u < STARTUP_GRACE_SECS);
+            let probe_port = health_probe_port(&svc.name).unwrap_or(0);
+
+            match outcome.up {
+                // Ready/UP — genuinely healthy.
+                Some(true) => {
+                    svc.health = Some(HealthStatus::Healthy);
+                    svc.status = ServiceStatus::Running;
+                    svc.detail = None;
+                }
+                // Answered but DOWN / not-ready — degraded. Within the startup
+                // grace we call it Starting; past it, it's a real failure.
+                Some(false) => {
+                    svc.health = Some(HealthStatus::Unhealthy);
+                    if booting {
+                        svc.status = ServiceStatus::Starting;
+                        svc.detail = Some("Started, not ready yet".into());
+                    } else {
+                        svc.status = ServiceStatus::Error;
+                        svc.detail = Some(format!(
+                            "Not ready — actuator on :{} reports DOWN. Check the service log.",
+                            probe_port
+                        ));
+                    }
+                }
+                // No readable verdict — the actuator gave us nothing usable. This
+                // means actuator is disabled/secured/absent (reachable) or the
+                // management port isn't listening (unreachable). Surface it as an
+                // error after the grace window instead of a misleading "Running".
+                None => {
+                    svc.health = None;
+                    if booting {
+                        svc.status = ServiceStatus::Starting;
+                        svc.detail = Some("Starting — actuator not responding yet".into());
+                    } else if outcome.reachable {
+                        svc.status = ServiceStatus::Error;
+                        svc.detail = Some(format!(
+                            "Actuator not readable on :{} — enable and publicly expose \
+                             /actuator/health/readiness (management endpoint appears disabled or secured).",
+                            probe_port
+                        ));
+                    } else {
+                        svc.status = ServiceStatus::Error;
+                        svc.detail = Some(format!(
+                            "Actuator unreachable on :{} — is the management endpoint enabled, \
+                             or its port mapped in Nucleus?",
+                            probe_port
+                        ));
+                    }
+                }
             }
         }
     }
@@ -515,70 +637,128 @@ pub async fn rollback_service(name: &str, config: &NucleusConfig) -> Result<(), 
     Ok(())
 }
 
+/// Tear a service down: stop the process (if running) and delete its on-disk
+/// artifacts (jar, backup jar, build meta, pid file). The .log file is kept for
+/// audit. Used when a service has been de-selected in the cloud config.
+pub(crate) async fn remove_service(config: &NucleusConfig, name: &str) -> Result<(), NucleusError> {
+    // Stop first — ignore "not running" errors, we just want it down.
+    let _ = stop_service(name, config).await;
+
+    let jars = config.jars_dir();
+    let targets = [
+        jars.join(format!("{}.jar", name)),
+        jars.join(format!("{}.jar.bak", name)),
+        jars.join(format!("{}.jar.bad", name)),
+        jars.join(format!("{}.meta.json", name)),
+        pid_path(config, name),
+    ];
+    for f in targets {
+        if f.exists() {
+            if let Err(e) = std::fs::remove_file(&f) {
+                tracing::warn!("Failed to remove {}: {}", f.display(), e);
+            }
+        }
+    }
+
+    tracing::info!("Removed native service {}", name);
+    Ok(())
+}
+
 // ── Health probing ──────────────────────────────────────────────────────────
+
+/// Outcome of probing a service's actuator endpoints.
+struct ProbeOutcome {
+    /// The port answered at all (the web server is up).
+    reachable: bool,
+    /// Verdict from the actuator status: `Some(true)` = UP/ready,
+    /// `Some(false)` = answered but DOWN/not-ready, `None` = answered but the
+    /// status couldn't be read (endpoint secured/absent) or no answer at all.
+    up: Option<bool>,
+    response_ms: u64,
+}
+
+/// Process uptime in seconds (epoch now − process start time), or None if the
+/// process can't be found. Used to tell "still booting" from "stuck".
+fn process_uptime_secs(pid: u32) -> Option<u64> {
+    use sysinfo::{Pid, PidExt, ProcessExt, System, SystemExt};
+    let mut sys = System::new();
+    let spid = Pid::from_u32(pid);
+    sys.refresh_process(spid);
+    let proc_ = sys.process(spid)?;
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    Some(now.saturating_sub(proc_.start_time()))
+}
+
+/// GET a URL and interpret the actuator response into (reachable, up?, ms).
+async fn probe_url(client: &reqwest::Client, url: &str) -> (bool, Option<bool>, u64) {
+    use std::time::Instant;
+    let start = Instant::now();
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let ms = start.elapsed().as_millis() as u64;
+            let code = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // Actuator JSON status is authoritative (a 503 with {"status":"DOWN"}
+            // is a real verdict, as is {"status":"UP"}).
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(s) = json.get("status").and_then(|v| v.as_str()) {
+                    return (true, Some(s == "UP"), ms);
+                }
+            }
+            if code.is_success() {
+                (true, Some(true), ms)
+            } else if matches!(code.as_u16(), 401 | 403 | 404 | 405) {
+                // Answered, but the endpoint is secured/absent — can't read a verdict.
+                (true, None, ms)
+            } else {
+                (true, Some(false), ms)
+            }
+        }
+        Err(_) => (false, None, 0),
+    }
+}
 
 async fn probe_native_health(
     targets: &[(String, u16)],
-) -> std::collections::HashMap<String, (HealthStatus, u64)> {
+) -> std::collections::HashMap<String, ProbeOutcome> {
     use futures_util::future::join_all;
-    use std::time::Instant;
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return std::collections::HashMap::new(),
+    };
 
     let futures: Vec<_> = targets
         .iter()
         .map(|(name, port)| {
             let name = name.clone();
             let port = *port;
+            let client = client.clone();
             async move {
-                let url = format!("http://127.0.0.1:{}{}", port, HEALTH_ENDPOINT);
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(5))
-                    .build()
-                    .ok();
-
-                let client = match client {
-                    Some(c) => c,
-                    None => return (name, None),
-                };
-
-                let start = Instant::now();
-                match client.get(&url).send().await {
-                    Ok(resp) => {
-                        let elapsed_ms = start.elapsed().as_millis() as u64;
-                        let http_status = resp.status();
-                        let body = resp.text().await.unwrap_or_default();
-
-                        // Actuator-style JSON beats the HTTP status code:
-                        // a 503 with {"status":"DOWN"} is a real health verdict
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                            if let Some(status) = json.get("status").and_then(|v| v.as_str()) {
-                                let health = if status == "UP" {
-                                    HealthStatus::Healthy
-                                } else {
-                                    HealthStatus::Unhealthy
-                                };
-                                return (name, Some((health, elapsed_ms)));
-                            }
-                        }
-
-                        if http_status.is_success() {
-                            (name, Some((HealthStatus::Healthy, elapsed_ms)))
-                        } else if matches!(http_status.as_u16(), 401 | 403 | 404 | 405) {
-                            // The port answers but no health endpoint is exposed
-                            // (or it requires auth) — that is not "unhealthy"
-                            (name, None)
-                        } else {
-                            (name, Some((HealthStatus::Unhealthy, elapsed_ms)))
-                        }
+                // Prefer readiness — it only reports UP once fully started.
+                let ready_url = format!("http://127.0.0.1:{}{}", port, READINESS_ENDPOINT);
+                let (r1, up1, ms1) = probe_url(&client, &ready_url).await;
+                let outcome = if up1.is_some() {
+                    ProbeOutcome { reachable: r1, up: up1, response_ms: ms1 }
+                } else {
+                    // Readiness missing/secured/unreachable → fall back to the
+                    // aggregate health endpoint so services that haven't adopted
+                    // readiness probes yet behave as before (no regression).
+                    let health_url = format!("http://127.0.0.1:{}{}", port, HEALTH_ENDPOINT);
+                    let (r2, up2, ms2) = probe_url(&client, &health_url).await;
+                    ProbeOutcome {
+                        reachable: r1 || r2,
+                        up: up2,
+                        response_ms: if r2 { ms2 } else { ms1 },
                     }
-                    Err(_) => (name, None),
-                }
+                };
+                (name, outcome)
             }
         })
         .collect();
 
-    let results = join_all(futures).await;
-    results
-        .into_iter()
-        .filter_map(|(name, result)| result.map(|r| (name, r)))
-        .collect()
+    join_all(futures).await.into_iter().collect()
 }

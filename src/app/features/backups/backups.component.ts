@@ -1,12 +1,5 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatTableModule } from '@angular/material/table';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { TauriService, BackupRecord, BackupResult, BinlogStatus, BinlogShipResult } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
@@ -14,221 +7,170 @@ import { NotificationService } from '../../core/services/notification.service';
   selector: 'app-backups',
   standalone: true,
   imports: [
-    CommonModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatTableModule,
-    MatChipsModule,
-    MatProgressSpinnerModule,
-    MatProgressBarModule
+    CommonModule
   ],
   template: `
     <div class="backups-page p-4">
       <div class="header flex justify-between items-center">
         <h1>Backups</h1>
         <div class="actions">
-          <button mat-stroked-button (click)="runBackup('partial')" [disabled]="backupInProgress">
-            <mat-icon>backup</mat-icon>
+          <button class="btn btn-stroked" (click)="runBackup('partial')" [disabled]="backupInProgress">
+            <span class="material-icons">backup</span>
             Partial Backup
           </button>
-          <button mat-raised-button color="primary" (click)="runBackup('full')" [disabled]="backupInProgress">
-            <mat-icon>cloud_upload</mat-icon>
+          <button class="btn btn-primary" (click)="runBackup('full')" [disabled]="backupInProgress">
+            <span class="material-icons">cloud_upload</span>
             Full Backup
           </button>
         </div>
       </div>
 
       @if (backupInProgress) {
-        <mat-card class="backup-progress-card">
-          <mat-card-content>
-            <div class="flex items-center gap-4">
-              <mat-spinner diameter="32"></mat-spinner>
-              <div class="flex-1">
-                <strong>Backup in progress...</strong>
-                <p>Creating {{ currentBackupType }} backup. Please wait.</p>
-              </div>
+        <div class="card card-pad backup-progress-card">
+          <div class="flex items-center gap-4">
+            <span class="spinner"></span>
+            <div class="flex-1">
+              <strong>Backup in progress...</strong>
+              <p>Creating {{ currentBackupType }} backup. Please wait.</p>
             </div>
-            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
-          </mat-card-content>
-        </mat-card>
+          </div>
+          <div class="pbar pbar-indeterminate"><div class="pbar-fill"></div></div>
+        </div>
       }
 
       @if (lastError) {
-        <mat-card class="error-card">
-          <mat-card-content>
-            <div class="error-header">
-              <mat-icon>error</mat-icon>
-              <strong>Backup Failed</strong>
-              <button mat-icon-button (click)="lastError = null"><mat-icon>close</mat-icon></button>
-            </div>
-            <pre class="error-detail">{{ lastError }}</pre>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad error-card">
+          <div class="error-header">
+            <span class="material-icons">error</span>
+            <strong>Backup Failed</strong>
+            <button class="btn-icon" (click)="lastError = null"><span class="material-icons">close</span></button>
+          </div>
+          <pre class="error-detail">{{ lastError }}</pre>
+        </div>
       }
 
       <div class="backup-stats">
-        <mat-card class="stat-card">
-          <mat-card-content>
-            <mat-icon>backup</mat-icon>
-            <div class="stat-value">{{ totalBackups }}</div>
-            <div class="stat-label">Total Backups</div>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad stat-card">
+          <span class="material-icons">backup</span>
+          <div class="stat-value">{{ totalBackups }}</div>
+          <div class="stat-label">Total Backups</div>
+        </div>
 
-        <mat-card class="stat-card">
-          <mat-card-content>
-            <mat-icon>cloud_done</mat-icon>
-            <div class="stat-value">{{ uploadedBackups }}</div>
-            <div class="stat-label">Uploaded to Cloud</div>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad stat-card">
+          <span class="material-icons">cloud_done</span>
+          <div class="stat-value">{{ uploadedBackups }}</div>
+          <div class="stat-label">Uploaded to Cloud</div>
+        </div>
 
-        <mat-card class="stat-card">
-          <mat-card-content>
-            <mat-icon>storage</mat-icon>
-            <div class="stat-value">{{ totalSizeGB | number:'1.1-1' }} GB</div>
-            <div class="stat-label">Total Size</div>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad stat-card">
+          <span class="material-icons">storage</span>
+          <div class="stat-value">{{ totalSizeGB | number:'1.1-1' }} GB</div>
+          <div class="stat-label">Total Size</div>
+        </div>
 
-        <mat-card class="stat-card">
-          <mat-card-content>
-            <mat-icon>schedule</mat-icon>
-            <div class="stat-value">{{ lastBackupTime || 'Never' }}</div>
-            <div class="stat-label">Last Backup</div>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad stat-card">
+          <span class="material-icons">schedule</span>
+          <div class="stat-value">{{ lastBackupTime || 'Never' }}</div>
+          <div class="stat-label">Last Backup</div>
+        </div>
       </div>
 
-      <mat-card class="history-card">
-        <mat-card-header>
-          <mat-card-title>Backup History</mat-card-title>
-        </mat-card-header>
-        <mat-card-content>
-          @if (loading) {
-            <div class="loading-container">
-              <mat-spinner diameter="48"></mat-spinner>
-            </div>
-          } @else if (backups.length === 0) {
-            <div class="empty-state">
-              <mat-icon>backup</mat-icon>
-              <p>No backups yet</p>
-              <button mat-raised-button color="primary" (click)="runBackup('full')">
-                Create First Backup
-              </button>
-            </div>
-          } @else {
-            <table mat-table [dataSource]="backups" class="backups-table">
-              <ng-container matColumnDef="type">
-                <th mat-header-cell *matHeaderCellDef>Type</th>
-                <td mat-cell *matCellDef="let backup">
-                  <mat-chip>{{ backup.type }}</mat-chip>
-                </td>
-              </ng-container>
-
-              <ng-container matColumnDef="status">
-                <th mat-header-cell *matHeaderCellDef>Status</th>
-                <td mat-cell *matCellDef="let backup">
-                  <mat-chip [class]="'chip-' + backup.status">
-                    {{ backup.status }}
-                  </mat-chip>
-                </td>
-              </ng-container>
-
-              <ng-container matColumnDef="size">
-                <th mat-header-cell *matHeaderCellDef>Size</th>
-                <td mat-cell *matCellDef="let backup">{{ backup.size_mb }} MB</td>
-              </ng-container>
-
-              <ng-container matColumnDef="created_at">
-                <th mat-header-cell *matHeaderCellDef>Created</th>
-                <td mat-cell *matCellDef="let backup">
-                  {{ backup.created_at | date:'short' }}
-                </td>
-              </ng-container>
-
-              <ng-container matColumnDef="uploaded">
-                <th mat-header-cell *matHeaderCellDef>Cloud</th>
-                <td mat-cell *matCellDef="let backup">
-                  <mat-icon [class]="backup.uploaded ? 'text-success' : 'text-muted'">
-                    {{ backup.uploaded ? 'cloud_done' : 'cloud_off' }}
-                  </mat-icon>
-                </td>
-              </ng-container>
-
-              <ng-container matColumnDef="lan">
-                <th mat-header-cell *matHeaderCellDef>LAN</th>
-                <td mat-cell *matCellDef="let backup">
-                  <mat-icon [class]="backup.lan_copied ? 'text-success' : 'text-muted'">
-                    {{ backup.lan_copied ? 'lan' : 'lan' }}
-                  </mat-icon>
-                </td>
-              </ng-container>
-
-              <ng-container matColumnDef="actions">
-                <th mat-header-cell *matHeaderCellDef>Actions</th>
-                <td mat-cell *matCellDef="let backup">
-                  <button mat-icon-button (click)="restoreBackup(backup)" [disabled]="backup.status !== 'completed'">
-                    <mat-icon>restore</mat-icon>
-                  </button>
-                </td>
-              </ng-container>
-
-              <ng-container matColumnDef="error">
-                <th mat-header-cell *matHeaderCellDef>Error</th>
-                <td mat-cell *matCellDef="let backup">
-                  @if (backup.status === 'failed') {
-                    <span class="error-text" [title]="backup.error || 'Unknown error'">
-                      {{ backup.error || 'Unknown error' }}
+      <div class="card card-pad history-card">
+        <h2 class="card-title">Backup History</h2>
+        @if (loading) {
+          <div class="loading-container">
+            <span class="spinner spinner-lg"></span>
+          </div>
+        } @else if (backups.length === 0) {
+          <div class="empty-state">
+            <span class="material-icons">backup</span>
+            <p>No backups yet</p>
+            <button class="btn btn-primary" (click)="runBackup('full')">
+              Create First Backup
+            </button>
+          </div>
+        } @else {
+          <table class="data-table backups-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Size</th>
+                <th>Created</th>
+                <th>Cloud</th>
+                <th>LAN</th>
+                <th>Error</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (backup of backups; track backup.id) {
+                <tr [class.failed-row]="backup.status === 'failed'">
+                  <td><span class="chip">{{ backup.type }}</span></td>
+                  <td><span class="chip" [class]="'chip chip-' + backup.status">{{ backup.status }}</span></td>
+                  <td>{{ backup.size_mb }} MB</td>
+                  <td>{{ backup.created_at | date:'short' }}</td>
+                  <td>
+                    <span class="material-icons" [class]="backup.uploaded ? 'material-icons text-success' : 'material-icons text-muted'">
+                      {{ backup.uploaded ? 'cloud_done' : 'cloud_off' }}
                     </span>
-                  }
-                </td>
-              </ng-container>
-
-              <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-              <tr mat-row *matRowDef="let row; columns: displayedColumns;" [class.failed-row]="row.status === 'failed'"></tr>
-            </table>
-          }
-        </mat-card-content>
-      </mat-card>
+                  </td>
+                  <td>
+                    <span class="material-icons" [class]="backup.lan_copied ? 'material-icons text-success' : 'material-icons text-muted'">
+                      {{ backup.lan_copied ? 'lan' : 'lan' }}
+                    </span>
+                  </td>
+                  <td>
+                    @if (backup.status === 'failed') {
+                      <span class="error-text" [title]="backup.error || 'Unknown error'">
+                        {{ backup.error || 'Unknown error' }}
+                      </span>
+                    }
+                  </td>
+                  <td>
+                    <button class="btn-icon" (click)="restoreBackup(backup)" [disabled]="backup.status !== 'completed'">
+                      <span class="material-icons">restore</span>
+                    </button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+      </div>
 
       @if (binlogStatus?.lan_enabled) {
-        <mat-card class="binlog-card">
-          <mat-card-header>
-            <mat-card-title>LAN Binlog Shipping</mat-card-title>
-          </mat-card-header>
-          <mat-card-content>
-            <div class="binlog-info">
-              <div class="binlog-stat">
-                <span class="label">Last Shipped:</span>
-                <span>{{ binlogStatus?.lan_last_shipped_file || 'None' }}</span>
-              </div>
-              <div class="binlog-stat">
-                <span class="label">Total Shipped:</span>
-                <span>{{ binlogStatus?.lan_total_shipped }}</span>
-              </div>
-              <div class="binlog-stat">
-                <span class="label">Pending:</span>
-                <span>{{ binlogStatus?.files_pending }}</span>
-              </div>
-              @if (binlogStatus?.lan_last_error) {
-                <div class="binlog-stat error">
-                  <span class="label">Last Error:</span>
-                  <span>{{ binlogStatus?.lan_last_error }}</span>
-                </div>
-              }
+        <div class="card card-pad binlog-card">
+          <h2 class="card-title">LAN Binlog Shipping</h2>
+          <div class="binlog-info">
+            <div class="binlog-stat">
+              <span class="label">Last Shipped:</span>
+              <span>{{ binlogStatus?.lan_last_shipped_file || 'None' }}</span>
             </div>
-            <button mat-stroked-button (click)="shipBinlogsLanNow()" [disabled]="lanBinlogShipping">
-              @if (lanBinlogShipping) {
-                <mat-spinner diameter="18"></mat-spinner>
-              } @else {
-                <mat-icon>send</mat-icon>
-              }
-              Ship to LAN Now
-            </button>
-          </mat-card-content>
-        </mat-card>
+            <div class="binlog-stat">
+              <span class="label">Total Shipped:</span>
+              <span>{{ binlogStatus?.lan_total_shipped }}</span>
+            </div>
+            <div class="binlog-stat">
+              <span class="label">Pending:</span>
+              <span>{{ binlogStatus?.files_pending }}</span>
+            </div>
+            @if (binlogStatus?.lan_last_error) {
+              <div class="binlog-stat error">
+                <span class="label">Last Error:</span>
+                <span>{{ binlogStatus?.lan_last_error }}</span>
+              </div>
+            }
+          </div>
+          <button class="btn btn-stroked" (click)="shipBinlogsLanNow()" [disabled]="lanBinlogShipping">
+            @if (lanBinlogShipping) {
+              <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            } @else {
+              <span class="material-icons">send</span>
+            }
+            Ship to LAN Now
+          </button>
+        </div>
       }
     </div>
   `,
@@ -257,9 +199,39 @@ import { NotificationService } from '../../core/services/notification.service';
       background: #e3f2fd;
       border-left: 4px solid #2196f3;
 
-      mat-progress-bar {
+      .pbar {
         margin-top: 1rem;
       }
+    }
+
+    .pbar {
+      width: 100%;
+      height: 6px;
+      background: #e2e8f0;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .pbar-fill {
+      height: 100%;
+      background: var(--accent-indigo);
+      border-radius: 3px;
+    }
+
+    .pbar-indeterminate .pbar-fill {
+      width: 40%;
+      animation: pbar-indeterminate 1.2s ease-in-out infinite;
+    }
+
+    @keyframes pbar-indeterminate {
+      0% { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+
+    .card-title {
+      margin: 0 0 1rem;
+      font-size: 1.1rem;
+      font-weight: 600;
     }
 
     .backup-stats {
@@ -272,7 +244,7 @@ import { NotificationService } from '../../core/services/notification.service';
     .stat-card {
       text-align: center;
 
-      mat-icon {
+      .material-icons {
         font-size: 2rem;
         width: 2rem;
         height: 2rem;
@@ -291,12 +263,6 @@ import { NotificationService } from '../../core/services/notification.service';
       }
     }
 
-    .history-card {
-      mat-card-header {
-        margin-bottom: 1rem;
-      }
-    }
-
     .loading-container {
       display: flex;
       justify-content: center;
@@ -310,7 +276,7 @@ import { NotificationService } from '../../core/services/notification.service';
       padding: 3rem;
       color: #666;
 
-      mat-icon {
+      .material-icons {
         font-size: 4rem;
         width: 4rem;
         height: 4rem;
@@ -351,10 +317,6 @@ import { NotificationService } from '../../core/services/notification.service';
 
     .binlog-card {
       margin-top: 1.5rem;
-
-      mat-card-header {
-        margin-bottom: 1rem;
-      }
     }
 
     .binlog-info {
@@ -389,7 +351,7 @@ import { NotificationService } from '../../core/services/notification.service';
       margin-bottom: 0.5rem;
       color: #c62828;
 
-      mat-icon { font-size: 20px; width: 20px; height: 20px; }
+      .material-icons { font-size: 20px; width: 20px; height: 20px; }
       button { margin-left: auto; }
     }
 

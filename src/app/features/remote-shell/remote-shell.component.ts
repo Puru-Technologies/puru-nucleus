@@ -1,15 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatInputModule } from '@angular/material/input';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatExpansionModule } from '@angular/material/expansion';
-import { MatTableModule } from '@angular/material/table';
 import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/tauri.service';
 
 @Component({
@@ -17,16 +8,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatInputModule,
-    MatFormFieldModule,
-    MatChipsModule,
-    MatProgressSpinnerModule,
-    MatExpansionModule,
-    MatTableModule
+    FormsModule
   ],
   template: `
     <div class="shell-page p-4">
@@ -36,54 +18,49 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
       </div>
 
       <!-- Command Input -->
-      <mat-card class="command-card">
-        <mat-card-content>
-          <div class="command-input-row">
-            <mat-form-field appearance="outline" class="command-field">
-              <mat-label>Command</mat-label>
-              <input matInput
-                     [(ngModel)]="command"
-                     (keydown.enter)="executeCommand()"
-                     placeholder="e.g. docker ps"
-                     spellcheck="false"
-                     class="mono-input">
-            </mat-form-field>
-            <button mat-raised-button color="primary"
-                    (click)="executeCommand()"
-                    [disabled]="executing || !command.trim()">
-              @if (executing) {
-                <mat-spinner diameter="18"></mat-spinner>
-              } @else {
-                <mat-icon>play_arrow</mat-icon>
-              }
-              Execute
-            </button>
+      <div class="card card-pad command-card">
+        <div class="command-input-row">
+          <div class="field command-field">
+            <label>Command</label>
+            <input class="input mono-input"
+                   [(ngModel)]="command"
+                   (keydown.enter)="executeCommand()"
+                   placeholder="e.g. docker ps"
+                   spellcheck="false">
           </div>
-
-          <div class="quick-commands">
-            <span class="label">Quick:</span>
-            @for (cmd of quickCommands; track cmd) {
-              <button mat-stroked-button class="quick-chip" (click)="runQuickCommand(cmd)">
-                {{ cmd }}
-              </button>
+          <button class="btn btn-primary execute-btn"
+                  (click)="executeCommand()"
+                  [disabled]="executing || !command.trim()">
+            @if (executing) {
+              <span class="spinner"></span>
+            } @else {
+              <span class="material-icons">play_arrow</span>
             }
-          </div>
-        </mat-card-content>
-      </mat-card>
+            Execute
+          </button>
+        </div>
+
+        <div class="quick-commands">
+          <span class="label">Quick:</span>
+          @for (cmd of quickCommands; track cmd) {
+            <button class="btn btn-stroked btn-sm quick-chip" (click)="runQuickCommand(cmd)">
+              {{ cmd }}
+            </button>
+          }
+        </div>
+      </div>
 
       <!-- Output -->
       @if (lastResult) {
-        <mat-card class="output-card">
-          <mat-card-header>
-            <mat-card-title class="output-title">
-              <code>{{ lastResult.command }}</code>
-              <span class="exit-code" [class.success]="lastResult.exit_code === 0" [class.error]="lastResult.exit_code !== 0">
-                exit {{ lastResult.exit_code }}
-              </span>
-              <span class="duration">{{ lastResult.duration_ms }}ms</span>
-            </mat-card-title>
-          </mat-card-header>
-          <mat-card-content>
+        <div class="card card-pad output-card">
+          <div class="output-title">
+            <code>{{ lastResult.command }}</code>
+            <span class="exit-code" [class.success]="lastResult.exit_code === 0" [class.error]="lastResult.exit_code !== 0">
+              exit {{ lastResult.exit_code }}
+            </span>
+            <span class="duration">{{ lastResult.duration_ms }}ms</span>
+          </div>
+          <div class="output-body">
             @if (lastResult.stdout) {
               <pre class="output-pre">{{ lastResult.stdout }}</pre>
             }
@@ -96,85 +73,82 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
             @if (!lastResult.stdout && !lastResult.stderr) {
               <div class="empty-output">No output</div>
             }
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       }
 
       <!-- Validation Error -->
       @if (validationError) {
-        <mat-card class="error-card">
-          <mat-card-content>
-            <mat-icon>block</mat-icon>
+        <div class="card card-pad error-card">
+          <div class="error-content">
+            <span class="material-icons">block</span>
             <span>{{ validationError }}</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       }
 
       <!-- Allowed Commands -->
-      <mat-expansion-panel class="allowed-panel">
-        <mat-expansion-panel-header>
-          <mat-panel-title>
-            <mat-icon>info_outline</mat-icon>
+      <div class="card allowed-panel">
+        <button type="button" class="allowed-header" (click)="allowedOpen = !allowedOpen">
+          <span class="panel-title">
+            <span class="material-icons">info_outline</span>
             Allowed Commands
-          </mat-panel-title>
-          <mat-panel-description>
+          </span>
+          <span class="panel-description">
             {{ allowedCommands.length }} commands available
-          </mat-panel-description>
-        </mat-expansion-panel-header>
-        <div class="allowed-list">
-          @for (cmd of allowedCommands; track cmd) {
-            <code class="allowed-chip" (click)="setCommand(cmd)">{{ cmd }}</code>
-          }
-        </div>
-      </mat-expansion-panel>
+          </span>
+          <span class="material-icons chevron" [class.open]="allowedOpen">expand_more</span>
+        </button>
+        @if (allowedOpen) {
+          <div class="allowed-list">
+            @for (cmd of allowedCommands; track cmd) {
+              <code class="allowed-chip" (click)="setCommand(cmd)">{{ cmd }}</code>
+            }
+          </div>
+        }
+      </div>
 
       <!-- Audit Log -->
       <h2>Audit Log</h2>
 
       @if (auditLoading) {
         <div class="loading-container">
-          <mat-spinner diameter="24"></mat-spinner>
+          <span class="spinner"></span>
           <span>Loading audit log...</span>
         </div>
       } @else if (auditLog.length === 0) {
-        <mat-card class="empty-state">
-          <mat-card-content>
-            <mat-icon>history</mat-icon>
-            <p>No commands executed yet</p>
-            <span>Command execution history will appear here.</span>
-          </mat-card-content>
-        </mat-card>
+        <div class="card card-pad empty-state">
+          <span class="material-icons">history</span>
+          <p>No commands executed yet</p>
+          <span>Command execution history will appear here.</span>
+        </div>
       } @else {
         <div class="audit-table-wrapper">
-          <table mat-table [dataSource]="auditLog" class="audit-table">
-            <ng-container matColumnDef="timestamp">
-              <th mat-header-cell *matHeaderCellDef>Time</th>
-              <td mat-cell *matCellDef="let entry">{{ entry.timestamp | date:'short' }}</td>
-            </ng-container>
-
-            <ng-container matColumnDef="command">
-              <th mat-header-cell *matHeaderCellDef>Command</th>
-              <td mat-cell *matCellDef="let entry">
-                <code class="audit-cmd" (click)="setCommand(entry.command)">{{ entry.command }}</code>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="exit_code">
-              <th mat-header-cell *matHeaderCellDef>Exit</th>
-              <td mat-cell *matCellDef="let entry">
-                <span [class.exit-success]="entry.exit_code === 0" [class.exit-error]="entry.exit_code !== 0">
-                  {{ entry.exit_code }}
-                </span>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="duration_ms">
-              <th mat-header-cell *matHeaderCellDef>Duration</th>
-              <td mat-cell *matCellDef="let entry">{{ entry.duration_ms }}ms</td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="auditColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: auditColumns;" class="audit-row" (click)="setCommand(row.command)"></tr>
+          <table class="data-table audit-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Command</th>
+                <th>Exit</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (entry of auditLog; track entry) {
+                <tr class="audit-row" (click)="setCommand(entry.command)">
+                  <td>{{ entry.timestamp | date:'short' }}</td>
+                  <td>
+                    <code class="audit-cmd">{{ entry.command }}</code>
+                  </td>
+                  <td>
+                    <span [class.exit-success]="entry.exit_code === 0" [class.exit-error]="entry.exit_code !== 0">
+                      {{ entry.exit_code }}
+                    </span>
+                  </td>
+                  <td>{{ entry.duration_ms }}ms</td>
+                </tr>
+              }
+            </tbody>
           </table>
         </div>
       }
@@ -214,11 +188,16 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
     .command-input-row {
       display: flex;
       gap: 1rem;
-      align-items: flex-start;
+      align-items: flex-end;
     }
 
     .command-field {
       flex: 1;
+      margin-bottom: 0;
+    }
+
+    .execute-btn {
+      height: 38px;
     }
 
     .mono-input {
@@ -230,7 +209,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
       align-items: center;
       gap: 0.5rem;
       flex-wrap: wrap;
-      margin-top: 0.5rem;
+      margin-top: 0.75rem;
 
       .label {
         font-size: 0.75rem;
@@ -241,11 +220,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
     }
 
     .quick-chip {
-      font-size: 0.75rem !important;
       font-family: 'SF Mono', 'Fira Code', monospace !important;
-      min-height: 28px !important;
-      line-height: 28px !important;
-      padding: 0 10px !important;
     }
 
     /* Output */
@@ -253,6 +228,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
       margin-bottom: 1rem;
       background: #0f172a !important;
       color: #e2e8f0 !important;
+      border-color: #1e293b !important;
     }
 
     .output-title {
@@ -260,6 +236,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
       align-items: center;
       gap: 1rem;
       flex-wrap: wrap;
+      margin-bottom: 0.75rem;
 
       code {
         font-family: 'SF Mono', 'Fira Code', monospace;
@@ -330,7 +307,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
     .error-card {
       margin-bottom: 1rem;
 
-      mat-card-content {
+      .error-content {
         display: flex;
         align-items: center;
         gap: 0.75rem;
@@ -341,17 +318,42 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
     /* Allowed commands */
     .allowed-panel {
       margin-bottom: 1rem;
+      overflow: hidden;
+    }
 
-      mat-panel-title {
+    .allowed-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      width: 100%;
+      padding: 14px 16px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+      color: var(--text-primary);
+
+      .panel-title {
         display: flex;
         align-items: center;
         gap: 0.5rem;
+        font-weight: 600;
 
-        mat-icon {
+        .material-icons {
           font-size: 20px;
-          width: 20px;
-          height: 20px;
         }
+      }
+
+      .panel-description {
+        color: #666;
+        font-size: 0.875rem;
+        margin-left: auto;
+      }
+
+      .chevron {
+        transition: transform 0.2s;
+        &.open { transform: rotate(180deg); }
       }
     }
 
@@ -359,6 +361,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
       display: flex;
       flex-wrap: wrap;
       gap: 0.5rem;
+      padding: 0 16px 16px;
     }
 
     .allowed-chip {
@@ -390,7 +393,7 @@ import { TauriService, ShellResult, ShellAuditEntry } from '../../core/services/
       padding: 2rem;
       color: #666;
 
-      mat-icon {
+      .material-icons {
         font-size: 3rem;
         width: 3rem;
         height: 3rem;
@@ -457,6 +460,8 @@ export class RemoteShellComponent implements OnInit {
   auditLog: ShellAuditEntry[] = [];
   auditLoading = false;
   auditColumns = ['timestamp', 'command', 'exit_code', 'duration_ms'];
+
+  allowedOpen = false;
 
   quickCommands = [
     'docker ps',

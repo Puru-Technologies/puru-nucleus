@@ -1,5 +1,4 @@
-import { Injectable } from '@angular/core';
-import { MatSnackBar, MatSnackBarConfig } from '@angular/material/snack-bar';
+import { Injectable, signal } from '@angular/core';
 import { ErrorSeverity } from '../models/app-error';
 
 export interface NotificationOptions {
@@ -9,61 +8,58 @@ export interface NotificationOptions {
   duration?: number;
 }
 
-@Injectable({
-  providedIn: 'root'
-})
+export interface Toast {
+  id: number;
+  message: string;
+  severity: string;
+  /** 0 = sticky (manual dismiss only) */
+  duration: number;
+}
+
+/**
+ * Lightweight toast notifications — a drop-in replacement for the old
+ * MatSnackBar-based service. Public API (show/success/warning/error/critical)
+ * is unchanged so callers don't change. Rendered by <app-toast-host> in the
+ * app root.
+ */
+@Injectable({ providedIn: 'root' })
 export class NotificationService {
-  constructor(private snackBar: MatSnackBar) {}
+  /** Active toasts, read by the toast host. */
+  readonly toasts = signal<Toast[]>([]);
+  private seq = 0;
 
   show(options: NotificationOptions): void {
     const severity = options.severity || 'error';
     const duration = options.duration ?? (severity === 'critical' ? 0 : 5000);
-
-    const config: MatSnackBarConfig = {
-      duration,
-      panelClass: `snackbar-${severity}`,
-      horizontalPosition: 'end',
-      verticalPosition: 'bottom'
-    };
-
-    this.snackBar.open(
-      options.message,
-      options.action || 'Dismiss',
-      config
-    );
+    this.push(options.message, severity, duration);
   }
 
   success(message: string, duration = 3000): void {
-    this.snackBar.open(message, 'OK', {
-      duration,
-      panelClass: 'snackbar-success',
-      horizontalPosition: 'end',
-      verticalPosition: 'bottom'
-    });
+    this.push(message, 'success', duration);
   }
 
-  warning(message: string, action?: string): void {
-    this.show({
-      message,
-      severity: 'warning',
-      action
-    });
+  warning(message: string, _action?: string): void {
+    this.push(message, 'warning', 5000);
   }
 
-  error(message: string, action?: string): void {
-    this.show({
-      message,
-      severity: 'error',
-      action
-    });
+  error(message: string, _action?: string): void {
+    this.push(message, 'error', 5000);
   }
 
-  critical(message: string, action?: string): void {
-    this.show({
-      message,
-      severity: 'critical',
-      action,
-      duration: 0 // Don't auto-dismiss critical errors
-    });
+  critical(message: string, _action?: string): void {
+    // Don't auto-dismiss critical errors.
+    this.push(message, 'critical', 0);
+  }
+
+  dismiss(id: number): void {
+    this.toasts.update(list => list.filter(t => t.id !== id));
+  }
+
+  private push(message: string, severity: string, duration: number): void {
+    const id = ++this.seq;
+    this.toasts.update(list => [...list, { id, message, severity, duration }]);
+    if (duration > 0) {
+      setTimeout(() => this.dismiss(id), duration);
+    }
   }
 }

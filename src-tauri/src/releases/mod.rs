@@ -221,6 +221,37 @@ pub(crate) fn get_credentials_path() -> Result<String, NucleusError> {
         })
 }
 
+/// Translate the opaque google-cloud-auth token-exchange error into an
+/// actionable message. The crate decodes Google's response into a success
+/// struct, so when Google returns an *error* JSON (bad key, clock skew, …) it
+/// fails with "error decoding response body: missing field `access_token`",
+/// which hides the real cause. Detect that and explain the likely fixes.
+pub(crate) fn explain_gcs_auth_error(raw: &str) -> String {
+    if raw.contains("access_token")
+        || raw.contains("decoding response body")
+        || raw.contains("invalid_grant")
+        || raw.contains("unauthorized_client")
+    {
+        format!(
+            "Google rejected the service-account credentials while obtaining an access token ({raw}). \
+             Likely causes: (1) the GCS service-account key is invalid, expired, or revoked — re-download it from \
+             GCP and re-import it in Settings; or (2) this machine's date/time is wrong — a skewed system clock \
+             makes the signed token invalid, so check the date, time, and timezone."
+        )
+    } else {
+        format!("Failed to configure GCS client: {raw}")
+    }
+}
+
+/// Storage scope we actually need. The google-cloud-storage crate's default
+/// `with_credentials()` requests `cloud-platform` + `devstorage.full_control`,
+/// and some service-account / org scope policies REJECT those broad scopes at
+/// the token endpoint (surfacing as the opaque "missing field `access_token`"),
+/// even when narrower scopes — like the `datastore` scope Firestore uses —
+/// succeed with the same key. `devstorage.read_write` is enough to pull
+/// releases/JARs and upload backups, and is far less likely to be restricted.
+const STORAGE_SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/devstorage.read_write"];
+
 pub(crate) async fn create_gcs_client(
     credentials_path: &str,
 ) -> Result<google_cloud_storage::client::Client, NucleusError> {
@@ -230,13 +261,24 @@ pub(crate) async fn create_gcs_client(
             .map_err(|e| {
                 NucleusError::GcsConnection(format!("Failed to load credentials: {}", e))
             })?;
+    let project_id = cred_file.project_id.clone();
 
-    let client_config = google_cloud_storage::client::ClientConfig::default()
-        .with_credentials(cred_file)
-        .await
-        .map_err(|e| {
-            NucleusError::GcsConnection(format!("Failed to configure GCS client: {}", e))
-        })?;
+    // Build the token source ourselves with an explicit, narrow scope instead of
+    // the crate's broad default — see STORAGE_SCOPES above.
+    let token_source = google_cloud_auth::token::DefaultTokenSourceProvider::new_with_credentials(
+        google_cloud_auth::project::Config {
+            audience: None,
+            scopes: Some(&STORAGE_SCOPES),
+            sub: None,
+        },
+        Box::new(cred_file),
+    )
+    .await
+    .map_err(|e| NucleusError::GcsConnection(explain_gcs_auth_error(&e.to_string())))?;
+
+    let mut client_config = google_cloud_storage::client::ClientConfig::default();
+    client_config.project_id = project_id;
+    client_config.token_source_provider = Some(Box::new(token_source));
 
     Ok(google_cloud_storage::client::Client::new(client_config))
 }

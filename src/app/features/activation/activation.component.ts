@@ -1,12 +1,6 @@
 import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { Router } from '@angular/router';
 import { TauriService } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
@@ -22,23 +16,17 @@ interface CredentialsStatus {
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatFormFieldModule,
-    MatInputModule,
-    MatProgressSpinnerModule
+    FormsModule
   ],
   template: `
     <div class="activation-page">
-      <mat-card class="activation-card">
+      <div class="card card-pad activation-card">
         <div class="logo">
-          <mat-icon>hub</mat-icon>
+          <span class="material-icons">hub</span>
           <h1>PURU NUCLEUS</h1>
         </div>
 
-        <mat-card-content>
+        <div class="card-content">
           <!-- Step 1: GCS Credentials -->
           @if (!credentialsReady) {
             <h2>Step 1: Service Account</h2>
@@ -48,28 +36,26 @@ interface CredentialsStatus {
 
             @if (checking) {
               <div class="checking-state">
-                <mat-spinner diameter="24"></mat-spinner>
+                <span class="spinner"></span>
                 <span>Checking for credentials...</span>
               </div>
             } @else {
               <!-- Action buttons -->
               <div class="creds-actions">
-                <button mat-stroked-button
-                        class="creds-btn"
+                <button class="btn btn-stroked creds-btn"
                         (click)="browseFile()"
                         [disabled]="importing">
-                  <mat-icon>folder_open</mat-icon>
+                  <span class="material-icons">folder_open</span>
                   <div class="btn-text">
                     <span class="btn-label">Browse File</span>
                     <span class="btn-hint">Select from this computer</span>
                   </div>
                 </button>
 
-                <button mat-stroked-button
-                        class="creds-btn"
+                <button class="btn btn-stroked creds-btn"
                         (click)="showPaste = !showPaste"
                         [disabled]="importing">
-                  <mat-icon>content_paste</mat-icon>
+                  <span class="material-icons">content_paste</span>
                   <div class="btn-text">
                     <span class="btn-label">Paste JSON</span>
                     <span class="btn-hint">From WhatsApp / email</span>
@@ -80,19 +66,19 @@ interface CredentialsStatus {
               <!-- Paste area -->
               @if (showPaste) {
                 <div class="paste-area">
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Paste service account JSON here</mat-label>
-                    <textarea matInput
+                  <div class="field full-width">
+                    <label>Paste service account JSON here</label>
+                    <textarea class="input"
                               [(ngModel)]="pastedJson"
                               rows="6"
                               placeholder='{"type": "service_account", "project_id": "puru-255206", ...}'></textarea>
-                    <mat-hint>Paste the full JSON content from the credentials file</mat-hint>
-                  </mat-form-field>
-                  <button mat-raised-button color="primary"
+                    <span class="field-hint">Paste the full JSON content from the credentials file</span>
+                  </div>
+                  <button class="btn btn-primary"
                           (click)="savePastedJson()"
                           [disabled]="!pastedJson.trim() || importing">
                     @if (importing) {
-                      <mat-spinner diameter="18"></mat-spinner>
+                      <span class="spinner"></span>
                     }
                     Save Credentials
                   </button>
@@ -101,7 +87,7 @@ interface CredentialsStatus {
 
               @if (importing) {
                 <div class="checking-state">
-                  <mat-spinner diameter="24"></mat-spinner>
+                  <span class="spinner"></span>
                   <span>Importing credentials...</span>
                 </div>
               }
@@ -109,7 +95,7 @@ interface CredentialsStatus {
               <!-- Not found hint -->
               @if (!showPaste && !importing) {
                 <div class="hint-box">
-                  <mat-icon>info_outline</mat-icon>
+                  <span class="material-icons">info_outline</span>
                   <span>
                     Ask your admin to send the <strong>service-account.json</strong> file.
                     They can share it via WhatsApp, email, or USB drive.
@@ -122,10 +108,10 @@ interface CredentialsStatus {
           <!-- Step 2: Email Activation -->
           @if (credentialsReady) {
             <div class="creds-saved-banner">
-              <mat-icon>check_circle</mat-icon>
+              <span class="material-icons">check_circle</span>
               <span class="banner-title">Service account configured</span>
-              <button mat-icon-button (click)="resetCredentials()">
-                <mat-icon>edit</mat-icon>
+              <button class="btn-icon" (click)="resetCredentials()" title="Edit">
+                <span class="material-icons">edit</span>
               </button>
             </div>
 
@@ -134,31 +120,29 @@ interface CredentialsStatus {
               Enter the hospital email and machine name to activate
             </p>
 
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Hospital Email</mat-label>
-              <input matInput type="email"
+            <div class="field full-width">
+              <label>Hospital Email</label>
+              <input class="input" type="email"
                      [(ngModel)]="email"
                      [disabled]="activating"
                      placeholder="admin{{'@'}}hospital.com"
                      (keyup.enter)="activate()">
-              <mat-icon matPrefix>email</mat-icon>
-              <mat-hint>This email was used during hospital onboarding</mat-hint>
-            </mat-form-field>
+              <span class="field-hint">This email was used during hospital onboarding</span>
+            </div>
 
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Machine Name</mat-label>
-              <input matInput type="text"
+            <div class="field full-width">
+              <label>Machine Name</label>
+              <input class="input" type="text"
                      [(ngModel)]="machineName"
                      [disabled]="activating"
                      placeholder="Main Server"
                      (keyup.enter)="activate()">
-              <mat-icon matPrefix>computer</mat-icon>
-              <mat-hint>A friendly name for this computer (e.g. "Main Server", "Reception PC")</mat-hint>
-            </mat-form-field>
+              <span class="field-hint">A friendly name for this computer (e.g. "Main Server", "Reception PC")</span>
+            </div>
 
             @if (fingerprint) {
               <div class="fingerprint-box">
-                <mat-icon>fingerprint</mat-icon>
+                <span class="material-icons">fingerprint</span>
                 <div class="fp-text">
                   <span class="fp-label">Hardware Fingerprint</span>
                   <code class="fp-value">{{ fingerprint }}</code>
@@ -166,15 +150,14 @@ interface CredentialsStatus {
               </div>
             }
 
-            <button mat-raised-button color="primary"
-                    class="activate-btn"
+            <button class="btn btn-primary activate-btn"
                     (click)="activate()"
                     [disabled]="!email || !machineName.trim() || activating">
               @if (activating) {
-                <mat-spinner diameter="20"></mat-spinner>
+                <span class="spinner"></span>
                 Activating...
               } @else {
-                <mat-icon>verified</mat-icon>
+                <span class="material-icons">verified</span>
                 Activate
               }
             </button>
@@ -182,17 +165,17 @@ interface CredentialsStatus {
 
           @if (error) {
             <div class="error-message">
-              <mat-icon>error</mat-icon>
+              <span class="material-icons">error</span>
               <span>{{ error }}</span>
             </div>
           }
-        </mat-card-content>
+        </div>
 
         <div class="help-text">
           <p>Don't have credentials?</p>
           <a href="mailto:support{{'@'}}purutechnologies.com">Contact Support</a>
         </div>
-      </mat-card>
+      </div>
     </div>
   `,
   styles: [`
@@ -214,7 +197,7 @@ interface CredentialsStatus {
     .logo {
       margin-bottom: 2rem;
 
-      mat-icon {
+      .material-icons {
         font-size: 4rem;
         width: 4rem;
         height: 4rem;
@@ -247,6 +230,28 @@ interface CredentialsStatus {
       width: 100%;
     }
 
+    .field-hint {
+      display: block;
+      font-size: 0.75rem;
+      color: #999;
+      margin-top: 4px;
+    }
+
+    .field-error {
+      display: block;
+      color: #c62828;
+      font-size: 0.75rem;
+      margin-top: 4px;
+    }
+
+    /* In-button spinner sizing */
+    .btn .spinner {
+      width: 18px;
+      height: 18px;
+      margin-right: 0.5rem;
+      vertical-align: middle;
+    }
+
     /* ── Credentials actions ───────────────── */
     .creds-actions {
       display: flex;
@@ -264,7 +269,7 @@ interface CredentialsStatus {
       text-align: left;
       border-radius: 10px !important;
 
-      mat-icon {
+      .material-icons {
         font-size: 24px;
         width: 24px;
         height: 24px;
@@ -327,7 +332,7 @@ interface CredentialsStatus {
       font-size: 0.8rem;
       color: #e65100;
 
-      mat-icon {
+      .material-icons {
         font-size: 18px;
         width: 18px;
         height: 18px;
@@ -346,7 +351,7 @@ interface CredentialsStatus {
       border-radius: 8px;
       margin-bottom: 1.5rem;
 
-      > mat-icon {
+      > .material-icons {
         color: #4caf50;
         font-size: 22px;
         width: 22px;
@@ -378,7 +383,7 @@ interface CredentialsStatus {
       margin-bottom: 1rem;
       text-align: left;
 
-      > mat-icon {
+      > .material-icons {
         color: #3f51b5;
         font-size: 22px;
         width: 22px;
@@ -415,7 +420,7 @@ interface CredentialsStatus {
       margin-top: 1rem;
       padding: 0.75rem;
 
-      mat-spinner {
+      .spinner {
         display: inline-block;
         margin-right: 0.5rem;
       }
@@ -434,7 +439,7 @@ interface CredentialsStatus {
       color: #c62828;
       font-size: 0.875rem;
 
-      mat-icon {
+      .material-icons {
         font-size: 1.25rem;
         width: 1.25rem;
         height: 1.25rem;

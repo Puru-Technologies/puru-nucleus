@@ -233,21 +233,10 @@ fn get_credentials_path() -> Result<String, NucleusError> {
 async fn create_gcs_client(
     credentials_path: &str,
 ) -> Result<google_cloud_storage::client::Client, NucleusError> {
-    let cred_file =
-        google_cloud_auth::credentials::CredentialsFile::new_from_file(credentials_path.to_string())
-            .await
-            .map_err(|e| {
-                NucleusError::GcsConnection(format!("Failed to load credentials: {}", e))
-            })?;
-
-    let client_config = google_cloud_storage::client::ClientConfig::default()
-        .with_credentials(cred_file)
-        .await
-        .map_err(|e| {
-            NucleusError::GcsConnection(format!("Failed to configure GCS client: {}", e))
-        })?;
-
-    Ok(google_cloud_storage::client::Client::new(client_config))
+    // Reuse the releases client builder — narrow `devstorage.read_write` scope
+    // (see releases::create_gcs_client), avoiding the broad cloud-platform scope
+    // some service accounts reject. read_write covers reading/writing config files.
+    crate::releases::create_gcs_client(credentials_path).await
 }
 
 async fn download_gcs_bytes(

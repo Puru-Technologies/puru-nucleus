@@ -1,11 +1,5 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatBadgeModule } from '@angular/material/badge';
 import {
   HospitalMessage,
   MessageDownloadResult,
@@ -20,12 +14,6 @@ import { NotificationService } from '../../core/services/notification.service';
   standalone: true,
   imports: [
     CommonModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatChipsModule,
-    MatProgressSpinnerModule,
-    MatBadgeModule,
   ],
   template: `
     <div class="inbox-page p-4">
@@ -37,67 +25,67 @@ import { NotificationService } from '../../core/services/notification.service';
             <span class="unread-badge">{{ unreadCount }}</span>
           }
         </div>
-        <button mat-stroked-button (click)="loadMessages()">
-          <mat-icon>refresh</mat-icon>
+        <button class="btn btn-stroked" (click)="loadMessages()">
+          <span class="material-icons">refresh</span>
           Refresh
         </button>
       </div>
 
       <!-- Summary cards -->
       <div class="summary-row">
-        <mat-card class="summary-card">
-          <mat-card-content>
-            <mat-icon>mail</mat-icon>
+        <div class="card card-pad summary-card">
+          <div class="summary-card-content">
+            <span class="material-icons">mail</span>
             <span class="count">{{ messages.length }}</span>
             <span class="label">Total</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
 
-        <mat-card class="summary-card unread" [class.active]="unreadCount > 0">
-          <mat-card-content>
-            <mat-icon>mark_email_unread</mat-icon>
+        <div class="card card-pad summary-card unread" [class.active]="unreadCount > 0">
+          <div class="summary-card-content">
+            <span class="material-icons">mark_email_unread</span>
             <span class="count">{{ unreadCount }}</span>
             <span class="label">Unread</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
 
-        <mat-card class="summary-card high-priority" [class.active]="highPriorityCount > 0">
-          <mat-card-content>
-            <mat-icon>priority_high</mat-icon>
+        <div class="card card-pad summary-card high-priority" [class.active]="highPriorityCount > 0">
+          <div class="summary-card-content">
+            <span class="material-icons">priority_high</span>
             <span class="count">{{ highPriorityCount }}</span>
             <span class="label">High Priority</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       </div>
 
       @if (loading) {
         <div class="loading-container">
-          <mat-spinner diameter="48"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
         </div>
       } @else if (messages.length === 0) {
-        <mat-card class="empty-state">
-          <mat-card-content>
-            <mat-icon>mail_outline</mat-icon>
+        <div class="card card-pad empty-state">
+          <div class="empty-state-content">
+            <span class="material-icons">mail_outline</span>
             <p>No messages</p>
             <span>Your inbox is empty</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       } @else {
         <div class="messages-list">
           @for (msg of messages; track msg.id) {
-            <mat-card
-              class="message-card"
-              [class]="'priority-' + msg.priority"
+            <div
+              class="card card-pad message-card"
+              [class]="'card card-pad message-card priority-' + msg.priority"
               [class.unread]="!msg.read"
               [class.selected]="selectedMessage?.id === msg.id"
               (click)="selectMessage(msg)">
-              <mat-card-content>
+              <div class="message-card-content">
                 <div class="message-header">
-                  <mat-icon class="type-icon">{{ getTypeIcon(msg.message_type) }}</mat-icon>
+                  <span class="material-icons type-icon">{{ getTypeIcon(msg.message_type) }}</span>
                   <div class="message-info">
                     <div class="message-subject">{{ msg.subject }}</div>
                     <div class="message-meta">
-                      <mat-chip size="small">{{ formatType(msg.message_type) }}</mat-chip>
+                      <span class="chip">{{ formatType(msg.message_type) }}</span>
                       @if (msg.priority !== 'normal') {
                         <span class="priority-label" [class]="'priority-text-' + msg.priority">
                           {{ msg.priority }}
@@ -113,7 +101,7 @@ import { NotificationService } from '../../core/services/notification.service';
                     <span class="unread-dot"></span>
                   }
                   @if (msg.attachments.length > 0) {
-                    <mat-icon class="attachment-icon">attach_file</mat-icon>
+                    <span class="material-icons attachment-icon">attach_file</span>
                   }
                 </div>
 
@@ -129,7 +117,7 @@ import { NotificationService } from '../../core/services/notification.service';
                         <h4>Attachments</h4>
                         @for (att of msg.attachments; track att.filename; let i = $index) {
                           <div class="attachment-item">
-                            <mat-icon>insert_drive_file</mat-icon>
+                            <span class="material-icons">insert_drive_file</span>
                             <div class="attachment-info">
                               <span class="attachment-name">{{ att.filename }}</span>
                               @if (att.file_size) {
@@ -137,29 +125,29 @@ import { NotificationService } from '../../core/services/notification.service';
                               }
                             </div>
                             <div class="attachment-actions">
-                              <button mat-stroked-button
+                              <button class="btn btn-stroked btn-sm"
                                       [disabled]="downloading.get(msg.id + '_' + i)"
                                       (click)="downloadAttachment(msg.id, i, att.file_url, $event)">
                                 @if (downloading.get(msg.id + '_' + i)) {
-                                  <mat-spinner diameter="16"></mat-spinner>
+                                  <span class="spinner"></span>
                                 } @else {
-                                  <mat-icon>download</mat-icon>
+                                  <span class="material-icons">download</span>
                                 }
                                 Download
                               </button>
                               @if (isConfigFile(att.filename)) {
-                                <button mat-stroked-button
+                                <button class="btn btn-stroked btn-sm"
                                         [disabled]="!downloadedPaths.get(msg.id + '_' + i)"
                                         (click)="applyConfig(downloadedPaths.get(msg.id + '_' + i)!, $event)">
-                                  <mat-icon>settings_applications</mat-icon>
+                                  <span class="material-icons">settings_applications</span>
                                   Apply Config
                                 </button>
                               }
                               @if (isCertFile(att.filename)) {
-                                <button mat-stroked-button
+                                <button class="btn btn-stroked btn-sm"
                                         [disabled]="!downloadedPaths.get(msg.id + '_' + i)"
                                         (click)="installCert(downloadedPaths.get(msg.id + '_' + i)!, $event)">
-                                  <mat-icon>verified_user</mat-icon>
+                                  <span class="material-icons">verified_user</span>
                                   Install Cert
                                 </button>
                               }
@@ -170,8 +158,8 @@ import { NotificationService } from '../../core/services/notification.service';
                     }
                   </div>
                 }
-              </mat-card-content>
-            </mat-card>
+              </div>
+            </div>
           }
         </div>
       }
@@ -224,14 +212,14 @@ import { NotificationService } from '../../core/services/notification.service';
         opacity: 1;
       }
 
-      mat-card-content {
+      .summary-card-content {
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 0.25rem;
       }
 
-      mat-icon {
+      .material-icons {
         font-size: 2rem;
         width: 2rem;
         height: 2rem;
@@ -249,12 +237,12 @@ import { NotificationService } from '../../core/services/notification.service';
       }
 
       &.unread {
-        mat-icon, .count { color: #2196f3; }
+        .material-icons, .count { color: #2196f3; }
         &.active { border-left: 4px solid #2196f3; }
       }
 
       &.high-priority {
-        mat-icon, .count { color: #ff9800; }
+        .material-icons, .count { color: #ff9800; }
         &.active { border-left: 4px solid #ff9800; }
       }
     }
@@ -271,7 +259,13 @@ import { NotificationService } from '../../core/services/notification.service';
       padding: 3rem;
       color: #6366f1;
 
-      mat-icon {
+      .empty-state-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .material-icons {
         font-size: 4rem;
         width: 4rem;
         height: 4rem;
@@ -432,7 +426,7 @@ import { NotificationService } from '../../core/services/notification.service';
       border-radius: 8px;
       margin-bottom: 0.5rem;
 
-      mat-icon:first-child {
+      .material-icons:first-child {
         color: #999;
       }
     }

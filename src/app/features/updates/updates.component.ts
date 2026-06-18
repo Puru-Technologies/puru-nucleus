@@ -1,10 +1,5 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { TauriService, NucleusUpdateInfo, ServiceUpdateInfo, DockerUpdateResult, UpdateRecord } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
@@ -12,43 +7,40 @@ import { NotificationService } from '../../core/services/notification.service';
   selector: 'app-updates',
   standalone: true,
   imports: [
-    CommonModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatChipsModule,
-    MatProgressSpinnerModule
+    CommonModule
   ],
   template: `
     <div class="updates-page p-4">
       <div class="header flex justify-between items-center">
         <h1>Updates</h1>
-        <button mat-stroked-button (click)="checkAll()" [disabled]="checking">
+        <button class="btn btn-stroked" (click)="checkAll()" [disabled]="checking">
           @if (checking) {
-            <mat-spinner diameter="18"></mat-spinner>
+            <span class="spinner" style="width:18px;height:18px;border-width:2px"></span>
           } @else {
-            <mat-icon>refresh</mat-icon>
+            <span class="material-icons">refresh</span>
           }
           Check for Updates
         </button>
       </div>
 
       <!-- Nucleus Update Card -->
-      <mat-card class="nucleus-card">
-        <mat-card-header>
-          <mat-icon mat-card-avatar>hub</mat-icon>
-          <mat-card-title>Nucleus</mat-card-title>
-          <mat-card-subtitle>Desktop application</mat-card-subtitle>
-        </mat-card-header>
-        <mat-card-content>
+      <div class="card card-pad nucleus-card">
+        <div class="card-header">
+          <span class="material-icons card-avatar">hub</span>
+          <div class="card-titles">
+            <div class="card-title">Nucleus</div>
+            <div class="card-subtitle">Desktop application</div>
+          </div>
+        </div>
+        <div class="card-content">
           @if (nucleusLoading) {
             <div class="loading-row">
-              <mat-spinner diameter="24"></mat-spinner>
+              <span class="spinner" style="width:24px;height:24px;border-width:2px"></span>
               <span>Checking for updates...</span>
             </div>
           } @else if (nucleusError) {
             <div class="error-row">
-              <mat-icon>error_outline</mat-icon>
+              <span class="material-icons">error_outline</span>
               <span>{{ nucleusError }}</span>
             </div>
           } @else if (nucleusInfo) {
@@ -62,9 +54,9 @@ import { NotificationService } from '../../core/services/notification.service';
                   <span class="label">Latest Version</span>
                   <span class="value new">v{{ nucleusInfo.latest_version }}</span>
                 </div>
-                <mat-chip class="update-chip">Update Available</mat-chip>
+                <span class="chip update-chip">Update Available</span>
               } @else {
-                <mat-chip class="up-to-date-chip">Up to Date</mat-chip>
+                <span class="chip up-to-date-chip">Up to Date</span>
               }
             </div>
 
@@ -78,19 +70,19 @@ import { NotificationService } from '../../core/services/notification.service';
                 </div>
                 <p class="release-notes">{{ nucleusInfo.release_notes }}</p>
                 <div class="nucleus-actions">
-                  <button mat-raised-button (click)="downloadNucleus()" [disabled]="nucleusDownloading || nucleusInstalling">
+                  <button class="btn btn-stroked" (click)="downloadNucleus()" [disabled]="nucleusDownloading || nucleusInstalling">
                     @if (nucleusDownloading) {
-                      <mat-spinner diameter="18"></mat-spinner>
+                      <span class="spinner" style="width:18px;height:18px;border-width:2px"></span>
                     } @else {
-                      <mat-icon>download</mat-icon>
+                      <span class="material-icons">download</span>
                     }
                     Download
                   </button>
-                  <button mat-raised-button color="primary" (click)="downloadAndInstallNucleus()" [disabled]="nucleusDownloading || nucleusInstalling">
+                  <button class="btn btn-primary" (click)="downloadAndInstallNucleus()" [disabled]="nucleusDownloading || nucleusInstalling">
                     @if (nucleusInstalling) {
-                      <mat-spinner diameter="18"></mat-spinner>
+                      <span class="spinner" style="width:18px;height:18px;border-width:2px"></span>
                     } @else {
-                      <mat-icon>system_update_alt</mat-icon>
+                      <span class="material-icons">system_update_alt</span>
                     }
                     Download &amp; Install
                   </button>
@@ -99,44 +91,44 @@ import { NotificationService } from '../../core/services/notification.service';
             }
           } @else {
             <div class="empty-row">
-              <mat-icon>info_outline</mat-icon>
+              <span class="material-icons">info_outline</span>
               <span>Click "Check for Updates" to get started</span>
             </div>
           }
-        </mat-card-content>
-      </mat-card>
+        </div>
+      </div>
 
       <!-- Service Updates -->
       <h2>Service Updates</h2>
 
       @if (servicesLoading) {
         <div class="loading-container">
-          <mat-spinner diameter="36"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
           <span>Checking services...</span>
         </div>
       } @else if (servicesError) {
-        <mat-card class="error-card">
-          <mat-card-content>
-            <mat-icon>error_outline</mat-icon>
+        <div class="card card-pad error-card">
+          <div class="card-content">
+            <span class="material-icons">error_outline</span>
             <span>{{ servicesError }}</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       } @else if (serviceUpdates.length === 0 && !servicesLoading) {
-        <mat-card class="empty-state">
-          <mat-card-content>
-            <mat-icon>inventory_2</mat-icon>
+        <div class="card card-pad empty-state">
+          <div class="card-content">
+            <span class="material-icons">inventory_2</span>
             <p>No services found</p>
             <span>No running Puru services detected. Make sure Docker is running.</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       } @else {
         <div class="services-list">
           @for (svc of serviceUpdates; track svc.service) {
-            <mat-card class="service-card" [class.has-update]="svc.update_available">
-              <mat-card-content>
+            <div class="card card-pad service-card" [class.has-update]="svc.update_available">
+              <div class="card-content">
                 <div class="service-row">
                   <div class="service-name">
-                    <mat-icon>{{ svc.update_available ? 'upgrade' : 'check_circle' }}</mat-icon>
+                    <span class="material-icons">{{ svc.update_available ? 'upgrade' : 'check_circle' }}</span>
                     <span>{{ svc.service }}</span>
                   </div>
                   <div class="service-versions">
@@ -144,7 +136,7 @@ import { NotificationService } from '../../core/services/notification.service';
                       <span class="label">Current</span>
                       <span class="value">{{ svc.current_version }}</span>
                     </div>
-                    <mat-icon class="arrow">arrow_forward</mat-icon>
+                    <span class="material-icons arrow">arrow_forward</span>
                     <div class="version-col">
                       <span class="label">Latest</span>
                       <span class="value" [class.new]="svc.update_available">{{ svc.latest_version }}</span>
@@ -152,41 +144,41 @@ import { NotificationService } from '../../core/services/notification.service';
                   </div>
                   <div class="service-status">
                     @if (svc.update_available) {
-                      <mat-chip class="update-chip">Update Available</mat-chip>
+                      <span class="chip update-chip">Update Available</span>
                     } @else {
-                      <mat-chip class="up-to-date-chip">Current</mat-chip>
+                      <span class="chip up-to-date-chip">Current</span>
                     }
                   </div>
                   <div class="service-actions">
                     @if (svc.update_available) {
-                      <button mat-raised-button color="primary"
+                      <button class="btn btn-primary"
                               (click)="updateDockerService(svc)"
                               [disabled]="updatingService === svc.service || rollingBackService === svc.service">
                         @if (updatingService === svc.service) {
-                          <mat-spinner diameter="16"></mat-spinner>
+                          <span class="spinner" style="width:16px;height:16px;border-width:2px"></span>
                         } @else {
-                          <mat-icon>system_update_alt</mat-icon>
+                          <span class="material-icons">system_update_alt</span>
                         }
                         Update
                       </button>
-                      <button mat-stroked-button
+                      <button class="btn btn-stroked"
                               (click)="downloadServiceJar(svc)"
                               [disabled]="downloadingService === svc.service">
                         @if (downloadingService === svc.service) {
-                          <mat-spinner diameter="16"></mat-spinner>
+                          <span class="spinner" style="width:16px;height:16px;border-width:2px"></span>
                         } @else {
-                          <mat-icon>download</mat-icon>
+                          <span class="material-icons">download</span>
                         }
                         JAR
                       </button>
                     } @else {
-                      <button mat-stroked-button
+                      <button class="btn btn-stroked"
                               (click)="rollbackDockerService(svc.service)"
                               [disabled]="rollingBackService === svc.service || updatingService === svc.service">
                         @if (rollingBackService === svc.service) {
-                          <mat-spinner diameter="16"></mat-spinner>
+                          <span class="spinner" style="width:16px;height:16px;border-width:2px"></span>
                         } @else {
-                          <mat-icon>undo</mat-icon>
+                          <span class="material-icons">undo</span>
                         }
                         Rollback
                       </button>
@@ -198,8 +190,8 @@ import { NotificationService } from '../../core/services/notification.service';
                     <span class="label">Changes:</span> {{ svc.changelog }}
                   </div>
                 }
-              </mat-card-content>
-            </mat-card>
+              </div>
+            </div>
           }
         </div>
       }
@@ -209,39 +201,39 @@ import { NotificationService } from '../../core/services/notification.service';
 
       @if (historyLoading) {
         <div class="loading-container">
-          <mat-spinner diameter="24"></mat-spinner>
+          <span class="spinner" style="width:24px;height:24px;border-width:2px"></span>
           <span>Loading history...</span>
         </div>
       } @else if (updateHistory.length === 0) {
-        <mat-card class="empty-state">
-          <mat-card-content>
-            <mat-icon>history</mat-icon>
+        <div class="card card-pad empty-state">
+          <div class="card-content">
+            <span class="material-icons">history</span>
             <p>No update history</p>
             <span>Docker update records will appear here after updates are performed.</span>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       } @else {
         <div class="history-list">
           @for (record of updateHistory; track record.timestamp) {
-            <mat-card class="history-card" [class.success]="record.success && !record.rolled_back" [class.failed]="!record.success || record.rolled_back">
-              <mat-card-content>
+            <div class="card card-pad history-card" [class.success]="record.success && !record.rolled_back" [class.failed]="!record.success || record.rolled_back">
+              <div class="card-content">
                 <div class="history-row">
                   <div class="history-service">
-                    <mat-icon>{{ record.success && !record.rolled_back ? 'check_circle' : 'error' }}</mat-icon>
+                    <span class="material-icons">{{ record.success && !record.rolled_back ? 'check_circle' : 'error' }}</span>
                     <span class="service-label">{{ record.service }}</span>
                   </div>
                   <div class="history-images">
                     <code>{{ shortenImage(record.previous_image) }}</code>
-                    <mat-icon class="arrow">arrow_forward</mat-icon>
+                    <span class="material-icons arrow">arrow_forward</span>
                     <code>{{ shortenImage(record.new_image) }}</code>
                   </div>
                   <div class="history-badges">
                     @if (record.rolled_back) {
-                      <mat-chip class="rollback-chip">Rolled Back</mat-chip>
+                      <span class="chip rollback-chip">Rolled Back</span>
                     } @else if (record.success) {
-                      <mat-chip class="up-to-date-chip">Success</mat-chip>
+                      <span class="chip up-to-date-chip">Success</span>
                     } @else {
-                      <mat-chip class="update-chip">Failed</mat-chip>
+                      <span class="chip update-chip">Failed</span>
                     }
                   </div>
                   <div class="history-meta">
@@ -249,8 +241,8 @@ import { NotificationService } from '../../core/services/notification.service';
                     <span class="duration">{{ record.duration_seconds }}s</span>
                   </div>
                 </div>
-              </mat-card-content>
-            </mat-card>
+              </div>
+            </div>
           }
         </div>
       }
@@ -278,17 +270,34 @@ import { NotificationService } from '../../core/services/notification.service';
     }
 
     /* Nucleus card */
-    .nucleus-card {
-      mat-card-header {
-        margin-bottom: 1rem;
-      }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
 
-      mat-icon[mat-card-avatar] {
-        background: linear-gradient(135deg, #6366f1, #8b5cf6);
-        padding: 8px;
-        border-radius: 50%;
-        color: white;
-      }
+    .card-avatar {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      padding: 8px;
+      border-radius: 50%;
+      color: white;
+    }
+
+    .card-titles {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #333;
+    }
+
+    .card-subtitle {
+      font-size: 0.8rem;
+      color: #666;
     }
 
     .version-row {
@@ -381,7 +390,7 @@ import { NotificationService } from '../../core/services/notification.service';
       color: #666;
     }
 
-    .error-card mat-card-content {
+    .error-card .card-content {
       display: flex;
       align-items: center;
       gap: 0.75rem;
@@ -393,7 +402,7 @@ import { NotificationService } from '../../core/services/notification.service';
       padding: 2rem;
       color: #666;
 
-      mat-icon {
+      .material-icons {
         font-size: 3rem;
         width: 3rem;
         height: 3rem;
@@ -438,17 +447,17 @@ import { NotificationService } from '../../core/services/notification.service';
       min-width: 160px;
       font-weight: 500;
 
-      mat-icon {
+      .material-icons {
         font-size: 20px;
         width: 20px;
         height: 20px;
       }
 
-      .has-update & mat-icon {
+      .has-update & .material-icons {
         color: #ff9800;
       }
 
-      :not(.has-update) & mat-icon {
+      :not(.has-update) & .material-icons {
         color: #4caf50;
       }
     }
@@ -542,17 +551,17 @@ import { NotificationService } from '../../core/services/notification.service';
       gap: 0.5rem;
       min-width: 140px;
 
-      mat-icon {
+      .material-icons {
         font-size: 20px;
         width: 20px;
         height: 20px;
       }
 
-      .success & mat-icon {
+      .success & .material-icons {
         color: #4caf50;
       }
 
-      .failed & mat-icon {
+      .failed & .material-icons {
         color: #f44336;
       }
 

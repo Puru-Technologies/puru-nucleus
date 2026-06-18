@@ -1,17 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatStepperModule } from '@angular/material/stepper';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatListModule } from '@angular/material/list';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatDividerModule } from '@angular/material/divider';
-import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { Router } from '@angular/router';
 import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult, InstallProgress, InstallResult } from '../../core/services/tauri.service';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -30,33 +19,22 @@ interface SetupStep {
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatStepperModule,
-    MatProgressSpinnerModule,
-    MatProgressBarModule,
-    MatListModule,
-    MatFormFieldModule,
-    MatInputModule,
-    MatDividerModule,
-    MatButtonToggleModule
+    FormsModule
   ],
   template: `
     <div class="setup-page">
-      <mat-card class="setup-card">
-        <mat-card-header>
-          <mat-card-title>PURU NUCLEUS - Setup</mat-card-title>
-          <mat-card-subtitle>{{ config?.hospital_code || 'Loading...' }}</mat-card-subtitle>
-        </mat-card-header>
+      <div class="card card-pad setup-card">
+        <div class="card-head">
+          <div class="card-title">PURU NUCLEUS - Setup</div>
+          <div class="card-subtitle">{{ config?.hospital_code || 'Loading...' }}</div>
+        </div>
 
-        <mat-card-content>
+        <div class="card-body">
           <!-- Phase 1: Infrastructure Configuration -->
           @if (!configSaved) {
             <div class="setup-section">
               <h3>
-                <mat-icon class="section-icon">settings</mat-icon>
+                <span class="material-icons section-icon">settings</span>
                 Step 1: Configure Infrastructure
               </h3>
               <p class="section-desc">
@@ -67,38 +45,38 @@ interface SetupStep {
               @if (config) {
                 <div class="config-form">
                   <div class="form-row">
-                    <mat-form-field appearance="outline" class="form-field">
-                      <mat-label>MySQL Host</mat-label>
-                      <input matInput [(ngModel)]="config.mysql_host" placeholder="127.0.0.1">
-                    </mat-form-field>
-                    <mat-form-field appearance="outline" class="form-field-sm">
-                      <mat-label>Port</mat-label>
-                      <input matInput type="number" [(ngModel)]="config.mysql_port" placeholder="3306">
-                    </mat-form-field>
+                    <div class="field form-field">
+                      <label>MySQL Host</label>
+                      <input class="input" [(ngModel)]="config.mysql_host" placeholder="127.0.0.1">
+                    </div>
+                    <div class="field form-field-sm">
+                      <label>Port</label>
+                      <input class="input" type="number" [(ngModel)]="config.mysql_port" placeholder="3306">
+                    </div>
                   </div>
 
                   <div class="form-row">
-                    <mat-form-field appearance="outline" class="form-field">
-                      <mat-label>MySQL User</mat-label>
-                      <input matInput [(ngModel)]="config.mysql_user" placeholder="root">
-                    </mat-form-field>
-                    <mat-form-field appearance="outline" class="form-field">
-                      <mat-label>MySQL Password</mat-label>
-                      <input matInput type="password" [(ngModel)]="config.mysql_password">
-                      <mat-hint>Root password for the MySQL server</mat-hint>
-                    </mat-form-field>
+                    <div class="field form-field">
+                      <label>MySQL User</label>
+                      <input class="input" [(ngModel)]="config.mysql_user" placeholder="root">
+                    </div>
+                    <div class="field form-field">
+                      <label>MySQL Password</label>
+                      <input class="input" type="password" [(ngModel)]="config.mysql_password">
+                      <span class="field-hint">Root password for the MySQL server</span>
+                    </div>
                   </div>
 
                   <div class="mode-selector">
                     <span class="mode-label">Deployment Mode</span>
-                    <mat-button-toggle-group [(ngModel)]="config.deployment_mode" class="mode-toggle">
-                      <mat-button-toggle value="docker">
-                        <mat-icon>cloud</mat-icon> Docker
-                      </mat-button-toggle>
-                      <mat-button-toggle value="native">
-                        <mat-icon>computer</mat-icon> Native (JAR)
-                      </mat-button-toggle>
-                    </mat-button-toggle-group>
+                    <div class="seg">
+                      <button type="button" class="seg-btn" [class.active]="config.deployment_mode==='docker'" (click)="config.deployment_mode='docker'">
+                        <span class="material-icons">cloud</span> Docker
+                      </button>
+                      <button type="button" class="seg-btn" [class.active]="config.deployment_mode==='native'" (click)="config.deployment_mode='native'">
+                        <span class="material-icons">computer</span> Native (JAR)
+                      </button>
+                    </div>
                     <span class="mode-hint">
                       @if (config.deployment_mode === 'native') {
                         Everything runs natively — no Docker. MySQL, RabbitMQ, Nginx &amp; Java must be pre-installed on the host.
@@ -110,37 +88,37 @@ interface SetupStep {
 
                   @if (config.deployment_mode !== 'native') {
                   <div class="browse-row">
-                      <mat-form-field appearance="outline" class="flex-1">
-                        <mat-label>Docker Compose Path</mat-label>
-                        <input matInput [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
-                        <mat-hint>Path to docker-compose.yml</mat-hint>
-                      </mat-form-field>
+                      <div class="field flex-1">
+                        <label>Docker Compose Path</label>
+                        <input class="input" [(ngModel)]="config.docker_compose_path" placeholder="/home/puru/docker/docker-compose.yml">
+                        <span class="field-hint">Path to docker-compose.yml</span>
+                      </div>
                       @if (!isRemote) {
-                        <button mat-stroked-button type="button" (click)="browseComposePath()">
-                          <mat-icon>folder_open</mat-icon> Browse
+                        <button class="btn btn-stroked" type="button" (click)="browseComposePath()">
+                          <span class="material-icons">folder_open</span> Browse
                         </button>
                       }
                     </div>
                   }
 
                   <div class="browse-row">
-                    <mat-form-field appearance="outline" class="flex-1">
-                      <mat-label>Puru Data Directory</mat-label>
-                      <input matInput [(ngModel)]="puruDataPath" placeholder="/home/puru/puru-data">
-                      <mat-hint>Root directory for hospital data, documents, and uploads</mat-hint>
-                    </mat-form-field>
+                    <div class="field flex-1">
+                      <label>Puru Data Directory</label>
+                      <input class="input" [(ngModel)]="puruDataPath" placeholder="/home/puru/puru-data">
+                      <span class="field-hint">Root directory for hospital data, documents, and uploads</span>
+                    </div>
                     @if (!isRemote) {
-                      <button mat-stroked-button type="button" (click)="browsePuruDataPath()">
-                        <mat-icon>folder_open</mat-icon> Browse
+                      <button class="btn btn-stroked" type="button" (click)="browsePuruDataPath()">
+                        <span class="material-icons">folder_open</span> Browse
                       </button>
                     }
                   </div>
 
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Server IP (local network)</mat-label>
-                    <input matInput [(ngModel)]="config.server_ip" placeholder="192.168.1.100">
-                    <mat-hint>This machine's IP on the hospital LAN</mat-hint>
-                  </mat-form-field>
+                  <div class="field full-width">
+                    <label>Server IP (local network)</label>
+                    <input class="input" [(ngModel)]="config.server_ip" placeholder="192.168.1.100">
+                    <span class="field-hint">This machine's IP on the hospital LAN</span>
+                  </div>
 
                   <div class="creds-row">
                     <div class="creds-label">
@@ -148,13 +126,13 @@ interface SetupStep {
                       <span class="label-hint">For cloud backups and config sync</span>
                     </div>
                     @if (credsExists) {
-                      <span class="creds-ok"><mat-icon>check_circle</mat-icon> Configured</span>
+                      <span class="creds-ok"><span class="material-icons">check_circle</span> Configured</span>
                     } @else {
                       <span class="creds-missing">Not set</span>
                     }
                     @if (!isRemote) {
-                      <button mat-stroked-button type="button" (click)="browseCredentials()">
-                        <mat-icon>folder_open</mat-icon>
+                      <button class="btn btn-stroked" type="button" (click)="browseCredentials()">
+                        <span class="material-icons">folder_open</span>
                         {{ credsExists ? 'Replace' : 'Browse' }}
                       </button>
                     } @else {
@@ -164,14 +142,14 @@ interface SetupStep {
 
                   @if (configError) {
                     <div class="config-error">
-                      <mat-icon>error</mat-icon>
+                      <span class="material-icons">error</span>
                       <span>{{ configError }}</span>
                     </div>
                   }
                 </div>
               } @else {
                 <div class="loading-inline">
-                  <mat-spinner diameter="24"></mat-spinner>
+                  <span class="spinner" style="width:24px;height:24px"></span>
                   <span>Loading configuration...</span>
                 </div>
               }
@@ -181,36 +159,36 @@ interface SetupStep {
           <!-- Phase 2: Prerequisites + Setup (shown after config is saved) -->
           @if (configSaved) {
             <div class="config-saved-banner">
-              <mat-icon>check_circle</mat-icon>
+              <span class="material-icons">check_circle</span>
               <div>
                 <strong>Configuration saved</strong>
                 <span>MySQL {{ config!.mysql_user }}{{'@'}}{{ config!.mysql_host }}:{{ config!.mysql_port }}</span>
               </div>
-              <button mat-stroked-button (click)="editConfig()">Edit</button>
+              <button class="btn btn-stroked" (click)="editConfig()">Edit</button>
             </div>
 
             <!-- Mode Badge -->
             <div class="mode-badge" [class.native]="config!.deployment_mode === 'native'">
-              <mat-icon>{{ config!.deployment_mode === 'native' ? 'computer' : 'cloud' }}</mat-icon>
+              <span class="material-icons">{{ config!.deployment_mode === 'native' ? 'computer' : 'cloud' }}</span>
               <span>{{ config!.deployment_mode === 'native' ? 'Native (JAR) Mode' : 'Docker Mode' }}</span>
             </div>
 
             <!-- Detection Result (Docker only) -->
             @if (detectionResult?.found && config!.deployment_mode !== 'native') {
               <div class="detection-banner">
-                <mat-icon>info</mat-icon>
+                <span class="material-icons">info</span>
                 <div class="detection-info">
                   <strong>Existing Puru Setup Detected</strong>
                   <p>Found {{ detectionResult!.containers.length }} containers</p>
                 </div>
                 <div class="detection-actions">
-                  <button mat-stroked-button (click)="adoptExisting()" [disabled]="adopting">
+                  <button class="btn btn-stroked" (click)="adoptExisting()" [disabled]="adopting">
                     @if (adopting) {
-                      <mat-spinner diameter="18"></mat-spinner>
+                      <span class="spinner" style="width:18px;height:18px"></span>
                     }
                     Adopt Existing
                   </button>
-                  <button mat-stroked-button (click)="freshInstall()">
+                  <button class="btn btn-stroked" (click)="freshInstall()">
                     Fresh Install
                   </button>
                 </div>
@@ -220,7 +198,7 @@ interface SetupStep {
             <!-- Mismatch Warning -->
             @if (mismatchError) {
               <div class="mismatch-error">
-                <mat-icon>error</mat-icon>
+                <span class="material-icons">error</span>
                 <div>
                   <strong>Hospital Code Mismatch</strong>
                   <p>{{ mismatchError }}</p>
@@ -232,7 +210,7 @@ interface SetupStep {
             @if (configMismatches.length > 0) {
               <div class="mismatch-panel">
                 <div class="mismatch-header">
-                  <mat-icon>warning</mat-icon>
+                  <span class="material-icons">warning</span>
                   <strong>Config values differ from detected environment</strong>
                 </div>
                 <div class="mismatch-list">
@@ -240,12 +218,12 @@ interface SetupStep {
                     <div class="mismatch-item">
                       <span class="mismatch-field">{{ m.field }}</span>
                       <div class="mismatch-choices">
-                        <button mat-stroked-button [class.selected]="m.choice === 'config'"
-                                (click)="m.choice = 'config'" class="choice-btn">
+                        <button class="btn btn-stroked choice-btn" [class.selected]="m.choice === 'config'"
+                                (click)="m.choice = 'config'">
                           Keep: {{ m.config_value }}
                         </button>
-                        <button mat-stroked-button [class.selected]="m.choice === 'detected'"
-                                (click)="m.choice = 'detected'" class="choice-btn">
+                        <button class="btn btn-stroked choice-btn" [class.selected]="m.choice === 'detected'"
+                                (click)="m.choice = 'detected'">
                           Use detected: {{ m.detected_value }}
                         </button>
                       </div>
@@ -253,7 +231,7 @@ interface SetupStep {
                   }
                 </div>
                 <div class="mismatch-actions">
-                  <button mat-raised-button color="primary" (click)="applyMismatchChoices()">
+                  <button class="btn btn-primary" (click)="applyMismatchChoices()">
                     Apply & Continue
                   </button>
                 </div>
@@ -263,37 +241,39 @@ interface SetupStep {
             <!-- Prerequisites Section -->
             <div class="setup-section">
               <h3>Prerequisites</h3>
-              <mat-list>
+              <div class="prereq-list">
                 @for (prereq of prerequisites; track prereq.name) {
-                  <mat-list-item>
-                    <mat-icon matListItemIcon [class]="prereq.installed ? 'status-success' : 'status-error'">
+                  <div class="prereq-row">
+                    <span class="material-icons" [class]="prereq.installed ? 'status-success' : 'status-error'">
                       {{ prereq.installed ? 'check_circle' : 'cancel' }}
-                    </mat-icon>
-                    <span matListItemTitle>{{ prereq.name }}</span>
-                    <span matListItemLine>
-                      @if (prereq.installed) {
-                        Version {{ prereq.version }}
-                      } @else if (prereq.required_version) {
-                        Not installed (requires {{ prereq.required_version }}+)
-                      } @else {
-                        Not installed
-                      }
                     </span>
-                  </mat-list-item>
+                    <div class="prereq-text">
+                      <span class="prereq-name">{{ prereq.name }}</span>
+                      <span class="prereq-line">
+                        @if (prereq.installed) {
+                          Version {{ prereq.version }}
+                        } @else if (prereq.required_version) {
+                          Not installed (requires {{ prereq.required_version }}+)
+                        } @else {
+                          Not installed
+                        }
+                      </span>
+                    </div>
+                  </div>
                 }
-              </mat-list>
+              </div>
 
               <!-- Re-check / Install Missing Buttons -->
               <div class="prereq-actions">
                 @if (!installing) {
-                  <button mat-stroked-button (click)="recheckPrerequisites()" [disabled]="recheckingPrereqs">
-                    <mat-icon>{{ recheckingPrereqs ? 'hourglass_empty' : 'refresh' }}</mat-icon>
+                  <button class="btn btn-stroked" (click)="recheckPrerequisites()" [disabled]="recheckingPrereqs">
+                    <span class="material-icons">{{ recheckingPrereqs ? 'hourglass_empty' : 'refresh' }}</span>
                     {{ recheckingPrereqs ? 'Checking...' : 'Re-check' }}
                   </button>
                 }
                 @if (installablePrereqs.length > 0 && !installing) {
-                  <button mat-raised-button color="accent" (click)="installMissing()">
-                    <mat-icon>download</mat-icon>
+                  <button class="btn btn-primary" (click)="installMissing()">
+                    <span class="material-icons">download</span>
                     Install {{ installableNames }}
                   </button>
                   <span class="install-hint">Downloads and installs automatically.</span>
@@ -304,13 +284,13 @@ interface SetupStep {
               @if (installing && installProgress) {
                 <div class="install-progress-card">
                   <div class="install-progress-header">
-                    <mat-icon>{{ installProgress.stage === 'completed' ? 'check_circle' : installProgress.stage === 'failed' ? 'error' : 'downloading' }}</mat-icon>
+                    <span class="material-icons">{{ installProgress.stage === 'completed' ? 'check_circle' : installProgress.stage === 'failed' ? 'error' : 'downloading' }}</span>
                     <span><strong>{{ installProgress.software }}:</strong> {{ installProgress.message }}</span>
                   </div>
-                  <mat-progress-bar
-                    [mode]="installProgress.stage === 'installing' || installProgress.stage === 'verifying' ? 'indeterminate' : 'determinate'"
-                    [value]="installProgress.percent">
-                  </mat-progress-bar>
+                  <div class="pbar"
+                    [class.indeterminate]="installProgress.stage === 'installing' || installProgress.stage === 'verifying'">
+                    <div class="pbar-fill" [style.width.%]="installProgress.percent"></div>
+                  </div>
                 </div>
               }
 
@@ -319,7 +299,7 @@ interface SetupStep {
                 <div class="install-results">
                   @for (result of installResults; track result.software) {
                     <div class="install-result" [class.success]="result.success" [class.failure]="!result.success">
-                      <mat-icon>{{ result.success ? 'check_circle' : 'cancel' }}</mat-icon>
+                      <span class="material-icons">{{ result.success ? 'check_circle' : 'cancel' }}</span>
                       <span>{{ result.software }}: {{ result.success ? 'Installed (' + (result.version || 'ok') + ')' : result.error }}</span>
                     </div>
                   }
@@ -339,7 +319,7 @@ interface SetupStep {
                 @if (infraNotes.length > 0) {
                   <div class="infra-notes">
                     @for (note of infraNotes; track note) {
-                      <span class="infra-note"><mat-icon>info_outline</mat-icon> {{ note }}</span>
+                      <span class="infra-note"><span class="material-icons">info_outline</span> {{ note }}</span>
                     }
                   </div>
                 }
@@ -354,11 +334,11 @@ interface SetupStep {
                   <div class="step" [class]="'step-' + step.status">
                     <div class="step-indicator">
                       @if (step.status === 'completed') {
-                        <mat-icon>check</mat-icon>
+                        <span class="material-icons">check</span>
                       } @else if (step.status === 'in_progress') {
-                        <mat-spinner diameter="20"></mat-spinner>
+                        <span class="spinner" style="width:18px;height:18px"></span>
                       } @else if (step.status === 'error') {
-                        <mat-icon>error</mat-icon>
+                        <span class="material-icons">error</span>
                       } @else {
                         <span class="step-number">{{ i + 1 }}</span>
                       }
@@ -374,22 +354,46 @@ interface SetupStep {
               </div>
             </div>
 
+            <!-- Per-service activity (native start/sync step) -->
+            @if (nativeActions.length > 0) {
+              <div class="setup-section">
+                <h3>Service Activity</h3>
+                <div class="native-actions">
+                  @for (a of nativeActions; track a.service) {
+                    <div class="native-action" [class]="'na-' + a.action">
+                      <span class="material-icons">
+                        @switch (a.action) {
+                          @case ('started') { check_circle }
+                          @case ('already-running') { check_circle }
+                          @case ('removed') { delete_sweep }
+                          @case ('not-installed') { cloud_off }
+                          @default { error }
+                        }
+                      </span>
+                      <span class="na-name">{{ a.service }}</span>
+                      <span class="na-msg">{{ a.message }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+
             <!-- TLS Setup Result -->
             @if (setupComplete && tlsStatus?.configured) {
               <div class="setup-section">
                 <h3>
-                  <mat-icon class="section-icon" style="color:#4caf50">lock</mat-icon>
+                  <span class="material-icons section-icon" style="color:#4caf50">lock</span>
                   HTTPS Configured
                 </h3>
                 <div class="tls-info">
                   <p>HTTPS is ready. Client machines need a one-time certificate install.</p>
                   <div class="tls-actions">
-                    <button mat-raised-button color="primary" (click)="downloadClientScript()">
-                      <mat-icon>download</mat-icon>
+                    <button class="btn btn-primary" (click)="downloadClientScript()">
+                      <span class="material-icons">download</span>
                       Download Client Setup Script (.bat)
                     </button>
-                    <button mat-stroked-button (click)="copyNginxConfig()">
-                      <mat-icon>content_copy</mat-icon>
+                    <button class="btn btn-stroked" (click)="copyNginxConfig()">
+                      <span class="material-icons">content_copy</span>
                       Copy Nginx Config
                     </button>
                   </div>
@@ -404,26 +408,28 @@ interface SetupStep {
             <!-- Progress Bar -->
             @if (setupInProgress) {
               <div class="progress-section">
-                <mat-progress-bar mode="determinate" [value]="progressPercent"></mat-progress-bar>
+                <div class="pbar">
+                  <div class="pbar-fill" [style.width.%]="progressPercent"></div>
+                </div>
                 <span class="progress-text">{{ progressPercent }}% Complete</span>
               </div>
             }
           }
-        </mat-card-content>
+        </div>
 
-        <mat-card-actions>
-          <button mat-button (click)="cancel()">Cancel</button>
+        <div class="card-actions">
+          <button class="btn btn-stroked" (click)="cancel()">Cancel</button>
           @if (configSaved) {
-            <button mat-button (click)="viewLogs()">View Logs</button>
+            <button class="btn btn-stroked" (click)="viewLogs()">View Logs</button>
           }
 
           <!-- Save config button (Phase 1) -->
           @if (!configSaved && config) {
-            <button mat-raised-button color="primary"
+            <button class="btn btn-primary"
                     (click)="saveAndContinue()"
                     [disabled]="!config.mysql_password || configSaving">
               @if (configSaving) {
-                <mat-spinner diameter="18"></mat-spinner>
+                <span class="spinner" style="width:18px;height:18px"></span>
               }
               Save & Continue
             </button>
@@ -431,23 +437,23 @@ interface SetupStep {
 
           <!-- Start Setup button (Phase 2) -->
           @if (configSaved && !setupInProgress && !setupComplete) {
-            <button mat-raised-button color="primary" (click)="startSetup()" [disabled]="!allPrerequisitesMet">
+            <button class="btn btn-primary" (click)="startSetup()" [disabled]="!allPrerequisitesMet">
               Start Setup
             </button>
           }
           @if (setupComplete) {
-            <button mat-raised-button color="primary" (click)="finish()">
+            <button class="btn btn-primary" (click)="finish()">
               Finish
             </button>
           }
           @if (configSaved && !setupInProgress) {
-            <button mat-stroked-button color="warn" (click)="resetSetup()">
-              <mat-icon>restart_alt</mat-icon>
+            <button class="btn btn-danger" (click)="resetSetup()">
+              <span class="material-icons">restart_alt</span>
               Reset Setup
             </button>
           }
-        </mat-card-actions>
-      </mat-card>
+        </div>
+      </div>
     </div>
   `,
   styles: [`
@@ -463,6 +469,89 @@ interface SetupStep {
     .setup-card {
       max-width: 700px;
       width: 100%;
+    }
+
+    /* ── Card header / body / actions ─────── */
+    .card-head {
+      margin-bottom: 1rem;
+    }
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #333;
+    }
+    .card-subtitle {
+      font-size: 0.875rem;
+      color: #666;
+      margin-top: 2px;
+    }
+
+    .material-icons {
+      vertical-align: middle;
+    }
+
+    /* ── Segmented control ────────────────── */
+    .seg {
+      display: inline-flex;
+      border: 1px solid var(--border-card);
+      border-radius: 8px;
+      overflow: hidden;
+      width: fit-content;
+    }
+    .seg-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border: none;
+      background: #fff;
+      color: #555;
+      font: 500 0.875rem 'Inter', sans-serif;
+      cursor: pointer;
+
+      & + .seg-btn { border-left: 1px solid var(--border-card); }
+
+      .material-icons { font-size: 18px; width: 18px; height: 18px; }
+    }
+    .seg-btn.active {
+      background: var(--accent-indigo);
+      border-color: var(--accent-indigo);
+      color: #fff;
+    }
+
+    /* ── Progress bar ─────────────────────── */
+    .pbar {
+      position: relative;
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #e0e0e0;
+      overflow: hidden;
+    }
+    .pbar-fill {
+      height: 100%;
+      background: var(--accent-indigo);
+      border-radius: 3px;
+      transition: width 0.2s ease;
+    }
+    .pbar.indeterminate .pbar-fill {
+      width: 40% !important;
+      animation: pbar-indeterminate 1.2s infinite ease-in-out;
+    }
+    @keyframes pbar-indeterminate {
+      0%   { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+
+    /* ── Divider ──────────────────────────── */
+    .divider {
+      height: 1px;
+      background: var(--border-card);
+    }
+
+    .field-hint {
+      font-size: 0.7rem;
+      color: #999;
     }
 
     /* ── Config Form ──────────────────────── */
@@ -528,7 +617,7 @@ interface SetupStep {
       font-size: 0.875rem;
       margin-top: 0.5rem;
 
-      mat-icon {
+      .material-icons {
         font-size: 1.25rem;
         width: 1.25rem;
         height: 1.25rem;
@@ -557,18 +646,6 @@ interface SetupStep {
       font-weight: 500;
     }
 
-    .mode-toggle {
-      mat-button-toggle {
-        mat-icon {
-          font-size: 18px;
-          width: 18px;
-          height: 18px;
-          margin-right: 4px;
-          vertical-align: middle;
-        }
-      }
-    }
-
     .mode-hint {
       font-size: 0.75rem;
       color: #666;
@@ -586,7 +663,7 @@ interface SetupStep {
       font-weight: 500;
       color: #1565c0;
 
-      mat-icon {
+      .material-icons {
         font-size: 20px;
         width: 20px;
         height: 20px;
@@ -608,7 +685,7 @@ interface SetupStep {
       border-radius: 8px;
       margin-bottom: 1.5rem;
 
-      mat-icon {
+      .material-icons {
         color: #4caf50;
         font-size: 24px;
         width: 24px;
@@ -642,7 +719,7 @@ interface SetupStep {
       border-radius: 8px;
       margin-bottom: 1.5rem;
 
-      mat-icon {
+      .material-icons {
         color: #2196f3;
         font-size: 2rem;
         width: 2rem;
@@ -689,6 +766,32 @@ interface SetupStep {
       color: #f44336;
     }
 
+    /* ── Prerequisites list ───────────────── */
+    .prereq-list {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .prereq-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 4px;
+      border-bottom: 1px solid var(--border-card);
+
+      &:last-child { border-bottom: none; }
+
+      .material-icons { font-size: 22px; width: 22px; height: 22px; flex-shrink: 0; }
+
+      .prereq-text {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .prereq-name { font-weight: 500; font-size: 0.9rem; }
+      .prereq-line { font-size: 0.8rem; color: #666; }
+    }
+
     /* ── Install Missing ─────────────────── */
 
     .prereq-actions {
@@ -733,7 +836,7 @@ interface SetupStep {
         font-size: 12px;
         color: #1565c0;
 
-        mat-icon {
+        .material-icons {
           font-size: 16px;
           width: 16px;
           height: 16px;
@@ -755,7 +858,7 @@ interface SetupStep {
         margin-bottom: 10px;
         font-size: 14px;
 
-        mat-icon {
+        .material-icons {
           color: #1976d2;
           font-size: 20px;
           width: 20px;
@@ -782,16 +885,16 @@ interface SetupStep {
       &.success {
         background: #e8f5e9;
         color: #2e7d32;
-        mat-icon { color: #4caf50; }
+        .material-icons { color: #4caf50; }
       }
 
       &.failure {
         background: #ffebee;
         color: #c62828;
-        mat-icon { color: #f44336; }
+        .material-icons { color: #f44336; }
       }
 
-      mat-icon {
+      .material-icons {
         font-size: 18px;
         width: 18px;
         height: 18px;
@@ -802,6 +905,45 @@ interface SetupStep {
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
+    }
+
+    /* ── Per-service activity ─────────────── */
+    .native-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .native-action {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      background: #fafafa;
+
+      .material-icons { font-size: 18px; width: 18px; height: 18px; }
+
+      .na-name { font-weight: 600; min-width: 130px; }
+      .na-msg { color: #666; }
+
+      &.na-started, &.na-already-running {
+        background: #e8f5e9;
+        .material-icons { color: #4caf50; }
+      }
+      &.na-removed {
+        background: #ede7f6;
+        .material-icons { color: #673ab7; }
+      }
+      &.na-not-installed {
+        background: #fff3e0;
+        .material-icons { color: #e65100; }
+      }
+      &.na-failed {
+        background: #ffebee;
+        .material-icons { color: #f44336; }
+      }
     }
 
     .step {
@@ -866,7 +1008,7 @@ interface SetupStep {
       margin-top: 1.5rem;
       text-align: center;
 
-      mat-progress-bar {
+      .pbar {
         margin-bottom: 0.5rem;
       }
 
@@ -907,7 +1049,7 @@ interface SetupStep {
         font-size: 0.8rem;
         font-weight: 500;
 
-        mat-icon {
+        .material-icons {
           font-size: 16px;
           width: 16px;
           height: 16px;
@@ -949,11 +1091,12 @@ interface SetupStep {
       font-family: monospace;
     }
 
-    mat-card-actions {
+    .card-actions {
       display: flex;
       justify-content: flex-end;
       gap: 0.5rem;
       padding-top: 1rem;
+      margin-top: 1rem;
       border-top: 1px solid #eee;
     }
 
@@ -967,7 +1110,7 @@ interface SetupStep {
       margin-bottom: 1.5rem;
       color: #c62828;
 
-      mat-icon { font-size: 24px; width: 24px; height: 24px; flex-shrink: 0; margin-top: 2px; }
+      .material-icons { font-size: 24px; width: 24px; height: 24px; flex-shrink: 0; margin-top: 2px; }
       strong { display: block; margin-bottom: 4px; }
       p { margin: 0; font-size: 0.875rem; }
       .mismatch-hint { color: #666; margin-top: 4px; }
@@ -987,7 +1130,7 @@ interface SetupStep {
       margin-bottom: 1rem;
       color: #e65100;
 
-      mat-icon { font-size: 20px; width: 20px; height: 20px; }
+      .material-icons { font-size: 20px; width: 20px; height: 20px; }
     }
 
     .mismatch-list {
@@ -1070,6 +1213,7 @@ export class SetupComponent implements OnInit {
   configMismatches: Array<{ field: string; config_value: string; detected_value: string; choice: 'config' | 'detected' }> = [];
   enabledServices: string[] = [];
   infraNotes: string[] = [];
+  nativeActions: { service: string; action: string; success: boolean; message: string }[] = [];
 
   steps: SetupStep[] = [];
 
@@ -1092,8 +1236,10 @@ export class SetupComponent implements OnInit {
     { label: 'Configure RabbitMQ', status: 'pending' },
     { label: 'Generate environment files', status: 'pending' },
     { label: 'Pull JARs & JRE from cloud', status: 'pending' },
+    { label: 'Seed message queues', status: 'pending' },
     { label: 'Start native services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
+    { label: 'Seed database & templates', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
     { label: 'Install daemon service', status: 'pending' },
     { label: 'Configure HTTPS (TLS)', status: 'pending' }
@@ -1472,20 +1618,44 @@ export class SetupComponent implements OnInit {
   async startSetup(): Promise<void> {
     this.setupInProgress = true;
 
-    for (let i = 0; i < this.steps.length; i++) {
-      if (this.steps[i].status === 'completed') continue;
+    // Live per-service progress for the native start/sync step.
+    this.nativeActions = [];
+    let unlistenNative: UnlistenFn | null = null;
+    try {
+      unlistenNative = await listen<{ service: string; action: string; success: boolean; message: string }>(
+        'native-service-progress',
+        (event) => {
+          const incoming = event.payload;
+          const idx = this.nativeActions.findIndex(a => a.service === incoming.service);
+          if (idx >= 0) {
+            this.nativeActions[idx] = incoming;
+          } else {
+            this.nativeActions = [...this.nativeActions, incoming];
+          }
+        }
+      );
+    } catch {
+      // Events unavailable (e.g. remote) — non-fatal.
+    }
 
-      this.steps[i].status = 'in_progress';
+    try {
+      for (let i = 0; i < this.steps.length; i++) {
+        if (this.steps[i].status === 'completed') continue;
 
-      try {
-        await this.executeStep(i);
-        this.steps[i].status = 'completed';
-      } catch (error) {
-        this.steps[i].status = 'error';
-        this.steps[i].message = String(error);
-        this.setupInProgress = false;
-        return;
+        this.steps[i].status = 'in_progress';
+
+        try {
+          await this.executeStep(i);
+          this.steps[i].status = 'completed';
+        } catch (error) {
+          this.steps[i].status = 'error';
+          this.steps[i].message = String(error);
+          this.setupInProgress = false;
+          return;
+        }
       }
+    } finally {
+      if (unlistenNative) unlistenNative();
     }
 
     this.setupComplete = true;
@@ -1521,8 +1691,10 @@ export class SetupComponent implements OnInit {
       'setup_configure_rabbitmq',
       'setup_generate_env_files',
       'setup_pull_jars',
+      'setup_seed_queues',
       'setup_start_native_services',
       'setup_health_check',
+      'setup_seed_database',
       'setup_configure_backups',
       'setup_install_daemon',
       'setup_tls'

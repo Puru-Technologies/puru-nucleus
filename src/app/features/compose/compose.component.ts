@@ -1,16 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatExpansionModule } from '@angular/material/expansion';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatTabsModule } from '@angular/material/tabs';
-import { MatSlideToggleModule } from '@angular/material/slide-toggle';
-import { MatDividerModule } from '@angular/material/divider';
 import {
   TauriService,
   NucleusConfig,
@@ -30,16 +20,6 @@ import { NotificationService } from '../../core/services/notification.service';
   imports: [
     CommonModule,
     FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatFormFieldModule,
-    MatInputModule,
-    MatExpansionModule,
-    MatProgressSpinnerModule,
-    MatTabsModule,
-    MatSlideToggleModule,
-    MatDividerModule,
   ],
   template: `
     <div class="compose-page p-4">
@@ -47,166 +27,168 @@ import { NotificationService } from '../../core/services/notification.service';
 
       @if (loading) {
         <div class="loading-container">
-          <mat-spinner diameter="48"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
         </div>
       } @else {
         <!-- Status Banner -->
         @if (statusMessage) {
           <div class="status-banner" [class.downloaded]="fragmentsDownloaded" [class.existing]="!fragmentsDownloaded">
-            <mat-icon>{{ fragmentsDownloaded ? 'cloud_download' : 'check_circle' }}</mat-icon>
+            <span class="material-icons">{{ fragmentsDownloaded ? 'cloud_download' : 'check_circle' }}</span>
             <span>{{ statusMessage }}</span>
           </div>
         }
 
         <!-- Variables Panel -->
-        <mat-accordion>
-          <mat-expansion-panel>
-            <mat-expansion-panel-header>
-              <mat-panel-title>
-                <mat-icon>tune</mat-icon>
-                Template Variables
-              </mat-panel-title>
-              <mat-panel-description>
-                Configure placeholders before applying
-              </mat-panel-description>
-            </mat-expansion-panel-header>
+        <div class="card panel">
+          <button class="panel-header" type="button" (click)="panelOpen = !panelOpen">
+            <span class="panel-title">
+              <span class="material-icons">tune</span>
+              <span class="panel-title-text">
+                <span class="panel-title-main">Template Variables</span>
+                <span class="panel-title-desc">Configure placeholders before applying</span>
+              </span>
+            </span>
+            <span class="material-icons chevron" [class.open]="panelOpen">expand_more</span>
+          </button>
 
+          @if (panelOpen) {
+            <div class="panel-body card-pad">
             <div class="variables-grid">
-              <mat-form-field appearance="outline">
-                <mat-label>Hospital Code</mat-label>
-                <input matInput [(ngModel)]="variables.hospital_code">
-              </mat-form-field>
+              <div class="field">
+                <label>Hospital Code</label>
+                <input class="input" [(ngModel)]="variables.hospital_code">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Hospital Name</mat-label>
-                <input matInput [(ngModel)]="variables.hospital_name">
-              </mat-form-field>
+              <div class="field">
+                <label>Hospital Name</label>
+                <input class="input" [(ngModel)]="variables.hospital_name">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Address Line 2</mat-label>
-                <input matInput [(ngModel)]="variables.hospital_line2">
-              </mat-form-field>
+              <div class="field">
+                <label>Address Line 2</label>
+                <input class="input" [(ngModel)]="variables.hospital_line2">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Address Line 3</mat-label>
-                <input matInput [(ngModel)]="variables.hospital_line3">
-              </mat-form-field>
+              <div class="field">
+                <label>Address Line 3</label>
+                <input class="input" [(ngModel)]="variables.hospital_line3">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Registration No.</mat-label>
-                <input matInput [(ngModel)]="variables.hospital_reg_no">
-              </mat-form-field>
+              <div class="field">
+                <label>Registration No.</label>
+                <input class="input" [(ngModel)]="variables.hospital_reg_no">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Logo URL</mat-label>
-                <input matInput [(ngModel)]="variables.hospital_logo_url">
-              </mat-form-field>
+              <div class="field">
+                <label>Logo URL</label>
+                <input class="input" [(ngModel)]="variables.hospital_logo_url">
+              </div>
 
               <!-- Barcode prefixes -->
               <div class="barcode-header">
                 <span>Barcode Prefixes</span>
-                <button mat-stroked-button color="primary" (click)="populateBarcodeDefaults()" type="button">
+                <button class="btn btn-stroked btn-sm" (click)="populateBarcodeDefaults()" type="button">
                   Populate Defaults
                 </button>
               </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Inventory Prefix</mat-label>
-                <input matInput [(ngModel)]="variables.barcode_prefix_inventory">
-              </mat-form-field>
+              <div class="field">
+                <label>Inventory Prefix</label>
+                <input class="input" [(ngModel)]="variables.barcode_prefix_inventory">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>PPIN Prefix</mat-label>
-                <input matInput [(ngModel)]="variables.barcode_prefix_ppin">
-              </mat-form-field>
+              <div class="field">
+                <label>PPIN Prefix</label>
+                <input class="input" [(ngModel)]="variables.barcode_prefix_ppin">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Pathology Prefix</mat-label>
-                <input matInput [(ngModel)]="variables.barcode_prefix_pathology">
-              </mat-form-field>
+              <div class="field">
+                <label>Pathology Prefix</label>
+                <input class="input" [(ngModel)]="variables.barcode_prefix_pathology">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Employee Prefix</mat-label>
-                <input matInput [(ngModel)]="variables.employee_prefix">
-              </mat-form-field>
+              <div class="field">
+                <label>Employee Prefix</label>
+                <input class="input" [(ngModel)]="variables.employee_prefix">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Sale Invoice Prefix</mat-label>
-                <input matInput [(ngModel)]="variables.barcode_prefix_sale">
-              </mat-form-field>
+              <div class="field">
+                <label>Sale Invoice Prefix</label>
+                <input class="input" [(ngModel)]="variables.barcode_prefix_sale">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Return Invoice Prefix</mat-label>
-                <input matInput [(ngModel)]="variables.barcode_prefix_return">
-              </mat-form-field>
+              <div class="field">
+                <label>Return Invoice Prefix</label>
+                <input class="input" [(ngModel)]="variables.barcode_prefix_return">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Server IP</mat-label>
-                <input matInput [(ngModel)]="variables.server_ip">
-              </mat-form-field>
+              <div class="field">
+                <label>Server IP</label>
+                <input class="input" [(ngModel)]="variables.server_ip">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>MySQL Password</mat-label>
-                <input matInput type="password" [(ngModel)]="variables.mysql_password">
-              </mat-form-field>
+              <div class="field">
+                <label>MySQL Password</label>
+                <input class="input" type="password" [(ngModel)]="variables.mysql_password">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>RabbitMQ Password</mat-label>
-                <input matInput [(ngModel)]="variables.rabbitmq_password">
-              </mat-form-field>
+              <div class="field">
+                <label>RabbitMQ Password</label>
+                <input class="input" [(ngModel)]="variables.rabbitmq_password">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Auth Tag</mat-label>
-                <input matInput [(ngModel)]="variables.auth_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Auth Tag</label>
+                <input class="input" [(ngModel)]="variables.auth_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Xenon Tag</mat-label>
-                <input matInput [(ngModel)]="variables.xenon_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Xenon Tag</label>
+                <input class="input" [(ngModel)]="variables.xenon_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>HAS Tag</mat-label>
-                <input matInput [(ngModel)]="variables.has_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>HAS Tag</label>
+                <input class="input" [(ngModel)]="variables.has_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>PACS Tag</mat-label>
-                <input matInput [(ngModel)]="variables.pacs_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>PACS Tag</label>
+                <input class="input" [(ngModel)]="variables.pacs_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Argon Tag</mat-label>
-                <input matInput [(ngModel)]="variables.argon_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Argon Tag</label>
+                <input class="input" [(ngModel)]="variables.argon_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Comm Tag</mat-label>
-                <input matInput [(ngModel)]="variables.comm_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Comm Tag</label>
+                <input class="input" [(ngModel)]="variables.comm_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Realtime Tag</mat-label>
-                <input matInput [(ngModel)]="variables.realtime_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Realtime Tag</label>
+                <input class="input" [(ngModel)]="variables.realtime_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Neon Tag</mat-label>
-                <input matInput [(ngModel)]="variables.neon_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Neon Tag</label>
+                <input class="input" [(ngModel)]="variables.neon_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Bridge Tag</mat-label>
-                <input matInput [(ngModel)]="variables.bridge_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Bridge Tag</label>
+                <input class="input" [(ngModel)]="variables.bridge_tag">
+              </div>
 
-              <mat-form-field appearance="outline">
-                <mat-label>Hydrogen Tag</mat-label>
-                <input matInput [(ngModel)]="variables.hydrogen_tag">
-              </mat-form-field>
+              <div class="field">
+                <label>Hydrogen Tag</label>
+                <input class="input" [(ngModel)]="variables.hydrogen_tag">
+              </div>
             </div>
 
-            <mat-divider></mat-divider>
+            <div class="divider"></div>
 
             <div class="modules-section">
               <div class="modules-label">Service Modules</div>
@@ -214,95 +196,97 @@ import { NotificationService } from '../../core/services/notification.service';
                 Controlled from cloud (Oxygen). MySQL and RabbitMQ run on host, not in Docker.
               </div>
               <div class="modules-grid">
-                <mat-slide-toggle [ngModel]="modules.auth" disabled>Auth</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.xenon" disabled>Xenon (Backend)</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.has" disabled>HAS</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.pacs" disabled>PACS (Radiology)</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.argon" disabled>Pathology (Argon)</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.comm" disabled>Communication (Comm)</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.realtime" disabled>Realtime</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.neon" disabled>Pharmacy (Neon)</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.bridge" disabled>Bridge</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.integration" disabled>Integration</mat-slide-toggle>
-                <mat-slide-toggle [ngModel]="modules.hydrogen" disabled>Hydrogen (Frontend)</mat-slide-toggle>
+                <label class="check"><input type="checkbox" [ngModel]="modules.auth" disabled> <span>Auth</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.xenon" disabled> <span>Xenon (Backend)</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.has" disabled> <span>HAS</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.pacs" disabled> <span>PACS (Radiology)</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.argon" disabled> <span>Pathology (Argon)</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.comm" disabled> <span>Communication (Comm)</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.realtime" disabled> <span>Realtime</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.neon" disabled> <span>Pharmacy (Neon)</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.bridge" disabled> <span>Bridge</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.integration" disabled> <span>Integration</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.hydrogen" disabled> <span>Hydrogen (Frontend)</span></label>
               </div>
             </div>
 
             <div class="panel-actions">
-              <button mat-raised-button color="primary" (click)="applyVariables()" [disabled]="applying">
+              <button class="btn btn-primary" (click)="applyVariables()" [disabled]="applying">
                 @if (applying) {
-                  <mat-spinner diameter="18"></mat-spinner>
+                  <span class="spinner"></span>
                 } @else {
-                  <mat-icon>find_replace</mat-icon>
+                  <span class="material-icons">find_replace</span>
                 }
                 Apply Variables
               </button>
             </div>
-          </mat-expansion-panel>
-        </mat-accordion>
+            </div>
+          }
+        </div>
 
         <!-- File Tabs: docker-compose.yml + env files -->
-        <mat-tab-group (selectedIndexChange)="onTabChange($event)" [selectedIndex]="activeTab">
-          <!-- Compose Tab -->
-          <mat-tab>
-            <ng-template mat-tab-label>
-              <mat-icon class="tab-icon">code</mat-icon>
-              docker-compose.yml
-            </ng-template>
+        <div class="tabs">
+          <button class="tab" type="button" [class.active]="activeTab === 0" (click)="onTabChange(0)">
+            <span class="material-icons tab-icon">code</span>
+            docker-compose.yml
+          </button>
+          @for (env of envFiles; track env.name; let i = $index) {
+            <button class="tab" type="button" [class.active]="activeTab === i + 1" (click)="onTabChange(i + 1)">
+              <span class="material-icons tab-icon">settings</span>
+              {{ env.name }}
+            </button>
+          }
+        </div>
 
+        <!-- Compose Panel -->
+        @if (activeTab === 0) {
+          <div class="tab-content">
+            @if (filePath) {
+              <div class="file-path">{{ filePath }}</div>
+            }
+            <textarea
+              class="file-editor"
+              [(ngModel)]="composeContent"
+              spellcheck="false"
+              placeholder="Compose file content will appear here..."
+            ></textarea>
+          </div>
+        }
+
+        <!-- Env File Panels -->
+        @for (env of envFiles; track env.name; let i = $index) {
+          @if (activeTab === i + 1) {
             <div class="tab-content">
-              @if (filePath) {
-                <div class="file-path">{{ filePath }}</div>
-              }
+              <div class="file-path">{{ envDir }}/{{ env.name }}</div>
               <textarea
-                class="file-editor"
-                [(ngModel)]="composeContent"
+                class="file-editor env-editor"
+                [(ngModel)]="env.content"
                 spellcheck="false"
-                placeholder="Compose file content will appear here..."
+                [placeholder]="env.name + ' content...'"
               ></textarea>
             </div>
-          </mat-tab>
-
-          <!-- Env File Tabs -->
-          @for (env of envFiles; track env.name) {
-            <mat-tab>
-              <ng-template mat-tab-label>
-                <mat-icon class="tab-icon">settings</mat-icon>
-                {{ env.name }}
-              </ng-template>
-
-              <div class="tab-content">
-                <div class="file-path">{{ envDir }}/{{ env.name }}</div>
-                <textarea
-                  class="file-editor env-editor"
-                  [(ngModel)]="env.content"
-                  spellcheck="false"
-                  [placeholder]="env.name + ' content...'"
-                ></textarea>
-              </div>
-            </mat-tab>
           }
-        </mat-tab-group>
+        }
 
         <!-- Action Bar -->
         <div class="actions">
-          <button mat-stroked-button (click)="resetContent()" [disabled]="saving || uploading">
-            <mat-icon>refresh</mat-icon>
+          <button class="btn btn-stroked" (click)="resetContent()" [disabled]="saving || uploading">
+            <span class="material-icons">refresh</span>
             Reset
           </button>
-          <button mat-raised-button (click)="saveLocally()" [disabled]="saving || uploading">
+          <button class="btn btn-stroked" (click)="saveLocally()" [disabled]="saving || uploading">
             @if (saving) {
-              <mat-spinner diameter="18"></mat-spinner>
+              <span class="spinner"></span>
             } @else {
-              <mat-icon>save</mat-icon>
+              <span class="material-icons">save</span>
             }
             Save All Locally
           </button>
-          <button mat-raised-button color="primary" (click)="saveAndUpload()" [disabled]="saving || uploading">
+          <button class="btn btn-primary" (click)="saveAndUpload()" [disabled]="saving || uploading">
             @if (uploading) {
-              <mat-spinner diameter="18"></mat-spinner>
+              <span class="spinner"></span>
             } @else {
-              <mat-icon>cloud_upload</mat-icon>
+              <span class="material-icons">cloud_upload</span>
             }
             Save & Upload to Cloud
           </button>
@@ -346,28 +330,119 @@ import { NotificationService } from '../../core/services/notification.service';
         color: #2e7d32;
       }
 
-      mat-icon {
+      .material-icons {
         font-size: 20px;
         width: 20px;
         height: 20px;
       }
     }
 
-    mat-accordion {
+    .panel {
       margin-bottom: 1.5rem;
     }
 
-    mat-panel-title {
+    .panel-header {
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
+      width: 100%;
+      padding: 16px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+    }
 
-      mat-icon {
+    .panel-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+
+      .material-icons {
         font-size: 20px;
         width: 20px;
         height: 20px;
         color: #666;
       }
+    }
+
+    .panel-title-text {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-title-main {
+      font-weight: 600;
+    }
+
+    .panel-title-desc {
+      font-size: 0.75rem;
+      color: #888;
+    }
+
+    .chevron {
+      transition: transform 0.2s ease;
+      color: #666;
+    }
+
+    .chevron.open {
+      transform: rotate(180deg);
+    }
+
+    .panel-body {
+      border-top: 1px solid #eee;
+    }
+
+    .divider {
+      height: 1px;
+      background: #eee;
+      margin: 1rem 0;
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.875rem;
+      cursor: default;
+    }
+
+    .check input {
+      width: 16px;
+      height: 16px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 10px 14px;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      font: inherit;
+      color: #666;
+    }
+
+    .tab.active {
+      color: var(--primary, #1565c0);
+      border-bottom-color: var(--primary, #1565c0);
+      font-weight: 600;
+    }
+
+    .btn .material-icons,
+    .tab .material-icons {
+      font-size: 18px;
     }
 
     .variables-grid {
@@ -469,6 +544,7 @@ export class ComposeComponent implements OnInit {
   statusMessage = '';
   fragmentsDownloaded = false;
   activeTab = 0;
+  panelOpen = false;
 
   saving = false;
   uploading = false;

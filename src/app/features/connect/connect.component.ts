@@ -2,12 +2,6 @@ import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { ConnectionService, SavedServer } from '../../core/services/connection.service';
 import { resetLicenseCache } from '../../core/guards/init.guard';
 
@@ -17,32 +11,28 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
   imports: [
     CommonModule,
     FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatFormFieldModule,
-    MatInputModule,
-    MatProgressSpinnerModule,
   ],
   template: `
     <div class="connect-page">
-      <mat-card class="connect-card">
-        <mat-card-header>
-          <mat-icon mat-card-avatar>lan</mat-icon>
-          <mat-card-title>Connect to a Nucleus server</mat-card-title>
-          <mat-card-subtitle>Manage a remote daemon over the LAN, or stay on this machine</mat-card-subtitle>
-        </mat-card-header>
+      <div class="card card-pad connect-card">
+        <div class="card-head">
+          <span class="material-icons avatar">lan</span>
+          <div class="card-titles">
+            <div class="card-title">Connect to a Nucleus server</div>
+            <div class="card-subtitle">Manage a remote daemon over the LAN, or stay on this machine</div>
+          </div>
+        </div>
 
-        <mat-card-content>
+        <div class="card-body">
           <!-- Current mode -->
           <div class="current-mode" [class.remote]="conn.isRemote()">
-            <mat-icon>{{ conn.isRemote() ? 'cloud' : 'computer' }}</mat-icon>
+            <span class="material-icons">{{ conn.isRemote() ? 'cloud' : 'computer' }}</span>
             <span>
               Currently:
               <strong>{{ conn.isRemote() ? ('Remote · ' + (conn.activeServer()?.name || '')) : 'Local (this machine)' }}</strong>
             </span>
             @if (conn.isRemote()) {
-              <button mat-stroked-button (click)="useLocal()">Switch to Local</button>
+              <button class="btn btn-stroked" (click)="useLocal()">Switch to Local</button>
             }
           </div>
 
@@ -56,13 +46,13 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
                     <span class="server-name">{{ s.name }}</span>
                     <span class="server-addr">{{ s.host }}:{{ s.port }}</span>
                     @if (!s.apiKey) {
-                      <span class="no-key"><mat-icon>key_off</mat-icon> no key</span>
+                      <span class="no-key"><span class="material-icons">key_off</span> no key</span>
                     }
                   </div>
                   <div class="server-actions">
-                    <button mat-stroked-button color="primary" (click)="connect(s)" [disabled]="!s.apiKey">Connect</button>
-                    <button mat-icon-button (click)="edit(s)" title="Edit"><mat-icon>edit</mat-icon></button>
-                    <button mat-icon-button (click)="remove(s)" title="Remove"><mat-icon>delete</mat-icon></button>
+                    <button class="btn btn-stroked btn-sm" (click)="connect(s)" [disabled]="!s.apiKey">Connect</button>
+                    <button class="btn-icon" (click)="edit(s)" title="Edit"><span class="material-icons">edit</span></button>
+                    <button class="btn-icon" (click)="remove(s)" title="Remove"><span class="material-icons">delete</span></button>
                   </div>
                 </div>
               }
@@ -73,64 +63,66 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
           <div class="add-form">
             <div class="add-head">{{ editingId ? 'Edit server' : 'Add a server' }}</div>
             <div class="form-row">
-              <mat-form-field appearance="outline" class="flex-2">
-                <mat-label>Name</mat-label>
-                <input matInput [(ngModel)]="form.name" placeholder="Bargad Hospital">
-              </mat-form-field>
+              <div class="field flex-2">
+                <label>Name</label>
+                <input class="input" [(ngModel)]="form.name" placeholder="Bargad Hospital">
+              </div>
             </div>
             <div class="form-row">
-              <mat-form-field appearance="outline" class="flex-2">
-                <mat-label>Host / IP</mat-label>
-                <input matInput [(ngModel)]="form.host" placeholder="192.168.1.100">
-              </mat-form-field>
-              <mat-form-field appearance="outline" class="flex-1">
-                <mat-label>Port</mat-label>
-                <input matInput type="number" [(ngModel)]="form.port" placeholder="9090">
-              </mat-form-field>
+              <div class="field flex-2">
+                <label>Host / IP</label>
+                <input class="input" [(ngModel)]="form.host" placeholder="192.168.1.100">
+              </div>
+              <div class="field flex-1">
+                <label>Port</label>
+                <input class="input" type="number" [(ngModel)]="form.port" placeholder="9090">
+              </div>
             </div>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>API Key</mat-label>
-              <input matInput [type]="showKey ? 'text' : 'password'" [(ngModel)]="form.apiKey"
-                     placeholder="Required to control a remote server">
-              <button mat-icon-button matSuffix (click)="showKey = !showKey">
-                <mat-icon>{{ showKey ? 'visibility_off' : 'visibility' }}</mat-icon>
-              </button>
-              <mat-hint>Find it in the server's Settings → Daemon → API Key</mat-hint>
-            </mat-form-field>
+            <div class="field full-width">
+              <label>API Key</label>
+              <div class="key-input">
+                <input class="input" [type]="showKey ? 'text' : 'password'" [(ngModel)]="form.apiKey"
+                       placeholder="Required to control a remote server">
+                <button class="btn-icon" (click)="showKey = !showKey">
+                  <span class="material-icons">{{ showKey ? 'visibility_off' : 'visibility' }}</span>
+                </button>
+              </div>
+              <span class="hint">Find it in the server's Settings → Daemon → API Key</span>
+            </div>
 
             <!-- Unencrypted warning -->
             <div class="warn">
-              <mat-icon>warning</mat-icon>
+              <span class="material-icons">warning</span>
               <span>Connections are <strong>unencrypted HTTP</strong> — only use on a trusted hospital LAN. An API key is required for anything beyond a health check.</span>
             </div>
 
             @if (testResult) {
               <div class="test-ok">
-                <mat-icon>check_circle</mat-icon>
+                <span class="material-icons">check_circle</span>
                 <span>Reachable — v{{ testResult.version }}, Docker {{ testResult.docker_connected ? 'connected' : 'not connected' }}</span>
               </div>
             }
             @if (testError) {
               <div class="test-err">
-                <mat-icon>error</mat-icon>
+                <span class="material-icons">error</span>
                 <span>{{ testError }}</span>
               </div>
             }
           </div>
-        </mat-card-content>
+        </div>
 
-        <mat-card-actions class="actions">
-          <button mat-stroked-button (click)="useLocal()">Use Local Mode</button>
+        <div class="actions">
+          <button class="btn btn-stroked" (click)="useLocal()">Use Local Mode</button>
           <span class="spacer"></span>
-          <button mat-button (click)="test()" [disabled]="!canSubmit() || testing">
-            @if (testing) { <mat-spinner diameter="18"></mat-spinner> }
+          <button class="btn btn-ghost" (click)="test()" [disabled]="!canSubmit() || testing">
+            @if (testing) { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
             Test
           </button>
-          <button mat-raised-button color="primary" (click)="saveAndConnect()" [disabled]="!canSubmit()">
+          <button class="btn btn-primary" (click)="saveAndConnect()" [disabled]="!canSubmit()">
             {{ editingId ? 'Save & Connect' : 'Add & Connect' }}
           </button>
-        </mat-card-actions>
-      </mat-card>
+        </div>
+      </div>
     </div>
   `,
   styles: [`
@@ -143,7 +135,17 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
       background: #f5f5f5;
     }
     .connect-card { max-width: 640px; width: 100%; }
-    mat-icon[mat-card-avatar] { background: #e8eaf6; padding: 8px; border-radius: 50%; color: #3f51b5; }
+
+    .card-head { display: flex; align-items: center; gap: 14px; }
+    .avatar {
+      background: #e8eaf6; padding: 8px; border-radius: 50%; color: #3f51b5;
+      font-size: 24px; width: 24px; height: 24px;
+      display: inline-flex; align-items: center; justify-content: center; box-sizing: content-box;
+    }
+    .card-titles { display: flex; flex-direction: column; gap: 2px; }
+    .card-title { font-size: 1.1rem; font-weight: 600; }
+    .card-subtitle { font-size: 0.85rem; color: #666; }
+    .card-body { margin-top: 0.5rem; }
 
     .current-mode {
       display: flex;
@@ -155,7 +157,7 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
       margin: 1rem 0 1.5rem;
       font-size: 0.875rem;
       &.remote { background: #ecfdf5; }
-      mat-icon { color: #6366f1; }
+      .material-icons { color: #6366f1; }
       button { margin-left: auto; }
     }
 
@@ -173,7 +175,7 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
     .server-name { font-weight: 500; }
     .server-addr { font-family: monospace; font-size: 0.8rem; color: #666; }
     .no-key { display: inline-flex; align-items: center; gap: 3px; font-size: 0.7rem; color: #e65100;
-      mat-icon { font-size: 14px; width: 14px; height: 14px; } }
+      .material-icons { font-size: 14px; width: 14px; height: 14px; } }
     .server-actions { display: flex; align-items: center; gap: 4px; }
 
     .add-form { border-top: 1px solid #eee; padding-top: 1rem; }
@@ -181,17 +183,19 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
     .flex-1 { flex: 1; }
     .flex-2 { flex: 2; }
     .full-width { width: 100%; }
+    .key-input { display: flex; align-items: center; gap: 4px; }
+    .key-input .input { flex: 1; }
 
     .warn, .test-ok, .test-err {
       display: flex; align-items: flex-start; gap: 8px;
       padding: 10px 12px; border-radius: 8px; font-size: 0.8rem; margin-top: 0.5rem;
-      mat-icon { font-size: 18px; width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
+      .material-icons { font-size: 18px; width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
     }
-    .warn { background: #fff8e1; color: #8d6e00; mat-icon { color: #f9a825; } }
-    .test-ok { background: #e8f5e9; color: #2e7d32; mat-icon { color: #4caf50; } }
-    .test-err { background: #ffebee; color: #c62828; mat-icon { color: #f44336; } }
+    .warn { background: #fff8e1; color: #8d6e00; .material-icons { color: #f9a825; } }
+    .test-ok { background: #e8f5e9; color: #2e7d32; .material-icons { color: #4caf50; } }
+    .test-err { background: #ffebee; color: #c62828; .material-icons { color: #f44336; } }
 
-    .actions { display: flex; align-items: center; padding: 0.5rem 1rem 1rem; }
+    .actions { display: flex; align-items: center; gap: 8px; padding: 0.5rem 0 0; margin-top: 1rem; }
     .spacer { flex: 1; }
   `]
 })

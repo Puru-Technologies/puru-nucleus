@@ -597,12 +597,56 @@ async fn watchdog_loop() {
         match crate::services::get_services().await {
             Ok(services) => {
                 for svc in &services {
-                    let is_down = svc.status == crate::services::ServiceStatus::Stopped
-                        || svc.status == crate::services::ServiceStatus::Error;
-                    let is_unhealthy = matches!(
-                        svc.health,
-                        Some(crate::services::HealthStatus::Unhealthy)
-                    );
+                    // Enabled-but-not-installed is a deployment gap, not a crash —
+                    // there is no process/container to (re)start. Alert once so an
+                    // operator can re-run setup, but never spin on it.
+                    if svc.status == crate::services::ServiceStatus::NotInstalled {
+                        if !alerted_services.contains(&svc.name) {
+                            push_watchdog_alert(
+                                &config.hospital_code,
+                                "warning",
+                                "service_not_installed",
+                                &format!("Service enabled but not installed: {}", svc.name),
+                                &format!(
+                                    "{} is enabled for this hospital but its build is not installed. \
+                                     Re-run setup (Pull JARs) to deploy it.",
+                                    svc.name
+                                ),
+                            )
+                            .await;
+                            alerted_services.insert(svc.name.clone());
+                        }
+                        continue;
+                    }
+
+                    // Identifier used to (re)start this service — Docker needs the
+                    // container name, native needs the service name. Also the key
+                    // for the manual-stop marker.
+                    let svc_id = match config.deployment_mode {
+                        crate::config::DeploymentMode::Docker => svc.container_name.clone(),
+                        crate::config::DeploymentMode::Native => svc.name.clone(),
+                    };
+
+                    // Respect an operator's intentional stop — never auto-restart
+                    // something that was stopped on purpose from the UI/CLI/API.
+                    if svc.status == crate::services::ServiceStatus::Stopped
+                        && crate::services::is_manually_stopped(&svc_id)
+                    {
+                        continue;
+                    }
+
+                    // Truly down (no live process/container) → start aggressively.
+                    let is_down = svc.status == crate::services::ServiceStatus::Stopped;
+                    // Alive but failing — a post-grace Error (native: never became
+                    // ready), or a running service whose actuator reports DOWN
+                    // (docker). Restart once. `Starting` is deliberately excluded
+                    // so we never interrupt a service that's still booting.
+                    let is_unhealthy = svc.status == crate::services::ServiceStatus::Error
+                        || (svc.status == crate::services::ServiceStatus::Running
+                            && matches!(
+                                svc.health,
+                                Some(crate::services::HealthStatus::Unhealthy)
+                            ));
 
                     if is_down || is_unhealthy {
                         // A persistently-unhealthy (but running) service gets one
@@ -620,8 +664,22 @@ async fn watchdog_loop() {
 
                         tracing::warn!("Watchdog: {} — attempting restart", reason);
 
-                        // Attempt auto-restart
-                        match crate::services::start_service(&svc.name).await {
+                        if svc_id.is_empty() {
+                            tracing::warn!(
+                                "Watchdog: no restart identifier for {} — skipping",
+                                svc.name
+                            );
+                            continue;
+                        }
+
+                        // Down → start it (no process yet). Alive-but-failing →
+                        // restart it (stop+start) to actually cycle the process.
+                        let attempt = if is_down {
+                            crate::services::start_service(&svc_id).await
+                        } else {
+                            crate::services::restart_service(&svc_id).await
+                        };
+                        match attempt {
                             Ok(()) => {
                                 tracing::info!(
                                     "Watchdog: auto-restarted {}",
@@ -678,6 +736,9 @@ async fn watchdog_loop() {
                                 svc.name
                             );
                         }
+                        // It's running, so any stale manual-stop marker no longer
+                        // applies (it was started by some path that didn't clear it).
+                        crate::services::clear_manually_stopped(&svc_id);
                     }
                 }
             }

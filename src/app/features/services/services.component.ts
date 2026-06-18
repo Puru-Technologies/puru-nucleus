@@ -1,32 +1,14 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnInit, HostListener, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatTableModule } from '@angular/material/table';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatMenuModule } from '@angular/material/menu';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { TauriService, ServiceInfo, NucleusConfig } from '../../core/services/tauri.service';
+import { TauriService, ServiceInfo } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
 @Component({
   selector: 'app-services',
   standalone: true,
-  imports: [
-    CommonModule,
-    RouterLink,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatTableModule,
-    MatChipsModule,
-    MatMenuModule,
-    MatProgressSpinnerModule,
-    FormsModule
-  ],
+  imports: [CommonModule, RouterLink, FormsModule],
   template: `
     <div class="page">
       <div class="page-header">
@@ -42,12 +24,12 @@ import { NotificationService } from '../../core/services/notification.service';
           </p>
         </div>
         <div class="header-actions">
-          <button mat-stroked-button (click)="refreshServices()">
-            <mat-icon>refresh</mat-icon>
+          <button class="btn btn-stroked" (click)="refreshServices()">
+            <span class="material-icons">refresh</span>
             Refresh
           </button>
-          <button mat-flat-button color="primary" (click)="startAll()" [disabled]="services.length === 0">
-            <mat-icon>play_arrow</mat-icon>
+          <button class="btn btn-primary" (click)="startAll()" [disabled]="services.length === 0">
+            <span class="material-icons">play_arrow</span>
             Start All
           </button>
         </div>
@@ -55,29 +37,29 @@ import { NotificationService } from '../../core/services/notification.service';
 
       @if (loading) {
         <div class="loading-state">
-          <mat-spinner diameter="40"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
         </div>
       } @else if (services.length === 0) {
-        <mat-card class="empty-card">
+        <div class="card empty-card">
           <div class="empty-state">
             <div class="empty-icon">
-              <mat-icon>cloud_off</mat-icon>
+              <span class="material-icons">cloud_off</span>
             </div>
             <h3>No Services Found</h3>
             <p>{{ isNative ? 'No JARs installed. Run the setup wizard to pull and start services.' : 'Docker may not be installed or no Puru containers are running.' }}</p>
-            <button mat-stroked-button routerLink="/setup">
-              <mat-icon>build</mat-icon>
+            <button class="btn btn-stroked" routerLink="/setup">
+              <span class="material-icons">build</span>
               Run Setup Wizard
             </button>
           </div>
-        </mat-card>
+        </div>
       } @else {
         <!-- Log Viewer Panel -->
         @if (logContainer) {
-          <mat-card class="log-card">
+          <div class="card log-card">
             <div class="log-header">
               <div class="log-title">
-                <mat-icon>article</mat-icon>
+                <span class="material-icons">article</span>
                 <span>Logs: {{ logContainer }}</span>
               </div>
               <div class="log-actions">
@@ -89,137 +71,123 @@ import { NotificationService } from '../../core/services/notification.service';
                   <option value="3d">Last 3 days</option>
                   <option value="7d">Last 7 days</option>
                 </select>
-                <button mat-icon-button (click)="refreshLogs()" [disabled]="logsLoading">
-                  <mat-icon>refresh</mat-icon>
+                <button class="btn-icon log-btn" (click)="refreshLogs()" [disabled]="logsLoading">
+                  <span class="material-icons">refresh</span>
                 </button>
-                <button mat-icon-button (click)="closeLogs()">
-                  <mat-icon>close</mat-icon>
+                <button class="btn-icon log-btn" (click)="closeLogs()">
+                  <span class="material-icons">close</span>
                 </button>
               </div>
             </div>
             @if (logsLoading) {
               <div class="log-loading">
-                <mat-spinner diameter="24"></mat-spinner>
+                <span class="spinner"></span>
               </div>
             } @else {
               <pre class="log-content">{{ logOutput || 'No logs available.' }}</pre>
             }
-          </mat-card>
+          </div>
         }
 
-        <mat-card class="table-card">
-          <table mat-table [dataSource]="services" class="services-table">
-            <!-- Container Name -->
-            <ng-container matColumnDef="name">
-              <th mat-header-cell *matHeaderCellDef>{{ isNative ? 'Service' : 'Container' }}</th>
-              <td mat-cell *matCellDef="let service">
-                <div class="name-cell">
-                  <div class="status-dot" [class]="'dot-' + service.status"></div>
-                  <div class="name-info">
-                    <span class="name-primary">{{ service.name }}</span>
-                    <span class="name-secondary">{{ service.container_name }}</span>
-                  </div>
-                </div>
-              </td>
-            </ng-container>
-
-            <!-- Image -->
-            <ng-container matColumnDef="image">
-              <th mat-header-cell *matHeaderCellDef>{{ isNative ? 'Build' : 'Image' }}</th>
-              <td mat-cell *matCellDef="let service">
-                <span class="image-text">{{ shortenImage(service.image) }}</span>
-              </td>
-            </ng-container>
-
-            <!-- Status -->
-            <ng-container matColumnDef="status">
-              <th mat-header-cell *matHeaderCellDef>Status</th>
-              <td mat-cell *matCellDef="let service">
-                <mat-chip [class]="'chip-' + service.status">
-                  {{ service.status }}
-                </mat-chip>
-              </td>
-            </ng-container>
-
-            <!-- Health -->
-            <ng-container matColumnDef="health">
-              <th mat-header-cell *matHeaderCellDef>Health</th>
-              <td mat-cell *matCellDef="let service">
-                @if (service.health) {
-                  <mat-chip [class]="'chip-' + service.health">
-                    {{ service.health }}
-                  </mat-chip>
-                  @if (service.health_response_ms != null) {
-                    <span class="health-latency">{{ service.health_response_ms }}ms</span>
-                  }
-                } @else {
-                  <span class="text-muted">&mdash;</span>
-                }
-              </td>
-            </ng-container>
-
-            <!-- Ports -->
-            <ng-container matColumnDef="ports">
-              <th mat-header-cell *matHeaderCellDef>Ports</th>
-              <td mat-cell *matCellDef="let service">
-                <span class="port-text">{{ service.ports.join(', ') || '—' }}</span>
-              </td>
-            </ng-container>
-
-            <!-- Uptime -->
-            <ng-container matColumnDef="uptime">
-              <th mat-header-cell *matHeaderCellDef>Uptime</th>
-              <td mat-cell *matCellDef="let service">
-                {{ service.uptime || '—' }}
-              </td>
-            </ng-container>
-
-            <!-- Actions -->
-            <ng-container matColumnDef="actions">
-              <th mat-header-cell *matHeaderCellDef></th>
-              <td mat-cell *matCellDef="let service">
-                <button mat-icon-button [matMenuTriggerFor]="actionMenu">
-                  <mat-icon>more_vert</mat-icon>
-                </button>
-                <mat-menu #actionMenu="matMenu">
-                  @if (service.status !== 'running') {
-                    <button mat-menu-item (click)="startService(service)">
-                      <mat-icon class="menu-green">play_arrow</mat-icon>
-                      Start
-                    </button>
-                  }
-                  @if (service.status === 'running') {
-                    <button mat-menu-item (click)="stopService(service)">
-                      <mat-icon class="menu-red">stop</mat-icon>
-                      Stop
-                    </button>
-                  }
-                  <button mat-menu-item (click)="restartService(service)">
-                    <mat-icon class="menu-orange">refresh</mat-icon>
-                    Restart
-                  </button>
-                  <button mat-menu-item (click)="viewLogs(service)">
-                    <mat-icon>article</mat-icon>
-                    View Logs
-                  </button>
-                  @if (isNative) {
-                    <button mat-menu-item (click)="updateService(service)">
-                      <mat-icon class="menu-green">system_update</mat-icon>
-                      Update
-                    </button>
-                    <button mat-menu-item (click)="rollbackService(service)">
-                      <mat-icon class="menu-orange">undo</mat-icon>
-                      Rollback
-                    </button>
-                  }
-                </mat-menu>
-              </td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+        <div class="card table-card">
+          <table class="data-table services-table">
+            <thead>
+              <tr>
+                <th class="sortable" (click)="sortBy('name')">
+                  {{ isNative ? 'Service' : 'Container' }}
+                  <span class="material-icons sort-arrow">{{ sortArrow('name') }}</span>
+                </th>
+                <th class="sortable" (click)="sortBy('image')">
+                  {{ isNative ? 'Build' : 'Image' }}
+                  <span class="material-icons sort-arrow">{{ sortArrow('image') }}</span>
+                </th>
+                <th class="sortable" (click)="sortBy('status')">
+                  Status <span class="material-icons sort-arrow">{{ sortArrow('status') }}</span>
+                </th>
+                <th class="sortable" (click)="sortBy('health')">
+                  Health <span class="material-icons sort-arrow">{{ sortArrow('health') }}</span>
+                </th>
+                <th>Ports</th>
+                <th>Uptime</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (service of sortedServices; track service.name) {
+                <tr>
+                  <td>
+                    <div class="name-cell">
+                      <div class="status-dot" [class]="'dot-' + service.status"></div>
+                      <div class="name-info">
+                        <span class="name-primary">{{ service.name }}</span>
+                        <span class="name-secondary">{{ service.container_name }}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td><span class="image-text">{{ shortenImage(service.image) }}</span></td>
+                  <td>
+                    <span [class]="'chip chip-' + service.status">{{ service.status }}</span>
+                    @if (service.detail) {
+                      <div class="svc-detail">{{ service.detail }}</div>
+                    }
+                  </td>
+                  <td>
+                    @if (service.health) {
+                      <span [class]="'chip chip-' + service.health">{{ service.health }}</span>
+                      @if (service.health_response_ms != null) {
+                        <span class="health-latency">{{ service.health_response_ms }}ms</span>
+                      }
+                    } @else {
+                      <span class="text-muted">&mdash;</span>
+                    }
+                  </td>
+                  <td><span class="port-text">{{ service.ports.join(', ') || '—' }}</span></td>
+                  <td>{{ service.uptime || '—' }}</td>
+                  <td class="actions-cell">
+                    <div class="menu-wrap">
+                      <button class="btn-icon" (click)="toggleMenu(service, $event)">
+                        <span class="material-icons">more_vert</span>
+                      </button>
+                      @if (openMenu === service.name) {
+                        <div class="menu" (click)="$event.stopPropagation()">
+                          @if (service.status === 'stopped' || service.status === 'error') {
+                            <button class="menu-item" (click)="startService(service); openMenu = null">
+                              <span class="material-icons menu-green">play_arrow</span> Start
+                            </button>
+                          }
+                          @if (service.status === 'notinstalled') {
+                            <button class="menu-item" routerLink="/setup" (click)="openMenu = null">
+                              <span class="material-icons menu-green">build</span> Install (Run Setup)
+                            </button>
+                          }
+                          @if (service.status === 'running') {
+                            <button class="menu-item" (click)="stopService(service); openMenu = null">
+                              <span class="material-icons menu-red">stop</span> Stop
+                            </button>
+                          }
+                          <button class="menu-item" (click)="restartService(service); openMenu = null">
+                            <span class="material-icons menu-orange">refresh</span> Restart
+                          </button>
+                          <button class="menu-item" (click)="viewLogs(service); openMenu = null">
+                            <span class="material-icons">article</span> View Logs
+                          </button>
+                          @if (isNative) {
+                            <button class="menu-item" (click)="updateService(service); openMenu = null">
+                              <span class="material-icons menu-green">system_update</span> Update
+                            </button>
+                            <button class="menu-item" (click)="rollbackService(service); openMenu = null">
+                              <span class="material-icons menu-orange">undo</span> Rollback
+                            </button>
+                          }
+                        </div>
+                      }
+                    </div>
+                  </td>
+                </tr>
+              }
+            </tbody>
           </table>
-        </mat-card>
+        </div>
       }
     </div>
   `,
@@ -292,10 +260,8 @@ import { NotificationService } from '../../core/services/notification.service';
         display: flex;
         align-items: center;
         justify-content: center;
-        mat-icon {
+        .material-icons {
           font-size: 32px;
-          width: 32px;
-          height: 32px;
           color: #94a3b8;
         }
       }
@@ -319,12 +285,17 @@ import { NotificationService } from '../../core/services/notification.service';
 
     /* ── Table ────────────────────────────────── */
     .table-card {
-      padding: 0 !important;
-      overflow: hidden;
+      /* visible so the row action dropdown isn't clipped at the card edge */
+      overflow: visible;
     }
 
     .services-table {
       width: 100%;
+    }
+
+    .actions-cell {
+      text-align: right;
+      width: 48px;
     }
 
     .name-cell {
@@ -342,6 +313,7 @@ import { NotificationService } from '../../core/services/notification.service';
       &.dot-running { background: var(--status-green); box-shadow: 0 0 6px rgba(34, 197, 94, 0.4); }
       &.dot-stopped { background: var(--status-red); }
       &.dot-starting { background: var(--status-orange); }
+      &.dot-notinstalled { background: var(--text-muted); }
       &.dot-error { background: var(--status-red); }
     }
 
@@ -383,6 +355,14 @@ import { NotificationService } from '../../core/services/notification.service';
       font-family: 'SF Mono', 'Fira Code', monospace;
     }
 
+    .svc-detail {
+      margin-top: 4px;
+      font-size: 11px;
+      line-height: 1.3;
+      color: var(--status-red);
+      max-width: 320px;
+    }
+
     .menu-green { color: var(--status-green) !important; }
     .menu-red { color: var(--status-red) !important; }
     .menu-orange { color: var(--status-orange) !important; }
@@ -410,10 +390,8 @@ import { NotificationService } from '../../core/services/notification.service';
       font-size: 0.85rem;
       font-weight: 600;
 
-      mat-icon {
+      .material-icons {
         font-size: 18px;
-        width: 18px;
-        height: 18px;
       }
     }
 
@@ -421,10 +399,11 @@ import { NotificationService } from '../../core/services/notification.service';
       display: flex;
       align-items: center;
       gap: 6px;
+    }
 
-      button {
-        color: #94a3b8;
-      }
+    .log-btn {
+      color: #94a3b8;
+      &:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
     }
 
     .log-time-select {
@@ -485,10 +464,53 @@ export class ServicesComponent implements OnInit {
   logsLoading = false;
   logTimeFilter: 'tail' | '1h' | '6h' | '24h' | '3d' | '7d' = 'tail';
 
-  displayedColumns = ['name', 'image', 'status', 'health', 'ports', 'uptime', 'actions'];
+  sortKey = 'name';
+  sortDir: 1 | -1 = 1;
+  openMenu: string | null = null;
 
   get runningCount(): number {
     return this.services.filter(s => s.status === 'running').length;
+  }
+
+  get sortedServices(): ServiceInfo[] {
+    const dir = this.sortDir;
+    const key = this.sortKey;
+    return [...this.services].sort((a, b) =>
+      this.sortValue(a, key).localeCompare(this.sortValue(b, key)) * dir
+    );
+  }
+
+  private sortValue(s: ServiceInfo, key: string): string {
+    switch (key) {
+      case 'image': return s.image || '';
+      case 'status': return s.status || '';
+      case 'health': return s.health || '';
+      default: return s.name || '';
+    }
+  }
+
+  sortBy(key: string): void {
+    if (this.sortKey === key) {
+      this.sortDir = this.sortDir === 1 ? -1 : 1;
+    } else {
+      this.sortKey = key;
+      this.sortDir = 1;
+    }
+  }
+
+  sortArrow(key: string): string {
+    if (this.sortKey !== key) return '';
+    return this.sortDir === 1 ? 'arrow_upward' : 'arrow_downward';
+  }
+
+  toggleMenu(s: ServiceInfo, ev: Event): void {
+    ev.stopPropagation();
+    this.openMenu = this.openMenu === s.name ? null : s.name;
+  }
+
+  @HostListener('document:click')
+  closeMenus(): void {
+    this.openMenu = null;
   }
 
   ngOnInit(): void {
@@ -524,16 +546,6 @@ export class ServicesComponent implements OnInit {
     return image
       .replace(/^asia-south2-docker\.pkg\.dev\/puru-255206\/puru1\//, '')
       .replace(/^gcr\.io\/puru-255206\//, '');
-  }
-
-  getStatusIcon(status: string): string {
-    switch (status) {
-      case 'running': return 'check_circle';
-      case 'stopped': return 'stop_circle';
-      case 'starting': return 'pending';
-      case 'error': return 'error';
-      default: return 'help';
-    }
   }
 
   /** In native mode use service name; in Docker mode use container_name */
@@ -572,7 +584,11 @@ export class ServicesComponent implements OnInit {
   }
 
   async startAll(): Promise<void> {
-    const stoppedServices = this.services.filter(s => s.status !== 'running');
+    // Only services whose build is installed can be started directly;
+    // 'notinstalled' ones need a setup re-run (Pull JARs) first.
+    const stoppedServices = this.services.filter(
+      s => s.status === 'stopped' || s.status === 'error'
+    );
     for (const service of stoppedServices) {
       try {
         await this.tauri.invoke('start_service', { name: this.svcId(service) });

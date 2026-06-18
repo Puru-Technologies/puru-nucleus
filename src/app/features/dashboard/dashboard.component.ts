@@ -1,11 +1,6 @@
 import { Component, OnInit, OnDestroy, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatChipsModule } from '@angular/material/chips';
 import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult, BackupRecord } from '../../core/services/tauri.service';
 import { License, getLicenseStatus, LicenseStatus } from '../../core/models/license.model';
 import { interval, Subscription } from 'rxjs';
@@ -16,11 +11,6 @@ import { interval, Subscription } from 'rxjs';
   imports: [
     CommonModule,
     RouterLink,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatProgressSpinnerModule,
-    MatChipsModule
   ],
   template: `
     <div class="page">
@@ -38,12 +28,12 @@ import { interval, Subscription } from 'rxjs';
       <!-- License Banner -->
       @if (licenseStatus && licenseStatus.status !== 'active' && licenseStatus.status !== 'unlimited') {
         <div class="license-banner" [class]="'banner-' + licenseStatus.status">
-          <mat-icon>{{ licenseStatus.icon }}</mat-icon>
+          <span class="material-icons">{{ licenseStatus.icon }}</span>
           <div class="banner-text">
             <strong>{{ licenseStatus.status === 'expired' ? 'License Expired' : 'License Expiring Soon' }}</strong>
             <span>{{ licenseStatus.message }}</span>
           </div>
-          <button mat-stroked-button routerLink="/settings">Contact Support</button>
+          <button class="btn btn-stroked" routerLink="/settings">Contact Support</button>
         </div>
       }
 
@@ -51,21 +41,21 @@ import { interval, Subscription } from 'rxjs';
       <div class="stats-row">
         @if (systemInfo) {
           <div class="stat-card">
-            <div class="stat-icon" [class]="cpuClass"><mat-icon>memory</mat-icon></div>
+            <div class="stat-icon" [class]="cpuClass"><span class="material-icons">memory</span></div>
             <div class="stat-body">
               <span class="stat-value">{{ telemetry?.cpu_percent | number:'1.0-0' }}%</span>
               <span class="stat-label">CPU ({{ systemInfo.cpu_cores }} cores)</span>
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon" [class]="ramClass"><mat-icon>storage</mat-icon></div>
+            <div class="stat-icon" [class]="ramClass"><span class="material-icons">storage</span></div>
             <div class="stat-body">
               <span class="stat-value">{{ telemetry?.ram_gb | number:'1.1-1' }} / {{ systemInfo.total_ram_gb | number:'1.0-0' }} GB</span>
               <span class="stat-label">RAM Usage</span>
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon" [class]="diskClass"><mat-icon>hard_drive</mat-icon></div>
+            <div class="stat-icon" [class]="diskClass"><span class="material-icons">hard_drive</span></div>
             <div class="stat-body">
               <span class="stat-value">{{ telemetry?.disk_percent | number:'1.0-0' }}%</span>
               <span class="stat-label">Disk ({{ systemInfo.disk_free_gb | number:'1.0-0' }} GB free)</span>
@@ -73,7 +63,7 @@ import { interval, Subscription } from 'rxjs';
           </div>
           <div class="stat-card">
             <div class="stat-icon" [class]="services.length > 0 ? 'si-green' : 'si-muted'">
-              <mat-icon>dns</mat-icon>
+              <span class="material-icons">dns</span>
             </div>
             <div class="stat-body">
               <span class="stat-value">{{ runningCount }}/{{ services.length }}</span>
@@ -82,7 +72,7 @@ import { interval, Subscription } from 'rxjs';
           </div>
           <div class="stat-card">
             <div class="stat-icon" [class]="daemonRunning ? 'si-green' : 'si-muted'">
-              <mat-icon>router</mat-icon>
+              <span class="material-icons">router</span>
             </div>
             <div class="stat-body">
               <span class="stat-value">{{ daemonRunning ? 'Online' : 'Offline' }}</span>
@@ -91,7 +81,7 @@ import { interval, Subscription } from 'rxjs';
           </div>
           <div class="stat-card">
             <div class="stat-icon" [class]="networkStatClass">
-              <mat-icon>{{ networkStatus?.connected ? 'wifi' : 'wifi_off' }}</mat-icon>
+              <span class="material-icons">{{ networkStatus?.connected ? 'wifi' : 'wifi_off' }}</span>
             </div>
             <div class="stat-body">
               <span class="stat-value">{{ networkStatValue }}</span>
@@ -100,7 +90,7 @@ import { interval, Subscription } from 'rxjs';
           </div>
           <div class="stat-card">
             <div class="stat-icon" [class]="lastBackupTime ? 'si-green' : 'si-muted'">
-              <mat-icon>backup</mat-icon>
+              <span class="material-icons">backup</span>
             </div>
             <div class="stat-body">
               <span class="stat-value">{{ lastBackupTime || 'Never' }}</span>
@@ -123,12 +113,12 @@ import { interval, Subscription } from 'rxjs';
       <!-- Main Grid -->
       <div class="grid-2">
         <!-- Services Card -->
-        <mat-card class="dash-card">
+        <div class="card dash-card">
           <div class="card-top">
             <h3>Services</h3>
-            <button mat-stroked-button routerLink="/services" class="btn-sm">
+            <button class="btn btn-stroked btn-sm" routerLink="/services">
               Manage
-              <mat-icon>arrow_forward</mat-icon>
+              <span class="material-icons">arrow_forward</span>
             </button>
           </div>
           @if (services.length > 0) {
@@ -149,24 +139,24 @@ import { interval, Subscription } from 'rxjs';
             }
           } @else {
             <div class="empty-state">
-              <mat-icon>cloud_off</mat-icon>
+              <span class="material-icons">cloud_off</span>
               <span>No Docker services detected</span>
               <a routerLink="/setup" class="empty-link">Run Setup</a>
             </div>
           }
-        </mat-card>
+        </div>
 
         <!-- License & Quick Actions -->
         <div class="right-stack">
           <!-- License Card -->
-          <mat-card class="dash-card">
+          <div class="card dash-card">
             <div class="card-top">
               <h3>License</h3>
             </div>
             @if (license && licenseStatus) {
               <div class="license-row">
                 <div class="license-badge" [class]="'lb-' + licenseStatus.status">
-                  <mat-icon>{{ licenseStatus.icon }}</mat-icon>
+                  <span class="material-icons">{{ licenseStatus.icon }}</span>
                 </div>
                 <div class="license-info">
                   <span class="license-plan">{{ license.hospital_name }}</span>
@@ -175,21 +165,21 @@ import { interval, Subscription } from 'rxjs';
               </div>
               <div class="feature-tags">
                 <span class="ftag" [class.active]="license.features.binlog_shipping">
-                  <mat-icon>{{ license.features.binlog_shipping ? 'check' : 'close' }}</mat-icon>
+                  <span class="material-icons">{{ license.features.binlog_shipping ? 'check' : 'close' }}</span>
                   Binlog Shipping
                 </span>
                 <span class="ftag" [class.active]="license.features.point_in_time_recovery">
-                  <mat-icon>{{ license.features.point_in_time_recovery ? 'check' : 'close' }}</mat-icon>
+                  <span class="material-icons">{{ license.features.point_in_time_recovery ? 'check' : 'close' }}</span>
                   PITR
                 </span>
                 <span class="ftag" [class.active]="license.features.priority_support">
-                  <mat-icon>{{ license.features.priority_support ? 'check' : 'close' }}</mat-icon>
+                  <span class="material-icons">{{ license.features.priority_support ? 'check' : 'close' }}</span>
                   Priority Support
                 </span>
               </div>
               @if (license.machine_name || license.machine_fingerprint) {
                 <div class="machine-row">
-                  <mat-icon>computer</mat-icon>
+                  <span class="material-icons">computer</span>
                   <span class="machine-name">{{ license.machine_name || 'Unknown' }}</span>
                   @if (license.machine_fingerprint) {
                     <code class="machine-fp">{{ license.machine_fingerprint.slice(0, 16) }}...</code>
@@ -198,22 +188,22 @@ import { interval, Subscription } from 'rxjs';
               }
             } @else {
               <div class="empty-state sm">
-                <mat-icon>license</mat-icon>
+                <span class="material-icons">license</span>
                 <span>No license activated</span>
                 <a routerLink="/settings" class="empty-link">Activate License</a>
               </div>
             }
-          </mat-card>
+          </div>
 
           <!-- Network Card -->
-          <mat-card class="dash-card">
+          <div class="card dash-card">
             <div class="card-top">
               <h3>Network</h3>
-              <button mat-stroked-button class="btn-sm" (click)="runSpeedTest()" [disabled]="speedTestRunning">
+              <button class="btn btn-stroked btn-sm" (click)="runSpeedTest()" [disabled]="speedTestRunning">
                 @if (speedTestRunning) {
-                  <mat-spinner diameter="16"></mat-spinner>
+                  <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
                 } @else {
-                  <mat-icon>speed</mat-icon>
+                  <span class="material-icons">speed</span>
                 }
                 Speed Test
               </button>
@@ -258,32 +248,32 @@ import { interval, Subscription } from 'rxjs';
                 </div>
               }
             </div>
-          </mat-card>
+          </div>
 
           <!-- Quick Actions -->
-          <mat-card class="dash-card">
+          <div class="card dash-card">
             <div class="card-top">
               <h3>Quick Actions</h3>
             </div>
             <div class="actions-grid">
               <button class="action-btn" (click)="runBackup()">
-                <div class="ab-icon ab-blue"><mat-icon>backup</mat-icon></div>
+                <div class="ab-icon ab-blue"><span class="material-icons">backup</span></div>
                 <span>Backup</span>
               </button>
               <button class="action-btn" (click)="restartServices()">
-                <div class="ab-icon ab-orange"><mat-icon>refresh</mat-icon></div>
+                <div class="ab-icon ab-orange"><span class="material-icons">refresh</span></div>
                 <span>Restart All</span>
               </button>
               <button class="action-btn" (click)="syncConfig()">
-                <div class="ab-icon ab-purple"><mat-icon>cloud_sync</mat-icon></div>
+                <div class="ab-icon ab-purple"><span class="material-icons">cloud_sync</span></div>
                 <span>Sync</span>
               </button>
               <button class="action-btn" routerLink="/alerts">
-                <div class="ab-icon ab-green"><mat-icon>notifications_none</mat-icon></div>
+                <div class="ab-icon ab-green"><span class="material-icons">notifications_none</span></div>
                 <span>Alerts</span>
               </button>
             </div>
-          </mat-card>
+          </div>
         </div>
       </div>
     </div>
@@ -305,7 +295,7 @@ import { interval, Subscription } from 'rxjs';
       margin-bottom: 20px;
       font-size: 0.875rem;
 
-      mat-icon { font-size: 20px; width: 20px; height: 20px; }
+      .material-icons { font-size: 20px; width: 20px; height: 20px; }
       .banner-text {
         flex: 1;
         display: flex;
@@ -330,19 +320,22 @@ import { interval, Subscription } from 'rxjs';
     /* ── Stats Row ──────────────────────────────── */
     .stats-row {
       display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      gap: 16px;
+      /* responsive auto-fit — cards wrap instead of forcing 6/7 columns and
+         overflowing on narrow widths */
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 14px;
       margin-bottom: 20px;
     }
 
     .stat-card {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
+      min-width: 0;
       background: var(--bg-card);
       border: 1px solid var(--border-card);
       border-radius: var(--radius-md);
-      padding: 18px 20px;
+      padding: 14px 16px;
       box-shadow: var(--shadow-sm);
     }
 
@@ -355,7 +348,7 @@ import { interval, Subscription } from 'rxjs';
       justify-content: center;
       flex-shrink: 0;
 
-      mat-icon {
+      .material-icons {
         font-size: 22px;
         width: 22px;
         height: 22px;
@@ -374,17 +367,24 @@ import { interval, Subscription } from 'rxjs';
     .stat-body {
       display: flex;
       flex-direction: column;
+      min-width: 0;
     }
     .stat-value {
-      font-size: 1.25rem;
+      font-size: 1.15rem;
       font-weight: 700;
       color: var(--text-primary);
       line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .stat-label {
       font-size: 0.75rem;
       color: var(--text-secondary);
       font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     /* ── Skeleton ───────────────────────────────── */
@@ -418,14 +418,19 @@ import { interval, Subscription } from 'rxjs';
     /* ── Grid ───────────────────────────────────── */
     .grid-2 {
       display: grid;
-      grid-template-columns: 1.2fr 1fr;
+      /* minmax(0,…) lets columns shrink below content width so wide/unbreakable
+         content (container names, fingerprints) can't blow the grid out */
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
       gap: 20px;
     }
+
+    .dash-card { min-width: 0; }
 
     .right-stack {
       display: flex;
       flex-direction: column;
       gap: 20px;
+      min-width: 0;
     }
 
     /* ── Card Top Bar ───────────────────────────── */
@@ -452,7 +457,7 @@ import { interval, Subscription } from 'rxjs';
       padding: 0 12px !important;
       height: 32px !important;
       line-height: 32px !important;
-      mat-icon {
+      .material-icons {
         font-size: 16px;
         width: 16px;
         height: 16px;
@@ -474,6 +479,7 @@ import { interval, Subscription } from 'rxjs';
       padding: 9px 0;
       border-bottom: 1px solid var(--border-card);
       font-size: 0.825rem;
+      min-width: 0;
 
       &:last-child { border-bottom: none; }
     }
@@ -487,21 +493,32 @@ import { interval, Subscription } from 'rxjs';
       &.ind-running { background: var(--status-green); box-shadow: 0 0 6px rgba(34, 197, 94, 0.4); }
       &.ind-stopped { background: var(--status-red); }
       &.ind-starting { background: var(--status-orange); }
+      &.ind-notinstalled { background: var(--text-muted); }
       &.ind-error { background: var(--status-red); }
     }
 
     .svc-name {
       font-weight: 600;
       color: var(--text-primary);
-      min-width: 120px;
+      flex-shrink: 0;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .svc-container {
       flex: 1;
+      min-width: 0;
       color: var(--text-muted);
       font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 0.75rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
+
+    .svc-status { flex-shrink: 0; }
 
     .svc-status {
       font-size: 0.7rem;
@@ -512,6 +529,7 @@ import { interval, Subscription } from 'rxjs';
       &.st-running { color: var(--status-green); }
       &.st-stopped { color: var(--status-red); }
       &.st-starting { color: var(--status-orange); }
+      &.st-notinstalled { color: var(--text-muted); }
       &.st-error { color: var(--status-red); }
     }
 
@@ -538,7 +556,7 @@ import { interval, Subscription } from 'rxjs';
       padding: 40px 20px;
       color: var(--text-muted);
 
-      mat-icon {
+      .material-icons {
         font-size: 36px;
         width: 36px;
         height: 36px;
@@ -559,7 +577,7 @@ import { interval, Subscription } from 'rxjs';
 
       &.sm {
         padding: 24px 20px;
-        mat-icon { font-size: 24px; width: 24px; height: 24px; }
+        .material-icons { font-size: 24px; width: 24px; height: 24px; }
       }
     }
 
@@ -580,7 +598,7 @@ import { interval, Subscription } from 'rxjs';
       justify-content: center;
       flex-shrink: 0;
 
-      mat-icon { font-size: 22px; width: 22px; height: 22px; color: white; }
+      .material-icons { font-size: 22px; width: 22px; height: 22px; color: white; }
 
       &.lb-active, &.lb-unlimited { background: linear-gradient(135deg, #22c55e, #16a34a); }
       &.lb-expiring_soon { background: linear-gradient(135deg, #f59e0b, #d97706); }
@@ -622,7 +640,7 @@ import { interval, Subscription } from 'rxjs';
       background: #f1f5f9;
       color: var(--text-muted);
 
-      mat-icon {
+      .material-icons {
         font-size: 14px;
         width: 14px;
         height: 14px;
@@ -642,7 +660,7 @@ import { interval, Subscription } from 'rxjs';
       padding: 8px 20px 14px;
       font-size: 0.8rem;
 
-      > mat-icon {
+      > .material-icons {
         font-size: 16px;
         width: 16px;
         height: 16px;
@@ -712,7 +730,8 @@ import { interval, Subscription } from 'rxjs';
       border-radius: var(--radius-md);
       background: var(--bg-card);
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: border-color 0.15s ease, background-color 0.15s ease,
+                  box-shadow 0.15s ease, transform 0.15s ease;
 
       span {
         font-size: 0.7rem;
@@ -736,7 +755,7 @@ import { interval, Subscription } from 'rxjs';
       align-items: center;
       justify-content: center;
 
-      mat-icon {
+      .material-icons {
         font-size: 20px;
         width: 20px;
         height: 20px;

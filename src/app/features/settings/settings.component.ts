@@ -2,14 +2,6 @@ import { Component, OnInit, inject, ViewChild, ElementRef } from '@angular/core'
 import { CommonModule } from '@angular/common';
 import { resetLicenseCache } from '../../core/guards/init.guard';
 import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatSlideToggleModule } from '@angular/material/slide-toggle';
-import { MatDividerModule } from '@angular/material/divider';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { TauriService, NucleusConfig, DaemonStatus, DaemonConfig, PullSettingsResult, SeedReport, FinaliseReport, TemplateUpdate, ApplyReport } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 import { ConnectionService } from '../../core/services/connection.service';
@@ -20,15 +12,7 @@ import { open } from '@tauri-apps/plugin-dialog';
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule,
-    MatCardModule,
-    MatIconModule,
-    MatButtonModule,
-    MatFormFieldModule,
-    MatInputModule,
-    MatSlideToggleModule,
-    MatDividerModule,
-    MatProgressSpinnerModule
+    FormsModule
   ],
   template: `
     <div class="settings-page p-4">
@@ -36,21 +20,21 @@ import { open } from '@tauri-apps/plugin-dialog';
 
       @if (loading) {
         <div class="loading-container">
-          <mat-spinner diameter="48"></mat-spinner>
+          <span class="spinner spinner-lg"></span>
         </div>
       } @else if (config) {
         <div class="settings-grid">
           <!-- General Settings -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>settings</mat-icon>
-              <mat-card-title>General</mat-card-title>
-            </mat-card-header>
-            <mat-card-content>
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>Hospital Code</mat-label>
-                <input matInput [(ngModel)]="config.hospital_code" readonly>
-              </mat-form-field>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">settings</span>
+              <h2 class="card-title">General</h2>
+            </div>
+            <div class="card-body">
+              <div class="field full-width">
+                <label>Hospital Code</label>
+                <input class="input" [(ngModel)]="config.hospital_code" readonly>
+              </div>
 
               <div class="mode-display">
                 <span class="mode-label">Mode:</span>
@@ -59,165 +43,173 @@ import { open } from '@tauri-apps/plugin-dialog';
                 </span>
               </div>
 
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>Server IP</mat-label>
-                <input matInput [(ngModel)]="config.server_ip">
-              </mat-form-field>
+              <div class="field full-width">
+                <label>Server IP</label>
+                <input class="input" [(ngModel)]="config.server_ip">
+              </div>
 
               @if (config.deployment_mode !== 'native') {
-                <mat-form-field appearance="outline" class="full-width">
-                  <mat-label>Docker Compose Path</mat-label>
-                  <input matInput [(ngModel)]="config.docker_compose_path">
-                </mat-form-field>
+                <div class="field full-width">
+                  <label>Docker Compose Path</label>
+                  <input class="input" [(ngModel)]="config.docker_compose_path">
+                </div>
               }
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
 
           <!-- Cloud Settings -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>cloud</mat-icon>
-              <mat-card-title>Cloud</mat-card-title>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">cloud</span>
+              <h2 class="card-title">Cloud</h2>
+            </div>
+            <div class="card-body">
               <div class="creds-row">
                 @if (credsExists) {
                   <div class="creds-status ok">
-                    <mat-icon>check_circle</mat-icon>
+                    <span class="material-icons">check_circle</span>
                     <span>{{ credsPath }}</span>
                   </div>
                 } @else {
                   <div class="creds-status missing">
-                    <mat-icon>warning</mat-icon>
+                    <span class="material-icons">warning</span>
                     <span>No credentials file found</span>
                   </div>
                 }
                 @if (!isRemote) {
-                  <button mat-stroked-button (click)="browseCredentials()">
-                    <mat-icon>folder_open</mat-icon>
+                  <button class="btn btn-stroked" (click)="browseCredentials()">
+                    <span class="material-icons">folder_open</span>
                     {{ credsExists ? 'Replace' : 'Browse' }}
                   </button>
                 }
               </div>
 
               <div class="toggle-row">
-                <mat-slide-toggle [(ngModel)]="config.backup_enabled">
-                  Enable Cloud Backups
-                </mat-slide-toggle>
+                <label class="check">
+                  <input type="checkbox" [(ngModel)]="config.backup_enabled">
+                  <span>Enable Cloud Backups</span>
+                </label>
                 <p class="toggle-description">
                   Automatically upload backups to Google Cloud Storage
                 </p>
               </div>
 
-              <mat-divider></mat-divider>
+              <div class="divider"></div>
 
               <div class="toggle-row">
-                <mat-slide-toggle [(ngModel)]="config.telemetry_enabled">
-                  Enable Telemetry
-                </mat-slide-toggle>
+                <label class="check">
+                  <input type="checkbox" [(ngModel)]="config.telemetry_enabled">
+                  <span>Enable Telemetry</span>
+                </label>
                 <p class="toggle-description">
                   Send health metrics and status updates to cloud dashboard
                 </p>
               </div>
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
 
           <!-- LAN Backup Settings -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>lan</mat-icon>
-              <mat-card-title>LAN Backup</mat-card-title>
-              <mat-card-subtitle>Copy backups to network share (NFS/SMB)</mat-card-subtitle>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">lan</span>
+              <div class="card-title-group">
+                <h2 class="card-title">LAN Backup</h2>
+                <div class="card-subtitle">Copy backups to network share (NFS/SMB)</div>
+              </div>
+            </div>
+            <div class="card-body">
               <div class="toggle-row">
-                <mat-slide-toggle [(ngModel)]="config.lan.enabled">
-                  Enable LAN Backup
-                </mat-slide-toggle>
+                <label class="check">
+                  <input type="checkbox" [(ngModel)]="config.lan.enabled">
+                  <span>Enable LAN Backup</span>
+                </label>
                 <p class="toggle-description">
                   Copy backup files to a local network share
                 </p>
               </div>
 
               @if (config.lan.enabled) {
-                <mat-form-field appearance="outline" class="full-width">
-                  <mat-label>LAN Path</mat-label>
-                  <input matInput [(ngModel)]="config.lan.path"
+                <div class="field full-width">
+                  <label>LAN Path</label>
+                  <input class="input" [(ngModel)]="config.lan.path"
                          placeholder="/mnt/nas/backups or Z:\\backups">
-                </mat-form-field>
+                </div>
 
                 <div class="lan-validate-row">
-                  <button mat-stroked-button (click)="validateLanPath()" [disabled]="lanValidating || !config.lan.path">
+                  <button class="btn btn-stroked" (click)="validateLanPath()" [disabled]="lanValidating || !config.lan.path">
                     @if (lanValidating) {
-                      <mat-spinner diameter="18"></mat-spinner>
+                      <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
                     } @else {
-                      <mat-icon>verified</mat-icon>
+                      <span class="material-icons">verified</span>
                     }
                     Validate
                   </button>
                   @if (lanValidationResult) {
                     <span class="lan-validation ok">
-                      <mat-icon>check_circle</mat-icon> Path is writable
+                      <span class="material-icons">check_circle</span> Path is writable
                     </span>
                   }
                   @if (lanValidationError) {
                     <span class="lan-validation error">
-                      <mat-icon>error</mat-icon> {{ lanValidationError }}
+                      <span class="material-icons">error</span> {{ lanValidationError }}
                     </span>
                   }
                 </div>
 
-                <mat-divider></mat-divider>
+                <div class="divider"></div>
 
                 <div class="toggle-row">
-                  <mat-slide-toggle [(ngModel)]="config.lan.binlog_enabled">
-                    Enable LAN Binlog Shipping
-                  </mat-slide-toggle>
+                  <label class="check">
+                    <input type="checkbox" [(ngModel)]="config.lan.binlog_enabled">
+                    <span>Enable LAN Binlog Shipping</span>
+                  </label>
                   <p class="toggle-description">
                     Ship MySQL binary logs to the LAN path for point-in-time recovery
                   </p>
                 </div>
               }
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
 
           <!-- Database Settings -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>storage</mat-icon>
-              <mat-card-title>Database</mat-card-title>
-            </mat-card-header>
-            <mat-card-content>
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>MySQL Host</mat-label>
-                <input matInput [(ngModel)]="config.mysql_host" placeholder="127.0.0.1">
-              </mat-form-field>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">storage</span>
+              <h2 class="card-title">Database</h2>
+            </div>
+            <div class="card-body">
+              <div class="field full-width">
+                <label>MySQL Host</label>
+                <input class="input" [(ngModel)]="config.mysql_host" placeholder="127.0.0.1">
+              </div>
 
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>MySQL Port</mat-label>
-                <input matInput type="number" [(ngModel)]="config.mysql_port" placeholder="3306">
-              </mat-form-field>
+              <div class="field full-width">
+                <label>MySQL Port</label>
+                <input class="input" type="number" [(ngModel)]="config.mysql_port" placeholder="3306">
+              </div>
 
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>MySQL User</mat-label>
-                <input matInput [(ngModel)]="config.mysql_user" placeholder="root">
-              </mat-form-field>
+              <div class="field full-width">
+                <label>MySQL User</label>
+                <input class="input" [(ngModel)]="config.mysql_user" placeholder="root">
+              </div>
 
-              <mat-form-field appearance="outline" class="full-width">
-                <mat-label>MySQL Password</mat-label>
-                <input matInput type="password" [(ngModel)]="config.mysql_password">
-              </mat-form-field>
-            </mat-card-content>
-          </mat-card>
+              <div class="field full-width">
+                <label>MySQL Password</label>
+                <input class="input" type="password" [(ngModel)]="config.mysql_password">
+              </div>
+            </div>
+          </div>
 
           <!-- Cloud Sync -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>sync</mat-icon>
-              <mat-card-title>Cloud Sync</mat-card-title>
-              <mat-card-subtitle>Push config to cloud / Pull settings from cloud</mat-card-subtitle>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">sync</span>
+              <div class="card-title-group">
+                <h2 class="card-title">Cloud Sync</h2>
+                <div class="card-subtitle">Push config to cloud / Pull settings from cloud</div>
+              </div>
+            </div>
+            <div class="card-body">
               @if (syncStatus) {
                 <div class="sync-status">
                   <div class="sync-info">
@@ -226,26 +218,26 @@ import { open } from '@tauri-apps/plugin-dialog';
                   </div>
                   @if (syncStatus.pendingChanges > 0) {
                     <div class="pending-warning">
-                      <mat-icon>warning</mat-icon>
+                      <span class="material-icons">warning</span>
                       <span>{{ syncStatus.pendingChanges }} pending changes</span>
                     </div>
                   }
                 </div>
               }
               <div class="sync-actions">
-                <button mat-stroked-button (click)="syncConfig()" [disabled]="syncing">
+                <button class="btn btn-stroked" (click)="syncConfig()" [disabled]="syncing">
                   @if (syncing) {
-                    <mat-spinner diameter="18"></mat-spinner>
+                    <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
                   } @else {
-                    <mat-icon>cloud_upload</mat-icon>
+                    <span class="material-icons">cloud_upload</span>
                   }
                   Sync to Cloud
                 </button>
-                <button mat-stroked-button (click)="pullSettings()" [disabled]="pulling">
+                <button class="btn btn-stroked" (click)="pullSettings()" [disabled]="pulling">
                   @if (pulling) {
-                    <mat-spinner diameter="18"></mat-spinner>
+                    <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
                   } @else {
-                    <mat-icon>cloud_download</mat-icon>
+                    <span class="material-icons">cloud_download</span>
                   }
                   Pull from Cloud
                 </button>
@@ -264,7 +256,7 @@ import { open } from '@tauri-apps/plugin-dialog';
                   }
                   @if (pullResult.license_changed) {
                     <div class="pull-updated">
-                      <mat-icon>check_circle</mat-icon>
+                      <span class="material-icons">check_circle</span>
                       <span>License updated from cloud</span>
                     </div>
                   } @else {
@@ -274,17 +266,19 @@ import { open } from '@tauri-apps/plugin-dialog';
                   }
                 </div>
               }
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
 
           <!-- Daemon Status -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>memory</mat-icon>
-              <mat-card-title>Daemon</mat-card-title>
-              <mat-card-subtitle>{{ daemonStatusInfo?.platform || 'Background service' }}</mat-card-subtitle>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">memory</span>
+              <div class="card-title-group">
+                <h2 class="card-title">Daemon</h2>
+                <div class="card-subtitle">{{ daemonStatusInfo?.platform || 'Background service' }}</div>
+              </div>
+            </div>
+            <div class="card-body">
               @if (isRemote) {
                 <div class="service-detail" style="padding:8px 0 12px">
                   Daemon lifecycle (install / start / stop) is managed on the server itself, not from a remote session.
@@ -295,18 +289,18 @@ import { open } from '@tauri-apps/plugin-dialog';
               <div class="service-status-panel">
                 <div class="service-row">
                   <div class="service-label">
-                    <mat-icon [class]="daemonStatusInfo?.service_installed ? 'status-ok' : 'status-warn'">
+                    <span class="material-icons" [class]="daemonStatusInfo?.service_installed ? 'status-ok' : 'status-warn'">
                       {{ daemonStatusInfo?.service_installed ? 'check_circle' : 'cancel' }}
-                    </mat-icon>
+                    </span>
                     <span>Service {{ daemonStatusInfo?.service_installed ? 'Installed' : 'Not Installed' }}</span>
                   </div>
                   @if (!daemonStatusInfo?.service_installed) {
-                    <button mat-raised-button color="primary" (click)="installDaemon()" [disabled]="daemonAction">
-                      @if (daemonAction === 'installing') { <mat-spinner diameter="18"></mat-spinner> }
-                      <mat-icon>download</mat-icon> Install Service
+                    <button class="btn btn-primary" (click)="installDaemon()" [disabled]="daemonAction">
+                      @if (daemonAction === 'installing') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                      <span class="material-icons">download</span> Install Service
                     </button>
                   } @else {
-                    <button mat-stroked-button color="warn" (click)="uninstallDaemon()" [disabled]="daemonAction">
+                    <button class="btn btn-danger" (click)="uninstallDaemon()" [disabled]="daemonAction">
                       Uninstall
                     </button>
                   }
@@ -315,9 +309,9 @@ import { open } from '@tauri-apps/plugin-dialog';
                 @if (daemonStatusInfo?.service_installed) {
                   <div class="service-row">
                     <div class="service-label">
-                      <mat-icon [class]="daemonRunning ? 'status-ok' : 'status-warn'">
+                      <span class="material-icons" [class]="daemonRunning ? 'status-ok' : 'status-warn'">
                         {{ daemonRunning ? 'play_circle' : 'stop_circle' }}
-                      </mat-icon>
+                      </span>
                       <span>{{ daemonRunning ? 'Running' : 'Stopped' }}</span>
                       @if (daemonStatusInfo?.service_pid) {
                         <span class="daemon-pid">PID {{ daemonStatusInfo?.service_pid }}</span>
@@ -328,31 +322,31 @@ import { open } from '@tauri-apps/plugin-dialog';
                     </div>
                     <div class="daemon-actions">
                       @if (daemonRunning) {
-                        <button mat-stroked-button (click)="stopDaemon()" [disabled]="daemonAction">
-                          @if (daemonAction === 'stopping') { <mat-spinner diameter="18"></mat-spinner> }
+                        <button class="btn btn-stroked" (click)="stopDaemon()" [disabled]="daemonAction">
+                          @if (daemonAction === 'stopping') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
                           Stop
                         </button>
                       } @else {
-                        <button mat-raised-button color="primary" (click)="startDaemon()" [disabled]="daemonAction">
-                          @if (daemonAction === 'starting') { <mat-spinner diameter="18"></mat-spinner> }
+                        <button class="btn btn-primary" (click)="startDaemon()" [disabled]="daemonAction">
+                          @if (daemonAction === 'starting') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
                           Start
                         </button>
                       }
-                      <button mat-stroked-button (click)="restartDaemon()" [disabled]="daemonAction">
-                        @if (daemonAction === 'restarting') { <mat-spinner diameter="18"></mat-spinner> }
+                      <button class="btn btn-stroked" (click)="restartDaemon()" [disabled]="daemonAction">
+                        @if (daemonAction === 'restarting') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
                         Restart
                       </button>
-                      <button mat-icon-button (click)="checkDaemonStatus()" [disabled]="daemonAction">
-                        <mat-icon>refresh</mat-icon>
+                      <button class="btn-icon" (click)="checkDaemonStatus()" [disabled]="daemonAction">
+                        <span class="material-icons">refresh</span>
                       </button>
                     </div>
                   </div>
 
                   <div class="service-row">
                     <div class="service-label">
-                      <mat-icon [class]="daemonStatusInfo?.service_enabled ? 'status-ok' : 'status-muted'">
+                      <span class="material-icons" [class]="daemonStatusInfo?.service_enabled ? 'status-ok' : 'status-muted'">
                         {{ daemonStatusInfo?.service_enabled ? 'autorenew' : 'block' }}
-                      </mat-icon>
+                      </span>
                       <span>Auto-start on boot: {{ daemonStatusInfo?.service_enabled ? 'Yes' : 'No' }}</span>
                     </div>
                   </div>
@@ -360,9 +354,9 @@ import { open } from '@tauri-apps/plugin-dialog';
                   @if (config.deployment_mode !== 'native') {
                     <div class="service-row">
                       <div class="service-label">
-                        <mat-icon [class]="daemonStatusInfo?.docker_connected ? 'status-ok' : 'status-warn'">
+                        <span class="material-icons" [class]="daemonStatusInfo?.docker_connected ? 'status-ok' : 'status-warn'">
                           {{ daemonStatusInfo?.docker_connected ? 'check_circle' : 'warning' }}
-                        </mat-icon>
+                        </span>
                         <span>Docker: {{ daemonStatusInfo?.docker_connected ? 'Connected' : 'Not connected' }}</span>
                       </div>
                     </div>
@@ -377,76 +371,81 @@ import { open } from '@tauri-apps/plugin-dialog';
 
               @if (daemonError) {
                 <div class="daemon-error">
-                  <mat-icon>error</mat-icon>
+                  <span class="material-icons">error</span>
                   <span>{{ daemonError }}</span>
-                  <button mat-icon-button (click)="daemonError = null"><mat-icon>close</mat-icon></button>
+                  <button class="btn-icon" (click)="daemonError = null"><span class="material-icons">close</span></button>
                 </div>
               }
 
-              <mat-divider></mat-divider>
+              <div class="divider"></div>
 
               @if (config) {
                 <div class="daemon-config-section">
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>API Port</mat-label>
-                    <input matInput type="number" [(ngModel)]="daemonPort" placeholder="9090">
-                  </mat-form-field>
+                  <div class="field full-width">
+                    <label>API Port</label>
+                    <input class="input" type="number" [(ngModel)]="daemonPort" placeholder="9090">
+                  </div>
 
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>API Key</mat-label>
-                    <input matInput [type]="showApiKey ? 'text' : 'password'" [(ngModel)]="daemonApiKey" placeholder="Leave empty for no auth">
-                    <button mat-icon-button matSuffix (click)="showApiKey = !showApiKey">
-                      <mat-icon>{{ showApiKey ? 'visibility_off' : 'visibility' }}</mat-icon>
-                    </button>
-                  </mat-form-field>
+                  <div class="field full-width">
+                    <label>API Key</label>
+                    <div class="input-with-suffix">
+                      <input class="input" [type]="showApiKey ? 'text' : 'password'" [(ngModel)]="daemonApiKey" placeholder="Leave empty for no auth">
+                      <button class="btn-icon" (click)="showApiKey = !showApiKey">
+                        <span class="material-icons">{{ showApiKey ? 'visibility_off' : 'visibility' }}</span>
+                      </button>
+                    </div>
+                  </div>
 
                   <div class="toggle-row">
-                    <mat-slide-toggle [(ngModel)]="daemonBackupEnabled">
-                      Scheduled Backups
-                    </mat-slide-toggle>
+                    <label class="check">
+                      <input type="checkbox" [(ngModel)]="daemonBackupEnabled">
+                      <span>Scheduled Backups</span>
+                    </label>
                   </div>
 
                   @if (daemonBackupEnabled) {
                     <div class="inline-fields">
-                      <mat-form-field appearance="outline">
-                        <mat-label>Backup Time (HH:MM)</mat-label>
-                        <input matInput [(ngModel)]="daemonBackupTime" placeholder="02:00">
-                        <mat-hint>Daily at this time (24h format). Leave empty for interval-based.</mat-hint>
-                      </mat-form-field>
-                      <mat-form-field appearance="outline">
-                        <mat-label>Backup Type</mat-label>
-                        <input matInput [(ngModel)]="daemonBackupType" placeholder="full">
-                      </mat-form-field>
+                      <div class="field">
+                        <label>Backup Time (HH:MM)</label>
+                        <input class="input" [(ngModel)]="daemonBackupTime" placeholder="02:00">
+                        <span class="field-hint">Daily at this time (24h format). Leave empty for interval-based.</span>
+                      </div>
+                      <div class="field">
+                        <label>Backup Type</label>
+                        <input class="input" [(ngModel)]="daemonBackupType" placeholder="full">
+                      </div>
                     </div>
-                    <mat-form-field appearance="outline" class="full-width">
-                      <mat-label>Fallback Interval (hours)</mat-label>
-                      <input matInput type="number" [(ngModel)]="daemonBackupIntervalHours" min="1">
-                      <mat-hint>Used if backup time is not set</mat-hint>
-                    </mat-form-field>
+                    <div class="field full-width">
+                      <label>Fallback Interval (hours)</label>
+                      <input class="input" type="number" [(ngModel)]="daemonBackupIntervalHours" min="1">
+                      <span class="field-hint">Used if backup time is not set</span>
+                    </div>
                   }
 
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Telemetry Interval (minutes)</mat-label>
-                    <input matInput type="number" [(ngModel)]="daemonTelemetryMinutes" min="0" placeholder="15 (0 = disabled)">
-                  </mat-form-field>
+                  <div class="field full-width">
+                    <label>Telemetry Interval (minutes)</label>
+                    <input class="input" type="number" [(ngModel)]="daemonTelemetryMinutes" min="0" placeholder="15 (0 = disabled)">
+                  </div>
                 </div>
               }
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
 
           <!-- TLS / HTTPS Card -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>lock</mat-icon>
-              <mat-card-title>HTTPS / TLS</mat-card-title>
-              <mat-card-subtitle>Secure connection for voice calls &amp; screen share</mat-card-subtitle>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">lock</span>
+              <div class="card-title-group">
+                <h2 class="card-title">HTTPS / TLS</h2>
+                <div class="card-subtitle">Secure connection for voice calls &amp; screen share</div>
+              </div>
+            </div>
+            <div class="card-body">
               @if (tlsStatus) {
                 <div class="tls-status-row">
-                  <mat-icon [class]="tlsStatus.configured ? 'status-ok' : 'status-warn'">
+                  <span class="material-icons" [class]="tlsStatus.configured ? 'status-ok' : 'status-warn'">
                     {{ tlsStatus.configured ? 'check_circle' : 'warning' }}
-                  </mat-icon>
+                  </span>
                   <span>{{ tlsStatus.configured ? 'HTTPS configured' : 'HTTPS not configured' }}</span>
                 </div>
 
@@ -456,11 +455,11 @@ import { open } from '@tauri-apps/plugin-dialog';
                     <span>Cert: {{ tlsStatus.cert_path }}</span>
                   </div>
                   <div class="tls-actions-row">
-                    <button mat-stroked-button (click)="downloadTlsScript()">
-                      <mat-icon>download</mat-icon> Client Setup Script
+                    <button class="btn btn-stroked" (click)="downloadTlsScript()">
+                      <span class="material-icons">download</span> Client Setup Script
                     </button>
-                    <button mat-stroked-button (click)="copyTlsNginxConfig()">
-                      <mat-icon>content_copy</mat-icon> Nginx Config
+                    <button class="btn btn-stroked" (click)="copyTlsNginxConfig()">
+                      <span class="material-icons">content_copy</span> Nginx Config
                     </button>
                   </div>
                 } @else {
@@ -468,48 +467,50 @@ import { open } from '@tauri-apps/plugin-dialog';
                     Requires <code>mkcert</code> installed on this server.
                     Run setup or click below to generate certificates.
                   </p>
-                  <button mat-raised-button color="primary" (click)="runTlsSetup()" [disabled]="tlsSettingUp">
-                    @if (tlsSettingUp) { <mat-spinner diameter="18"></mat-spinner> }
-                    <mat-icon>lock</mat-icon> Setup HTTPS
+                  <button class="btn btn-primary" (click)="runTlsSetup()" [disabled]="tlsSettingUp">
+                    @if (tlsSettingUp) { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                    <span class="material-icons">lock</span> Setup HTTPS
                   </button>
                 }
               } @else {
                 <div class="loading-inline">
-                  <mat-spinner diameter="20"></mat-spinner>
+                  <span class="spinner"></span>
                   <span>Checking TLS status...</span>
                 </div>
               }
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
           <!-- Data Seeding -->
-          <mat-card class="settings-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>spa</mat-icon>
-              <mat-card-title>Data Seeding</mat-card-title>
-              <mat-card-subtitle>Populate fresh-install defaults (idempotent — never overwrites existing values)</mat-card-subtitle>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">spa</span>
+              <div class="card-title-group">
+                <h2 class="card-title">Data Seeding</h2>
+                <div class="card-subtitle">Populate fresh-install defaults (idempotent — never overwrites existing values)</div>
+              </div>
+            </div>
+            <div class="card-body">
               <p class="seed-hint">
-                <mat-icon>info_outline</mat-icon>
+                <span class="material-icons">info_outline</span>
                 Run once after the services have started for the first time, so their database tables exist.
               </p>
 
-              <button mat-raised-button color="primary" (click)="seedAll()" [disabled]="!!seeding">
-                @if (seeding === 'all') { <mat-spinner diameter="18"></mat-spinner> }
-                <mat-icon>auto_fix_high</mat-icon> Seed All
+              <button class="btn btn-primary" (click)="seedAll()" [disabled]="!!seeding">
+                @if (seeding === 'all') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                <span class="material-icons">auto_fix_high</span> Seed All
               </button>
 
               <div class="seed-advanced">
                 <div class="seed-advanced-header">Advanced — seed individually</div>
                 <div class="toggle-row compact">
-                  <mat-slide-toggle [(ngModel)]="seedDb">Databases (config, ref data, document master)</mat-slide-toggle>
-                  <mat-slide-toggle [(ngModel)]="seedQueues">RabbitMQ Queues</mat-slide-toggle>
-                  <mat-slide-toggle [(ngModel)]="seedTemplates">Report Templates</mat-slide-toggle>
+                  <label class="check"><input type="checkbox" [(ngModel)]="seedDb"><span>Databases (config, ref data, document master)</span></label>
+                  <label class="check"><input type="checkbox" [(ngModel)]="seedQueues"><span>RabbitMQ Queues</span></label>
+                  <label class="check"><input type="checkbox" [(ngModel)]="seedTemplates"><span>Report Templates</span></label>
                 </div>
-                <button mat-stroked-button (click)="seedSelected()"
+                <button class="btn btn-stroked" (click)="seedSelected()"
                         [disabled]="!!seeding || (!seedDb && !seedQueues && !seedTemplates)">
-                  @if (seeding === 'selected') { <mat-spinner diameter="18"></mat-spinner> }
-                  <mat-icon>play_arrow</mat-icon> Seed Selected
+                  @if (seeding === 'selected') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                  <span class="material-icons">play_arrow</span> Seed Selected
                 </button>
               </div>
 
@@ -518,7 +519,7 @@ import { open } from '@tauri-apps/plugin-dialog';
                   @for (section of seedReport.sections; track section.name) {
                     <div class="seed-section" [class.has-errors]="section.errors.length > 0">
                       <div class="seed-section-head">
-                        <mat-icon>{{ section.errors.length > 0 ? 'error' : 'check_circle' }}</mat-icon>
+                        <span class="material-icons">{{ section.errors.length > 0 ? 'error' : 'check_circle' }}</span>
                         <span class="seed-section-name">{{ section.name }}</span>
                         <span class="seed-counts">{{ section.created }} created · {{ section.skipped }} skipped</span>
                       </div>
@@ -538,30 +539,30 @@ import { open } from '@tauri-apps/plugin-dialog';
               <div class="seed-advanced">
                 <div class="seed-advanced-header">Hospital templates</div>
                 <p class="seed-hint">
-                  <mat-icon>info_outline</mat-icon>
+                  <span class="material-icons">info_outline</span>
                   Finalise uploads the local templates to this hospital's cloud folder. Master jrxml stays generic — per-hospital values come from config.
                 </p>
                 <div class="tpl-actions">
-                  <button mat-stroked-button (click)="finaliseTemplates()" [disabled]="!!tplBusy">
-                    @if (tplBusy === 'finalise') { <mat-spinner diameter="18"></mat-spinner> }
-                    <mat-icon>cloud_upload</mat-icon> Finalise Templates
+                  <button class="btn btn-stroked" (click)="finaliseTemplates()" [disabled]="!!tplBusy">
+                    @if (tplBusy === 'finalise') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                    <span class="material-icons">cloud_upload</span> Finalise Templates
                   </button>
-                  <button mat-stroked-button (click)="checkTemplateUpdates()" [disabled]="!!tplBusy">
-                    @if (tplBusy === 'check') { <mat-spinner diameter="18"></mat-spinner> }
-                    <mat-icon>sync</mat-icon> Check for Updates
+                  <button class="btn btn-stroked" (click)="checkTemplateUpdates()" [disabled]="!!tplBusy">
+                    @if (tplBusy === 'check') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                    <span class="material-icons">sync</span> Check for Updates
                   </button>
                 </div>
 
                 @if (tplChecked && templateUpdates.length === 0) {
                   <div class="tpl-uptodate">
-                    <mat-icon>check_circle</mat-icon> Templates are up to date
+                    <span class="material-icons">check_circle</span> Templates are up to date
                   </div>
                 }
 
                 @if (templateUpdates.length > 0) {
                   <div class="tpl-updates">
                     <div class="tpl-updates-head">
-                      <mat-icon>system_update_alt</mat-icon>
+                      <span class="material-icons">system_update_alt</span>
                       <span>{{ templateUpdates.length }} update(s) available</span>
                     </div>
                     @for (u of templateUpdates; track u.path) {
@@ -570,30 +571,32 @@ import { open } from '@tauri-apps/plugin-dialog';
                         <span class="tpl-path">{{ u.path }}</span>
                       </div>
                     }
-                    <button mat-raised-button color="primary" class="tpl-apply" (click)="applyTemplateUpdates()" [disabled]="!!tplBusy">
-                      @if (tplBusy === 'apply') { <mat-spinner diameter="18"></mat-spinner> }
-                      <mat-icon>download</mat-icon> Apply (overwrite local)
+                    <button class="btn btn-primary tpl-apply" (click)="applyTemplateUpdates()" [disabled]="!!tplBusy">
+                      @if (tplBusy === 'apply') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                      <span class="material-icons">download</span> Apply (overwrite local)
                     </button>
                   </div>
                 }
               </div>
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
 
           <!-- Daemon Log -->
-          <mat-card class="settings-card daemon-log-card">
-            <mat-card-header>
-              <mat-icon mat-card-avatar>article</mat-icon>
-              <mat-card-title>Daemon Log</mat-card-title>
-              <mat-card-subtitle>Last 100 lines of daemon.log</mat-card-subtitle>
-            </mat-card-header>
-            <mat-card-content>
+          <div class="card card-pad settings-card daemon-log-card">
+            <div class="card-head">
+              <span class="material-icons card-avatar">article</span>
+              <div class="card-title-group">
+                <h2 class="card-title">Daemon Log</h2>
+                <div class="card-subtitle">Last 100 lines of daemon.log</div>
+              </div>
+            </div>
+            <div class="card-body">
               <div class="daemon-log-actions">
-                <button mat-stroked-button (click)="loadDaemonLog()" [disabled]="daemonLogLoading">
+                <button class="btn btn-stroked" (click)="loadDaemonLog()" [disabled]="daemonLogLoading">
                   @if (daemonLogLoading) {
-                    <mat-spinner diameter="18"></mat-spinner>
+                    <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
                   } @else {
-                    <mat-icon>refresh</mat-icon>
+                    <span class="material-icons">refresh</span>
                   }
                   {{ daemonLogContent ? 'Refresh' : 'Load Log' }}
                 </button>
@@ -601,50 +604,52 @@ import { open } from '@tauri-apps/plugin-dialog';
               @if (daemonLogContent) {
                 <pre class="daemon-log-output" #daemonLogPre>{{ daemonLogContent }}</pre>
               }
-            </mat-card-content>
-          </mat-card>
+            </div>
+          </div>
         </div>
 
         <div class="actions">
-          <button mat-raised-button color="primary" (click)="saveConfig()">
-            <mat-icon>save</mat-icon>
+          <button class="btn btn-primary" (click)="saveConfig()">
+            <span class="material-icons">save</span>
             Save Changes
           </button>
-          <button mat-stroked-button (click)="loadConfig()">
-            <mat-icon>refresh</mat-icon>
+          <button class="btn btn-stroked" (click)="loadConfig()">
+            <span class="material-icons">refresh</span>
             Reset
           </button>
         </div>
 
         <!-- Danger Zone -->
-        <mat-card class="settings-card danger-zone-card">
-          <mat-card-header>
-            <mat-icon mat-card-avatar style="color:#c62828">warning</mat-icon>
-            <mat-card-title>Danger Zone</mat-card-title>
-            <mat-card-subtitle>Actions that cannot be easily undone</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
+        <div class="card card-pad settings-card danger-zone-card">
+          <div class="card-head">
+            <span class="material-icons card-avatar" style="color:#c62828">warning</span>
+            <div class="card-title-group">
+              <h2 class="card-title">Danger Zone</h2>
+              <div class="card-subtitle">Actions that cannot be easily undone</div>
+            </div>
+          </div>
+          <div class="card-body">
             <div class="danger-item">
               <div class="danger-info">
                 <strong>Reset Activation</strong>
                 <span>Removes license, clears hospital code, and logs deactivation to Firestore. You will need to re-activate with an email.</span>
               </div>
               @if (!confirmingReset) {
-                <button mat-stroked-button color="warn" (click)="confirmingReset = true">
-                  <mat-icon>restart_alt</mat-icon> Reset
+                <button class="btn btn-danger" (click)="confirmingReset = true">
+                  <span class="material-icons">restart_alt</span> Reset
                 </button>
               } @else {
                 <div class="confirm-actions">
-                  <button mat-raised-button color="warn" (click)="resetActivation()" [disabled]="resetting">
-                    @if (resetting) { <mat-spinner diameter="18"></mat-spinner> }
+                  <button class="btn btn-danger" (click)="resetActivation()" [disabled]="resetting">
+                    @if (resetting) { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
                     Confirm Reset
                   </button>
-                  <button mat-stroked-button (click)="confirmingReset = false">Cancel</button>
+                  <button class="btn btn-stroked" (click)="confirmingReset = false">Cancel</button>
                 </div>
               }
             </div>
-          </mat-card-content>
-        </mat-card>
+          </div>
+        </div>
       }
     </div>
   `,
@@ -672,17 +677,80 @@ import { open } from '@tauri-apps/plugin-dialog';
       margin-bottom: 1.5rem;
     }
 
-    .settings-card {
-      mat-card-header {
-        margin-bottom: 1rem;
-      }
+    .card-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 1rem;
+    }
 
-      mat-icon[mat-card-avatar] {
-        background: #e8eaf6;
-        padding: 8px;
-        border-radius: 50%;
-        color: #3f51b5;
-      }
+    .card-avatar {
+      background: #e8eaf6;
+      padding: 8px;
+      border-radius: 50%;
+      color: #3f51b5;
+      font-size: 24px;
+      width: 24px;
+      height: 24px;
+    }
+
+    .card-title {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #333;
+    }
+
+    .card-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .card-subtitle {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border-card);
+      margin: 1rem 0;
+    }
+
+    .check {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+
+    .check input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent-indigo);
+      cursor: pointer;
+    }
+
+    .field-hint {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .field-error {
+      font-size: 0.72rem;
+      color: var(--status-red);
+    }
+
+    .input-with-suffix {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .input-with-suffix .input {
+      flex: 1;
     }
 
     .mode-display {
@@ -719,7 +787,7 @@ import { open } from '@tauri-apps/plugin-dialog';
     .toggle-row {
       padding: 1rem 0;
 
-      mat-slide-toggle {
+      .check {
         margin-bottom: 0.5rem;
       }
 
@@ -784,7 +852,7 @@ import { open } from '@tauri-apps/plugin-dialog';
         font-size: 0.875rem;
         margin-top: 0.5rem;
 
-        mat-icon {
+        .material-icons {
           font-size: 18px;
           width: 18px;
           height: 18px;
@@ -831,7 +899,7 @@ import { open } from '@tauri-apps/plugin-dialog';
         display: flex;
         gap: 1rem;
 
-        mat-form-field {
+        .field {
           flex: 1;
         }
       }
@@ -852,7 +920,7 @@ import { open } from '@tauri-apps/plugin-dialog';
       gap: 8px;
       font-size: 0.8rem;
 
-      mat-icon {
+      .material-icons {
         font-size: 18px;
         width: 18px;
         height: 18px;
@@ -886,7 +954,7 @@ import { open } from '@tauri-apps/plugin-dialog';
       gap: 4px;
       font-size: 0.85rem;
 
-      mat-icon {
+      .material-icons {
         font-size: 18px;
         width: 18px;
         height: 18px;
@@ -1012,7 +1080,7 @@ import { open } from '@tauri-apps/plugin-dialog';
       font-size: 0.85rem;
       margin-bottom: 1rem;
 
-      mat-icon:first-child { font-size: 18px; width: 18px; height: 18px; margin-top: 2px; }
+      .material-icons:first-child { font-size: 18px; width: 18px; height: 18px; margin-top: 2px; }
       span { flex: 1; word-break: break-word; }
       button { margin-left: auto; flex-shrink: 0; }
     }
@@ -1049,7 +1117,7 @@ import { open } from '@tauri-apps/plugin-dialog';
       color: #666;
       margin: 0 0 1rem;
 
-      mat-icon { font-size: 18px; width: 18px; height: 18px; margin-top: 1px; color: #1565c0; }
+      .material-icons { font-size: 18px; width: 18px; height: 18px; margin-top: 1px; color: #1565c0; }
     }
 
     .seed-advanced {
@@ -1094,12 +1162,12 @@ import { open } from '@tauri-apps/plugin-dialog';
       align-items: center;
       gap: 0.5rem;
 
-      mat-icon { font-size: 18px; width: 18px; height: 18px; color: #4caf50; }
+      .material-icons { font-size: 18px; width: 18px; height: 18px; color: #4caf50; }
       .seed-section-name { font-weight: 500; }
       .seed-counts { margin-left: auto; color: #666; font-size: 0.78rem; }
     }
 
-    .seed-section.has-errors .seed-section-head mat-icon { color: #f44336; }
+    .seed-section.has-errors .seed-section-head .material-icons { color: #f44336; }
 
     .seed-errors {
       margin: 0.5rem 0 0;
@@ -1125,7 +1193,7 @@ import { open } from '@tauri-apps/plugin-dialog';
       color: #4caf50;
       margin-top: 0.75rem;
 
-      mat-icon { font-size: 18px; width: 18px; height: 18px; }
+      .material-icons { font-size: 18px; width: 18px; height: 18px; }
     }
 
     .tpl-updates {
@@ -1144,7 +1212,7 @@ import { open } from '@tauri-apps/plugin-dialog';
       color: #e65100;
       margin-bottom: 0.5rem;
 
-      mat-icon { font-size: 18px; width: 18px; height: 18px; }
+      .material-icons { font-size: 18px; width: 18px; height: 18px; }
     }
 
     .tpl-update-row {
