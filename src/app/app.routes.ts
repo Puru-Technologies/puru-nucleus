@@ -69,5 +69,10 @@ export const routes: Routes = [
     path: 'compose',
     canActivate: [initGuard],
     loadComponent: () => import('./features/compose/compose.component').then(m => m.ComposeComponent)
+  },
+  {
+    path: 'master-data',
+    canActivate: [initGuard],
+    loadComponent: () => import('./features/master-data/master-data.component').then(m => m.MasterDataComponent)
   }
 ];

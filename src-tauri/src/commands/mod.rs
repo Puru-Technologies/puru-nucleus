@@ -2030,6 +2030,19 @@ pub async fn seed_data(
         .map_err(|e| e.user_message())
 }
 
+/// Manually seed master-data catalogues (e.g. radiology service rows). Runs
+/// ONLY on explicit user request — never as part of first-run setup. Idempotent
+/// on (name, s_class, type) so duplicate names across modalities all land.
+#[tauri::command]
+pub async fn seed_master_data(
+    radiology: bool,
+) -> Result<crate::seed::SeedReport, String> {
+    tracing::info!("Seeding master data (radiology={})", radiology);
+    crate::seed::run_master_data_seed(radiology)
+        .await
+        .map_err(|e| e.user_message())
+}
+
 /// Native setup step: seed RabbitMQ queues. Runs BEFORE services start — the
 /// Spring services passively declare their queues at boot and crash if missing.
 /// Strict: any queue-declare error fails the step so the operator sees it before

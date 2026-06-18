@@ -144,6 +144,14 @@ pub enum Commands {
         templates: bool,
     },
 
+    /// Seed master-data catalogues (e.g. radiology services) — user-triggered,
+    /// never runs on first-install. Idempotent on (name, s_class, type).
+    SeedMasterData {
+        /// Seed the curated radiology services catalogue
+        #[arg(long)]
+        radiology: bool,
+    },
+
     /// Run in daemon mode (background service)
     Daemon,
 }

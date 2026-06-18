@@ -811,3 +811,371 @@ async fn download_templates(data_root: &str) -> Result<(u64, u64), NucleusError>
     );
     Ok((created, skipped))
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// MASTER DATA — user-triggered, separate from first-run.
+// ════════════════════════════════════════════════════════════════════════════
+//
+// run_master_data_seed runs only on explicit user request (UI button / CLI
+// flag / dedicated daemon route). Catalogues here mirror the long-running
+// curation done in production hospitals, normalised down to canonical
+// s_class values (CT Scan, MRI, X Ray, Sonography USG, Echo, Cath Lab).
+//
+// Existing rows are never overwritten — the idempotency check uses
+// (name, s_class, type) so duplicate names across modalities (e.g. an
+// "Ankle Joint" under both CT Scan and MRI) all land correctly.
+
+// Radiology services — type = ServiceType.RADIO ordinal (2 in puru-carbon).
+// Source: bargad_puru_has.service WHERE type = 2, normalised:
+//   • trim whitespace on name + s_class
+//   • drop Physio rows misfiled under MRI
+//   • drop billing / aggregate rows (ADMINISTRATIVE CHARGES, Ct Charge,
+//     Radiology Test)
+//   • collapse case / spelling variants of s_class onto canonical values
+//   • drop anything that doesn't land in the canonical set.
+const HAS_RADIOLOGY_SERVICES: &[(&str, &str)] = &[
+    ("3 D FACE", "CT Scan"),
+    ("3D FACE", "CT Scan"),
+    ("ABDOMEN PLAIN", "CT Scan"),
+    ("Angio Brain", "CT Scan"),
+    ("Ankle Joint", "CT Scan"),
+    ("Ankle Joint With Contrast", "CT Scan"),
+    ("Arm / Forearm", "CT Scan"),
+    ("Arm / Forearm With Contrast", "CT Scan"),
+    ("AROTOGRAM", "CT Scan"),
+    ("B/L LOWER LIMB ANGIO", "CT Scan"),
+    ("B/L UPPER LIMB ANGIO", "CT Scan"),
+    ("Both Shoulder", "CT Scan"),
+    ("Brain", "CT Scan"),
+    ("Brain With Contrast", "CT Scan"),
+    ("Brain, Orbits With Contrast", "CT Scan"),
+    ("Cervical Spine", "CT Scan"),
+    ("Cervico Dorsal Spine", "CT Scan"),
+    ("Chest ,Thorax", "CT Scan"),
+    ("Chest 3D", "CT Scan"),
+    ("Chest, Thorax With Contrast", "CT Scan"),
+    ("CISTERNOGRAM", "CT Scan"),
+    ("CT ABDOMEN TRIPLE PHASE", "CT Scan"),
+    ("CT AORTAGRAM", "CT Scan"),
+    ("CT IVP", "CT Scan"),
+    ("CT PNS", "CT Scan"),
+    ("CT Pulmonary Angio", "CT Scan"),
+    ("CT UROGRAM / UROGRAPHY", "CT Scan"),
+    ("CVJ", "CT Scan"),
+    ("Dorsal Spine", "CT Scan"),
+    ("Dorso Lumbar Spine", "CT Scan"),
+    ("Elbow Joint", "CT Scan"),
+    ("Elbow Joint With Contrast", "CT Scan"),
+    ("ENTEROGRAPHY", "CT Scan"),
+    ("ENTEROGROPHY (ABDOMEN)", "CT Scan"),
+    ("Facial Bone", "CT Scan"),
+    ("Facial Bone, Brain With Contrast", "CT Scan"),
+    ("Foot", "CT Scan"),
+    ("Foot With Contrast", "CT Scan"),
+    ("Head", "CT Scan"),
+    ("Hip Joint", "CT Scan"),
+    ("Hip Joint With Contrast", "CT Scan"),
+    ("HRCT Chest Plain", "CT Scan"),
+    ("HRCT Chest With Contrast (CECT)", "CT Scan"),
+    ("HRCT TEMPORAL", "CT Scan"),
+    ("HRCT TEMPORAL +COCHLEA 3D", "CT Scan"),
+    ("Knee Joint", "CT Scan"),
+    ("Knee Joint With Contrast", "CT Scan"),
+    ("KUB", "CT Scan"),
+    ("LEFT LOWER LIMB ANGIO", "CT Scan"),
+    ("LEFT UPPER LIMB ANGIO", "CT Scan"),
+    ("Lower Abdomen With Contrast", "CT Scan"),
+    ("Lumbar Spine", "CT Scan"),
+    ("Lumbo Sacral Spine", "CT Scan"),
+    ("MH - CECT Abdomen", "CT Scan"),
+    ("NCCT ABDOMEN", "CT Scan"),
+    ("Neck", "CT Scan"),
+    ("NECK + BRAIN ANGIO", "CT Scan"),
+    ("NECK ANGIO", "CT Scan"),
+    ("Neck With Contrast", "CT Scan"),
+    ("Orbit", "CT Scan"),
+    ("PALMONARY ANGIO", "CT Scan"),
+    ("Pelvis", "CT Scan"),
+    ("Pelvis With Contrast", "CT Scan"),
+    ("RENAL ANGIO", "CT Scan"),
+    ("RIGHT LOWER LIMB ANGIO", "CT Scan"),
+    ("RIGHT UPPER LIMB ANGIO", "CT Scan"),
+    ("Scan Cd", "CT Scan"),
+    ("Scan Screening Charges", "CT Scan"),
+    ("Shoulder Joint", "CT Scan"),
+    ("Shoulder Joint With Contrast", "CT Scan"),
+    ("SI JOINT", "CT Scan"),
+    ("T M Joint", "CT Scan"),
+    ("Test CT Scan", "CT Scan"),
+    ("Thigh, Leg", "CT Scan"),
+    ("Thigh, Leg With Contrast", "CT Scan"),
+    ("Upper Abdomen Plain", "CT Scan"),
+    ("Upper Abdomen With Contrast", "CT Scan"),
+    ("UPPER LIMB ANGIO", "CT Scan"),
+    ("Whole Abdome", "CT Scan"),
+    ("Whole Abdomen With Contrast", "CT Scan"),
+    ("Wrist Joint", "CT Scan"),
+    ("Wrist Joint With Contrast", "CT Scan"),
+    ("ECHO", "Echo"),
+    ("ECHO Bed Side", "Echo"),
+    ("TMT", "Echo"),
+    ("Abdomen", "MRI"),
+    ("Ankle Joint", "MRI"),
+    ("Ankle Screening", "MRI"),
+    ("ARM", "MRI"),
+    ("BRAICHIAL PLEXUS", "MRI"),
+    ("BRAIN + CISS + FIESTA", "MRI"),
+    ("BRAIN + MRV (venogram)", "MRI"),
+    ("Brain + Spectro +Contrast", "MRI"),
+    ("Brain Angiogram", "MRI"),
+    ("BRAIN SCREENING CHARGE", "MRI"),
+    ("BRAIN WITH MRA", "MRI"),
+    ("Breast", "MRI"),
+    ("CERVICAL SPINE SCREENING", "MRI"),
+    ("Cervical/Dorsal/Lumbar+Scrng 1 Spine", "MRI"),
+    ("Cervical+Scrng Whole Spine", "MRI"),
+    ("Chest", "MRI"),
+    ("Dorsal+Scrng Whole Spine", "MRI"),
+    ("Finger", "MRI"),
+    ("Forearm", "MRI"),
+    ("HAND", "MRI"),
+    ("HIP + LUMBER SCREENING", "MRI"),
+    ("HIP Screening", "MRI"),
+    ("Humerus", "MRI"),
+    ("IAC", "MRI"),
+    ("Leg Plain", "MRI"),
+    ("Liver (Mrcp)", "MRI"),
+    ("Lumbar Sacral+Scrng Whole Spine", "MRI"),
+    ("LUMBAR SPINE SCREENING", "MRI"),
+    ("Lumbar+Scrng Whole Spine", "MRI"),
+    ("LUMBER + SCREENING HIP", "MRI"),
+    ("LUMBER PLEXUS", "MRI"),
+    ("LUMBER SPINE", "MRI"),
+    ("Lumbo-Sacral Spine", "MRI"),
+    ("Mendible", "MRI"),
+    ("MH -  MRI - SINGLE PART", "MRI"),
+    ("MH - MRI", "MRI"),
+    ("MH - MRI - WITH CONTRAST (SINGLE PART)", "MRI"),
+    ("MH - MRI SCRNG - WHOLE SPINE", "MRI"),
+    ("MRCP", "MRI"),
+    ("MRI BRACHAIL PLEXUS", "MRI"),
+    ("MRI Brain", "MRI"),
+    ("MRI BRAIN + ANGIO + IC + AC", "MRI"),
+    ("MRI BRAIN + ANGIO + VENO", "MRI"),
+    ("MRI Brain + Epilepsy", "MRI"),
+    ("MRI Brain Screening", "MRI"),
+    ("MRI BRAIN WITH MRA + EXTRA CARNIAL NECK VESSELS", "MRI"),
+    ("MRI BRAIN+ANGIO", "MRI"),
+    ("MRI BRAIN+MRA+MRV (VENOGRAM+ANGIOGRAM)", "MRI"),
+    ("MRI CERVICAL SPINE", "MRI"),
+    ("MRI Cervical Spine Whole Spine Screening", "MRI"),
+    ("MRI Contrast", "MRI"),
+    ("MRI DORSAL SPINE", "MRI"),
+    ("MRI ELBOW JOINT", "MRI"),
+    ("MRI FACE", "MRI"),
+    ("MRI FISTULOGRAM", "MRI"),
+    ("MRI FOOT", "MRI"),
+    ("MRI HIP JOINT", "MRI"),
+    ("MRI KNEE JOINT", "MRI"),
+    ("MRI LS Spine", "MRI"),
+    ("MRI Lumbar Plexus", "MRI"),
+    ("MRI NECK", "MRI"),
+    ("MRI ORBITS", "MRI"),
+    ("MRI PELVIS", "MRI"),
+    ("MRI PNS", "MRI"),
+    ("MRI SCRNG - CERVICAL SPINE", "MRI"),
+    ("MRI SCRNG - DORSAL", "MRI"),
+    ("MRI SCRNG - LUMBER SPINE", "MRI"),
+    ("MRI SHOULDER JOINT", "MRI"),
+    ("MRI THIGH", "MRI"),
+    ("MRI TM JOINT", "MRI"),
+    ("MRI VENOGRAM", "MRI"),
+    ("MRI Whole Spine Screening", "MRI"),
+    ("MRI WRIST JOINT", "MRI"),
+    ("MRV", "MRI"),
+    ("Neck Carotid Angio", "MRI"),
+    ("ORBIT SCREENING", "MRI"),
+    ("PROSTATE", "MRI"),
+    ("Scrng Whole Spine", "MRI"),
+    ("SCROTUM", "MRI"),
+    ("SPECTRO", "MRI"),
+    ("Thigh", "MRI"),
+    ("Thorax", "MRI"),
+    ("Tm Joint", "MRI"),
+    ("Venogram", "MRI"),
+    ("W S S", "MRI"),
+    ("WHOLE SPINE SCREENING", "MRI"),
+    ("WSS", "MRI"),
+    ("COLOUR DOPPLER", "Sonography USG"),
+    ("NT / NB Scan", "Sonography USG"),
+    ("Skull", "Sonography USG"),
+    ("USG B-SCAN EYE", "Sonography USG"),
+    ("USG BED SIDE CHARGES", "Sonography USG"),
+    ("USG BREAST", "Sonography USG"),
+    ("USG CHEST", "Sonography USG"),
+    ("USG KUB", "Sonography USG"),
+    ("USG KUB & PROSTATE", "Sonography USG"),
+    ("USG LOCAL LISION", "Sonography USG"),
+    ("USG NECK-PARATHYROID", "Sonography USG"),
+    ("USG NECK-THYROID", "Sonography USG"),
+    ("USG OBSTETRICS & GYNAECOLOGY", "Sonography USG"),
+    ("USG OVULATION STUDY", "Sonography USG"),
+    ("USG PELVIS", "Sonography USG"),
+    ("USG PROSTATE", "Sonography USG"),
+    ("USG SCROTUM / TESTIS", "Sonography USG"),
+    ("USG TARGET SCAN FOR CONGENITAL ANOMALY", "Sonography USG"),
+    ("USG TFU NEONATAL BRAIN", "Sonography USG"),
+    ("USG WHOLE ABDOMEN FEMALE", "Sonography USG"),
+    ("USG WHOLE ABDOMEN MALE", "Sonography USG"),
+    ("Abdomen AP", "X Ray"),
+    ("Abdomen Lateral", "X Ray"),
+    ("Abdomen Standing", "X Ray"),
+    ("Ankle Joint AP/Lateral", "X Ray"),
+    ("Barium Enema", "X Ray"),
+    ("Barium Follow Through", "X Ray"),
+    ("Barium Meal", "X Ray"),
+    ("Barium Swallow", "X Ray"),
+    ("Bedside Charge", "X Ray"),
+    ("Both Knee Joint AP/Lateral", "X Ray"),
+    ("Both Leg AP/Lateral", "X Ray"),
+    ("Both Wrist AP/Lateral", "X Ray"),
+    ("Cervical Spine AP", "X Ray"),
+    ("Cervical Spine Extension", "X Ray"),
+    ("Cervical Spine Flexion", "X Ray"),
+    ("Cervical Spine Lateral", "X Ray"),
+    ("Chest AP", "X Ray"),
+    ("Chest Lateral", "X Ray"),
+    ("Chest PA", "X Ray"),
+    ("Clevicle AP", "X Ray"),
+    ("Dental", "X Ray"),
+    ("Dorsal Spine AP", "X Ray"),
+    ("Dorsal Spine Lateral", "X Ray"),
+    ("Dorso/Lumbar Extension", "X Ray"),
+    ("Dorso/Lumbar Flexion", "X Ray"),
+    ("Dorso/Lumbar Lateral", "X Ray"),
+    ("Elbow Joint AP/Lateral", "X Ray"),
+    ("Finger AP/Lateral", "X Ray"),
+    ("Fistulogram", "X Ray"),
+    ("Foot AP/Lateral", "X Ray"),
+    ("Forearm AP/Lateral", "X Ray"),
+    ("Hand AP/Lateral", "X Ray"),
+    ("Heel - Calcanum Axial/Lateral", "X Ray"),
+    ("Hip Joint AP", "X Ray"),
+    ("Hip Joint Lateral", "X Ray"),
+    ("IOPA", "X Ray"),
+    ("IVP", "X Ray"),
+    ("Knee Joint AP/Lateral", "X Ray"),
+    ("KUB (Adult)", "X Ray"),
+    ("KUB (Child)", "X Ray"),
+    ("Leg AP/Lateral", "X Ray"),
+    ("Lumbar Spine AP", "X Ray"),
+    ("Lumbar Spine Lateral", "X Ray"),
+    ("LUMBER AP", "X Ray"),
+    ("M C U", "X Ray"),
+    ("Mastoid", "X Ray"),
+    ("Mendible Lateral Oblique", "X Ray"),
+    ("Nose Bone", "X Ray"),
+    ("OPG", "X Ray"),
+    ("Pattela / Skyline", "X Ray"),
+    ("Pelvis AP", "X Ray"),
+    ("PNS", "X Ray"),
+    ("Pns Water View", "X Ray"),
+    ("R G U", "X Ray"),
+    ("Sacrum - Coccyx AP", "X Ray"),
+    ("Sacrum - Coccyx Lateral", "X Ray"),
+    ("Scapula", "X Ray"),
+    ("Shoulder AP - Axilary", "X Ray"),
+    ("Sinogram", "X Ray"),
+    ("Skull AP", "X Ray"),
+    ("Skull Lateral", "X Ray"),
+    ("Soft Tissue", "X Ray"),
+    ("Thigh AP/Lateral", "X Ray"),
+    ("Upper Arm AP/Lateral", "X Ray"),
+    ("Wrist Joint AP/Lateral", "X Ray"),
+    ("Zygomatic", "X Ray"),
+];
+
+async fn seed_has_radiology_services(pool: &mysql_async::Pool) -> SeedSection {
+    let mut section = SeedSection {
+        name: "radiology services (puru_has)".into(),
+        created: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+
+    let mut conn = match pool.get_conn().await {
+        Ok(c) => c,
+        Err(e) => {
+            section.errors.push(format!("connect: {}", e));
+            return section;
+        }
+    };
+
+    const RADIO_TYPE: u8 = 2; // ServiceType.RADIO
+
+    for (name, s_class) in HAS_RADIOLOGY_SERVICES {
+        // Stricter idempotency than seed_has_services: dedupe by
+        // (name, s_class, type) so the same display name across modalities
+        // (e.g. "Ankle Joint" under both CT Scan and MRI) all get inserted.
+        // ID scheme mirrors HASService::getIdForNewService — max id of the
+        // type + 1, falling back to ordinal * 1000 + 1 for the first row.
+        // operation_status 1 = OperationStatus.ACTIVE.
+        let result = conn
+            .exec_drop(
+                "INSERT INTO puru_has.service \
+                 (id, name, s_class, type, internal, allowed_from_web, \
+                  multiple_qty_allowed, operation_status, sub_service_present, \
+                  for_primary_key, periodic, require_specialist, variable_name, \
+                  variable_rate) \
+                 SELECT x.next_id, ?, ?, ?, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0 \
+                 FROM (\
+                     SELECT GREATEST(\
+                         COALESCE(MAX(id) + 1, 0), ? * 1000 + 1\
+                     ) AS next_id \
+                     FROM puru_has.service WHERE type = ?\
+                 ) AS x \
+                 WHERE NOT EXISTS (\
+                     SELECT 1 FROM puru_has.service \
+                     WHERE name = ? AND s_class = ? AND type = ?\
+                 )",
+                (
+                    *name, *s_class, RADIO_TYPE, RADIO_TYPE, RADIO_TYPE,
+                    *name, *s_class, RADIO_TYPE,
+                ),
+            )
+            .await;
+        match result {
+            Ok(()) => {
+                if conn.affected_rows() > 0 {
+                    section.created += 1;
+                } else {
+                    section.skipped += 1;
+                }
+            }
+            Err(e) => section
+                .errors
+                .push(format!("{} ({}): {}", name, s_class, e)),
+        }
+    }
+
+    section
+}
+
+/// Entry point for user-triggered master-data seeding. Each boolean controls
+/// one catalogue independently; pass `false` to skip a section. This function
+/// is intentionally separate from `run_seed` so it never runs on first-run
+/// install.
+pub async fn run_master_data_seed(seed_radiology: bool) -> Result<SeedReport, NucleusError> {
+    let config = config::load_config()?;
+    let mut report = SeedReport::default();
+
+    if seed_radiology {
+        let pool = create_mysql_pool(&config);
+        report
+            .sections
+            .push(seed_has_radiology_services(&pool).await);
+        let _ = pool.disconnect().await;
+    }
+
+    Ok(report)
+}

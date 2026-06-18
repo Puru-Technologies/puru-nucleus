@@ -577,6 +577,30 @@ pub async fn run_seed(
         .map_err(|e| internal_err(e.user_message()))
 }
 
+#[derive(Deserialize)]
+pub struct SeedMasterDataRequest {
+    #[serde(default)]
+    pub radiology: Option<bool>,
+}
+
+/// POST /api/seed/master-data — seed master-data catalogues (e.g. radiology
+/// services). User-triggered; never runs on first-install. Omitting the flag
+/// (or an empty body) seeds every available catalogue.
+pub async fn run_seed_master_data(
+    body: Option<Json<SeedMasterDataRequest>>,
+) -> Result<Json<crate::seed::SeedReport>, (StatusCode, String)> {
+    let req = body.map(|Json(r)| r).unwrap_or(SeedMasterDataRequest {
+        radiology: None,
+    });
+    let all = req.radiology.is_none();
+    let do_radiology = req.radiology.unwrap_or(all);
+
+    crate::seed::run_master_data_seed(do_radiology)
+        .await
+        .map(Json)
+        .map_err(|e| internal_err(e.user_message()))
+}
+
 // ── Remote setup / detection / templates / config ─────────────────────────────
 // These call the same #[tauri::command] functions the local GUI uses, so the
 // remote setup wizard runs identical logic on the daemon host. setup_install_daemon

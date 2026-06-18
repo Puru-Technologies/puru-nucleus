@@ -82,6 +82,8 @@ pub async fn run_daemon() {
         .route("/api/network/speedtest", post(routes::network_speed_test))
         // Seed (fresh-install data)
         .route("/api/seed", post(routes::run_seed))
+        // Master-data seed (user-triggered, never auto-runs)
+        .route("/api/seed/master-data", post(routes::run_seed_master_data))
         // Remote setup pipeline (mirrors the GUI setup_* commands)
         .route("/api/setup/prerequisites/check", post(routes::setup_check_prerequisites))
         .route("/api/setup/databases", post(routes::setup_create_databases))

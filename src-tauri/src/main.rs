@@ -304,6 +304,7 @@ fn run_gui() {
             commands::is_elevated,
             commands::restart_as_admin,
             commands::seed_data,
+            commands::seed_master_data,
             commands::finalise_templates,
             commands::check_template_updates,
             commands::apply_template_updates,

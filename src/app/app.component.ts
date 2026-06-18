@@ -83,6 +83,10 @@ import packageJson from '../../package.json';
               <span class="material-icons">build</span>
               <span>Setup</span>
             </a>
+            <a class="nav-item" routerLink="/master-data" routerLinkActive="active">
+              <span class="material-icons">dataset</span>
+              <span>Master Data</span>
+            </a>
             <a class="nav-item" routerLink="/remote-shell" routerLinkActive="active">
               <span class="material-icons">terminal</span>
               <span>Shell</span>
