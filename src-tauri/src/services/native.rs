@@ -29,15 +29,23 @@ const SERVICE_PORTS: &[(&str, u16)] = &[
 
 /// Separate management/actuator port for services that run actuator on a
 /// dedicated port (Spring Boot `management.server.port`) instead of the app
-/// port. Health/readiness is probed here. Services NOT listed are assumed to
-/// expose actuator on their app port (see SERVICE_PORTS) and fall back to it.
-///
-/// NOTE: only `puru-auth` is confirmed (management.server.port=9082). Add other
-/// services here if they also use a dedicated management port — otherwise their
-/// actuator will be probed on the app port and, if absent there, reported as a
-/// "actuator not reachable" error.
+/// port. Health/readiness is probed here. Convention: mgmt port = app port +
+/// 1000 (8081 → 9081, 8082 → 9082, …). Services NOT listed are assumed to
+/// expose actuator on their app port (see SERVICE_PORTS) and fall back to it —
+/// if absent there, the probe reports a "actuator not reachable" error.
 const SERVICE_MGMT_PORTS: &[(&str, u16)] = &[
-    ("puru-auth", 9082),
+    ("puru-auth", 9080),
+    ("puru-xenon", 9081),
+    ("puru-has", 9082),
+    ("puru-pacs", 9083),
+    ("puru-argon", 9084),
+    ("puru-comm", 9085),
+    ("puru-realtime", 9086),
+    ("puru-neon", 9087),
+    ("puru-integration", 9088),
+    ("puru-mercury", 9089),
+    ("puru-bridge", 9094),
+    ("puru-counter", 9095),
 ];
 
 /// MySQL database used by each service (same mapping as the Docker compose generator)
