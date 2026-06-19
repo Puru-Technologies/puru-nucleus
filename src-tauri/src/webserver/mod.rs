@@ -77,10 +77,25 @@ pub fn generate_config(config: &NucleusConfig) -> String {
         config.server_ip.clone()
     };
 
+    // Each backend location dispatches to @spa when the request looks like a
+    // browser navigation (Accept: text/html) instead of an XHR. Without this,
+    // a refresh on e.g. /has/patient-dashboard/PPIN proxies the page-load
+    // request to HAS, JwtRequestFilter sees no Authorization header (JWT is
+    // in localStorage, not cookies), and returns a bare 401 the browser
+    // renders as a plain "HTTP ERROR 401" page. The Angular HttpClient
+    // doesn't advertise text/html, so XHR proxying is unaffected.
     let mut locations = String::new();
     for (route, port) in PROXY_ROUTES {
         locations.push_str(&format!(
-            "        location {route} {{ proxy_pass http://127.0.0.1:{port}; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; }}\n",
+            r#"        location {route} {{
+            if ($http_accept ~* "^text/html") {{ return 418; }}
+            error_page 418 = @spa;
+
+            proxy_pass http://127.0.0.1:{port};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }}
+"#,
             route = route,
             port = port,
         ));
@@ -130,6 +145,14 @@ http {{
             root  "{html}";
             index index.html;
             try_files $uri $uri/ /index.html;
+        }}
+
+        # SPA fallback for backend proxy routes — dispatched via `error_page 418`
+        # from each /has/, /xenon/, etc. block when the request is a browser
+        # navigation (Accept: text/html) rather than an XHR.
+        location @spa {{
+            root  "{html}";
+            try_files /index.html =404;
         }}
 
         # WebSocket (auth/realtime STOMP + SockJS)
