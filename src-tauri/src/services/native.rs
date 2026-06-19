@@ -132,6 +132,29 @@ pub(crate) fn is_running(config: &NucleusConfig, service: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Poll a TCP port on 127.0.0.1 until nothing answers (= port is free for
+/// `bind`), giving up after `max_secs`. Used to gate `start_service` so we
+/// don't spawn a JVM that's just going to die with "Port X already in use"
+/// because the OS hasn't released the listening socket from a just-killed
+/// instance yet. Returns true if the port is free, false on timeout.
+async fn wait_for_port_free(port: u16, max_secs: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(max_secs);
+    loop {
+        let busy = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::time::Duration::from_millis(200),
+        )
+        .is_ok();
+        if !busy {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+}
+
 /// Read PID from pid file, returns None if file doesn't exist or is invalid
 fn read_pid(config: &NucleusConfig, service: &str) -> Option<u32> {
     let path = pid_path(config, service);
@@ -267,6 +290,22 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     let logs_dir = config.native_logs_dir();
     tokio::fs::create_dir_all(&logs_dir).await?;
 
+    // Make sure the app port has actually been released by the previous
+    // instance (or any other holder). Without this, a quick restart on
+    // Windows often races the kernel: we taskkill /F the old JVM, spawn the
+    // new one within ~1s, and the bind fails with "Port X already in use"
+    // before the OS has released the listening socket. 15s is enough to
+    // cover the normal release window AND to surface a clear error if a
+    // rogue process is holding the port.
+    if let Some(port) = service_port(name) {
+        if !wait_for_port_free(port, 15).await {
+            return Err(NucleusError::Validation(format!(
+                "Port {} is still in use after 15s — kill the holder and retry",
+                port
+            )));
+        }
+    }
+
     // Open log file (append mode)
     let log_file_path = log_path(config, name);
     let log_file = std::fs::OpenOptions::new()
@@ -344,33 +383,17 @@ pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), Nucl
 
     #[cfg(windows)]
     {
-        // On Windows, taskkill /PID sends WM_CLOSE (graceful). A headless
-        // `java.exe` (spawned with CREATE_NO_WINDOW) has no window to receive it,
-        // so this is usually a no-op — keep the grace window short and then force
-        // kill, otherwise every stop appears to hang for the full timeout.
+        // Headless `java.exe` (spawned with CREATE_NO_WINDOW) has no console
+        // window, so `taskkill` without `/F` would dispatch WM_CLOSE to a
+        // nonexistent receiver — a no-op that just wastes the grace window.
+        // Force-kill the JVM and its child processes directly. `start_service`
+        // polls the app port before spawning, so any kernel-held socket from
+        // the freshly killed JVM is waited out there, not here.
         let _ = crate::process::silent_cmd("taskkill")
-            .args(["/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .output()
             .await;
-
-        // Wait a short window for graceful shutdown before force killing.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(8);
-        loop {
-            if !is_process_alive(pid) {
-                break;
-            }
-            if tokio::time::Instant::now() > deadline {
-                tracing::warn!("{} did not stop within 30s, force killing", name);
-                // Force kill with /F
-                let _ = crate::process::silent_cmd("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .output()
-                    .await;
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                break;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
     // Remove PID file
