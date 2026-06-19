@@ -2813,3 +2813,22 @@ pub async fn generate_nginx_https_config() -> Result<String, String> {
     }
     Ok(crate::tls::generate_nginx_https_config(&config.server_ip))
 }
+
+// ── Process Explorer (Services tab panic-button) ─────────────────────────────
+
+/// List Puru-relevant processes (java / nginx / mysqld / rabbitmq / beam.smp).
+/// Used by the Services tab Port Tools panel to surface zombie JVMs holding
+/// ports that `stop_service` couldn't free.
+#[tauri::command]
+pub async fn list_puru_processes() -> Result<Vec<crate::process_explorer::ProcessInfo>, String> {
+    Ok(crate::process_explorer::list_processes().await)
+}
+
+/// Force-kill any process by PID (taskkill /F /T on Windows, SIGKILL on Unix).
+/// Returns the PID actually killed on success.
+#[tauri::command]
+pub async fn kill_process_by_pid(pid: u32) -> Result<u32, String> {
+    crate::process_explorer::kill_pid(pid)
+        .await
+        .map_err(|e| e.user_message())
+}

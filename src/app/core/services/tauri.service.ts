@@ -201,6 +201,16 @@ export interface ServiceInfo {
   detail?: string;
 }
 
+export interface ProcessInfo {
+  pid: number;
+  name: string;
+  label: string;
+  cmd: string;
+  cpu_pct: number;
+  mem_mb: number;
+  listening_ports: number[];
+}
+
 export interface BackupResult {
   success: boolean;
   backup_id: string;

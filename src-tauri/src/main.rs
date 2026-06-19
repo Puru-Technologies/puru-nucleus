@@ -30,6 +30,7 @@ mod network;
 mod logs;
 mod platform;
 mod process;
+mod process_explorer;
 mod remote_shell;
 mod seed;
 mod templates;
@@ -217,6 +218,9 @@ fn run_gui() {
         .invoke_handler(tauri::generate_handler![
             // System
             commands::get_system_info,
+            // Process explorer (Services tab port tools)
+            commands::list_puru_processes,
+            commands::kill_process_by_pid,
             // Services
             commands::get_services,
             commands::start_service,

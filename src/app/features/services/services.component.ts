@@ -2,7 +2,7 @@ import { Component, OnInit, HostListener, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { TauriService, ServiceInfo } from '../../core/services/tauri.service';
+import { TauriService, ServiceInfo, ProcessInfo } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
 @Component({
@@ -33,6 +33,91 @@ import { NotificationService } from '../../core/services/notification.service';
             Start All
           </button>
         </div>
+      </div>
+
+      <!-- Port Tools / Process Explorer — Puru-scoped Task Manager -->
+      <div class="card pt-card">
+        <div class="pt-header" (click)="toggleProcessExplorer()">
+          <div class="pt-title">
+            <span class="material-icons">build</span>
+            <span>Port Tools</span>
+            <span class="pt-sub">Find &amp; kill processes holding Puru ports</span>
+          </div>
+          <div class="pt-header-actions" (click)="$event.stopPropagation()">
+            @if (processExplorerOpen) {
+              <button class="btn btn-stroked" (click)="refreshProcesses()" [disabled]="processesLoading">
+                <span class="material-icons">refresh</span>
+                {{ processesLoading ? 'Scanning...' : 'Refresh' }}
+              </button>
+            }
+            <span class="material-icons pt-toggle">
+              {{ processExplorerOpen ? 'expand_less' : 'expand_more' }}
+            </span>
+          </div>
+        </div>
+        @if (processExplorerOpen) {
+          <div class="pt-body">
+            @if (processesLoading && processes.length === 0) {
+              <div class="pt-loading"><span class="spinner"></span></div>
+            } @else if (processes.length === 0) {
+              <div class="pt-empty">
+                No Puru-relevant processes found (java / nginx / mysqld / rabbitmq / beam).
+              </div>
+            } @else {
+              <table class="data-table pt-table">
+                <thead>
+                  <tr>
+                    <th>PID</th>
+                    <th>Process</th>
+                    <th>Listening Ports</th>
+                    <th>CPU</th>
+                    <th>Memory</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (p of processes; track p.pid) {
+                    <tr>
+                      <td><span class="pid">{{ p.pid }}</span></td>
+                      <td>
+                        <div class="pt-name">
+                          <span class="pt-bin">{{ p.name }}</span>
+                          @if (p.label) {
+                            <span class="pt-label">{{ p.label }}</span>
+                          }
+                        </div>
+                        @if (p.cmd) {
+                          <div class="pt-cmd" [title]="p.cmd">{{ p.cmd }}</div>
+                        }
+                      </td>
+                      <td>
+                        @if (p.listening_ports.length === 0) {
+                          <span class="text-muted">&mdash;</span>
+                        } @else {
+                          @for (port of p.listening_ports; track port) {
+                            <span class="pt-port">{{ port }}</span>
+                          }
+                        }
+                      </td>
+                      <td>{{ p.cpu_pct }}%</td>
+                      <td>{{ p.mem_mb }} MB</td>
+                      <td class="actions-cell">
+                        <button class="btn btn-danger btn-sm" (click)="killProcess(p)" [disabled]="!!killing[p.pid]">
+                          <span class="material-icons">close</span>
+                          {{ killing[p.pid] ? 'Killing...' : 'Kill' }}
+                        </button>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+              <div class="pt-foot">
+                Showing {{ processes.length }} {{ processes.length === 1 ? 'process' : 'processes' }}.
+                Kill sends SIGKILL (Unix) or <code>taskkill /F /T</code> (Windows) — the process gets no chance to clean up.
+              </div>
+            }
+          </div>
+        }
       </div>
 
       @if (loading) {
@@ -450,6 +535,125 @@ import { NotificationService } from '../../core/services/notification.service';
       white-space: pre-wrap;
       word-break: break-all;
     }
+
+    /* ── Port Tools / Process Explorer ────────── */
+    .pt-card {
+      margin-bottom: 16px;
+      padding: 0 !important;
+      overflow: hidden;
+    }
+    .pt-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      cursor: pointer;
+      user-select: none;
+      background: #f8fafc;
+      border-bottom: 1px solid transparent;
+      transition: background 0.15s;
+      &:hover { background: #f1f5f9; }
+    }
+    .pt-title {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      .material-icons { font-size: 18px; align-self: center; color: #64748b; }
+    }
+    .pt-sub {
+      font-weight: 400;
+      color: #64748b;
+      font-size: 0.78rem;
+      margin-left: 4px;
+    }
+    .pt-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pt-toggle { color: #64748b; }
+    .pt-body { border-top: 1px solid #e2e8f0; }
+    .pt-loading {
+      display: flex;
+      justify-content: center;
+      padding: 24px;
+    }
+    .pt-empty {
+      padding: 16px;
+      color: #64748b;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+    .pt-table th, .pt-table td { font-size: 0.82rem; }
+    .pid {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+    }
+    .pt-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pt-bin {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: #1e293b;
+      font-size: 0.82rem;
+    }
+    .pt-label {
+      display: inline-block;
+      background: #eef2ff;
+      color: #4338ca;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .pt-cmd {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.7rem;
+      color: #94a3b8;
+      margin-top: 2px;
+      max-width: 380px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pt-port {
+      display: inline-block;
+      background: #f1f5f9;
+      color: #334155;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.75rem;
+      margin-right: 4px;
+      margin-bottom: 2px;
+    }
+    .btn-danger {
+      background: #dc2626;
+      color: #fff;
+      border: 1px solid #dc2626;
+      &:hover:not([disabled]) { background: #b91c1c; border-color: #b91c1c; }
+      &[disabled] { opacity: 0.55; cursor: not-allowed; }
+    }
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      .material-icons { font-size: 14px; }
+    }
+    .pt-foot {
+      padding: 8px 16px 12px;
+      font-size: 0.72rem;
+      color: #94a3b8;
+      code {
+        background: #f1f5f9;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 0.7rem;
+      }
+    }
   `]
 })
 export class ServicesComponent implements OnInit {
@@ -467,6 +671,12 @@ export class ServicesComponent implements OnInit {
   sortKey = 'name';
   sortDir: 1 | -1 = 1;
   openMenu: string | null = null;
+
+  // ── Port Tools / Process Explorer ────────────
+  processExplorerOpen = false;
+  processes: ProcessInfo[] = [];
+  processesLoading = false;
+  killing: Record<number, boolean> = {};
 
   get runningCount(): number {
     return this.services.filter(s => s.status === 'running').length;
@@ -673,6 +883,50 @@ export class ServicesComponent implements OnInit {
       await this.loadServices();
     } catch (error) {
       // Error handled by TauriService
+    }
+  }
+
+  // ── Port Tools / Process Explorer ──────────────────────────────────────
+
+  toggleProcessExplorer(): void {
+    this.processExplorerOpen = !this.processExplorerOpen;
+    // Lazy-load on first open so the panel doesn't pay the cost
+    // (netstat/lsof + sysinfo enumeration) until the operator wants it.
+    if (this.processExplorerOpen && this.processes.length === 0) {
+      this.refreshProcesses();
+    }
+  }
+
+  async refreshProcesses(): Promise<void> {
+    this.processesLoading = true;
+    try {
+      this.processes = await this.tauri.invoke<ProcessInfo[]>('list_puru_processes');
+    } catch {
+      // TauriService already showed the error toast.
+    } finally {
+      this.processesLoading = false;
+    }
+  }
+
+  async killProcess(p: ProcessInfo): Promise<void> {
+    const portStr = p.listening_ports.length
+      ? ` (listening on ${p.listening_ports.join(', ')})`
+      : '';
+    const labelStr = p.label ? ` — ${p.label}` : '';
+    if (!confirm(`Kill PID ${p.pid}${labelStr}${portStr}?\n\nThis sends SIGKILL — no graceful shutdown.`)) {
+      return;
+    }
+    this.killing[p.pid] = true;
+    try {
+      await this.tauri.invoke('kill_process_by_pid', { pid: p.pid });
+      this.notification.success(`Killed PID ${p.pid}`);
+      // Drop it from the table optimistically; refresh confirms.
+      this.processes = this.processes.filter(x => x.pid !== p.pid);
+      await this.refreshProcesses();
+    } catch {
+      // TauriService already showed the error toast.
+    } finally {
+      delete this.killing[p.pid];
     }
   }
 }
