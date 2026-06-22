@@ -398,8 +398,12 @@ export interface BinlogShipResult {
 // Log file reader types
 export interface LogSource {
   name: string;
+  /** Host path for kind=directory; "container:<name>" pseudo-path for kind=container. */
   path: string;
+  /** Free-form grouping tag — "nucleus" | "system" | "docker" | "container" etc. */
   source_type: string;
+  /** "directory" (path contains log files) or "container" (path is a docker container). */
+  kind: 'directory' | 'container';
 }
 
 export interface LogFileInfo {
@@ -415,6 +419,14 @@ export interface LogFileContent {
   total_lines: number;
   offset: number;
   lines_returned: number;
+}
+
+/** Payload pushed on "log-tail-{stream_id}" events. `ended` is set on the
+ *  final event (file removed, container exited, or stream stopped). */
+export interface LogTailEvent {
+  stream_id: string;
+  lines: string[];
+  ended?: string;
 }
 
 // Compose template types

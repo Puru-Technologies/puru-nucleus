@@ -401,9 +401,11 @@ pub async fn trigger_pitr(
 
 // ── Log File Reader ──────────────────────────────────────────────────────────
 
-/// GET /api/logs/sources — list known log source directories
+/// GET /api/logs/sources — list known log source directories AND running
+/// containers (containers tagged kind="container", pseudo-path
+/// "container:<name>").
 pub async fn log_sources() -> Json<Vec<crate::logs::LogSource>> {
-    Json(crate::logs::get_known_log_paths())
+    Json(crate::logs::enumerate_sources().await)
 }
 
 #[derive(Deserialize)]
@@ -441,11 +443,14 @@ pub struct LogFileReadQuery {
     pub limit: Option<usize>,
 }
 
-/// GET /api/logs/file?path=...&tail=100 — read a log file
+/// GET /api/logs/file?path=...&tail=100 — read a log file. Accepts host
+/// paths under the allowed-base-dirs whitelist and `container:<name>`
+/// pseudo-paths for Docker container stdout/stderr.
 pub async fn log_file_read(
     Query(params): Query<LogFileReadQuery>,
 ) -> Result<Json<crate::logs::LogFileContent>, (StatusCode, String)> {
     crate::logs::read_log_file(&params.path, params.tail, params.offset, params.limit)
+        .await
         .map(Json)
         .map_err(|e| internal_err(e.user_message()))
 }

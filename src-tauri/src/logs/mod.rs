@@ -1,10 +1,20 @@
-//! Host filesystem log file reader.
+//! Host filesystem + Docker container log reader.
 //!
-//! Provides discovery, listing, and reading of log files from the host:
-//! Spring Boot logs, MySQL error logs, Nucleus daemon logs, etc.
+//! Provides discovery, listing, reading, and live tailing of log sources:
+//! Spring Boot logs, MySQL error logs, Nucleus daemon logs, and Docker
+//! container stdout/stderr. Container sources use the pseudo-path
+//! `container:<name>` (e.g. `container:auth`) so the rest of the API can
+//! address them uniformly.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use tauri::Emitter;
+
+const CONTAINER_PREFIX: &str = "container:";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -13,6 +23,26 @@ pub struct LogSource {
     pub name: String,
     pub path: String,
     pub source_type: String,
+    /// "directory" (a path containing log files) or "container" (a docker
+    /// container whose stdout/stderr is the log). Default "directory" so
+    /// existing JSON consumers stay valid.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+}
+
+fn default_kind() -> String {
+    "directory".to_string()
+}
+
+/// Event payload pushed to the frontend for each batch of new log lines.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogTailEvent {
+    pub stream_id: String,
+    pub lines: Vec<String>,
+    /// Set on the final event of a stream (file deleted, container exited,
+    /// or stop_tail called). Frontend should unsubscribe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,8 +207,46 @@ pub fn get_known_log_paths() -> Vec<LogSource> {
                     name: "Docker Compose".into(),
                     path: parent.display().to_string(),
                     source_type: "docker".into(),
+                    kind: "directory".into(),
                 });
             }
+        }
+    }
+
+    // Tag existing directory sources (they were created before the field
+    // existed; serde default would have made them "directory" on the wire
+    // anyway, but be explicit)
+    for s in &mut sources {
+        if s.kind.is_empty() {
+            s.kind = "directory".into();
+        }
+    }
+
+    sources
+}
+
+/// Enumerate all log sources — directory sources from get_known_log_paths,
+/// plus one entry per running Puru container (Docker mode only). Containers
+/// are returned with `kind: "container"` and a pseudo-path
+/// `container:<container_name>` that read_log_file / start_tail accept.
+///
+/// Failures to query Docker are swallowed — the directory sources are
+/// always returned so the UI degrades gracefully when Docker is down.
+pub async fn enumerate_sources() -> Vec<LogSource> {
+    let mut sources = get_known_log_paths();
+
+    if let Ok(services) = crate::services::get_services().await {
+        for svc in services {
+            // Only surface services that have a container — skip not-installed
+            if svc.container_name.is_empty() {
+                continue;
+            }
+            sources.push(LogSource {
+                name: svc.name.clone(),
+                path: format!("{}{}", CONTAINER_PREFIX, svc.container_name),
+                source_type: "container".into(),
+                kind: "container".into(),
+            });
         }
     }
 
@@ -271,12 +339,64 @@ fn is_log_file(path: &Path) -> bool {
     }
 }
 
-/// Read a log file with optional tail or offset+limit pagination.
-///
-/// - If `tail > 0`: return the last `tail` lines.
-/// - If `offset` and `limit` are set: return lines starting at `offset` with `limit` count.
-/// - Otherwise: return the entire file (with a 50MB size guard).
-pub fn read_log_file(
+/// Read a log source. Dispatches on path:
+/// - `container:<name>`: fetches stdout/stderr from the named Docker
+///   container (Docker mode only). Honors `tail` (defaults to 1000 if not
+///   set, since container logs have no random-access offset). `offset` /
+///   `limit` are applied client-side after fetching.
+/// - any other path: validated against the allowed-base-dirs whitelist and
+///   read from disk (existing behavior).
+pub async fn read_log_file(
+    path: &str,
+    tail: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<LogFileContent, crate::error::NucleusError> {
+    if let Some(container) = path.strip_prefix(CONTAINER_PREFIX) {
+        return read_container_log(container, tail, offset, limit).await;
+    }
+    read_host_file(path, tail, offset, limit)
+}
+
+/// Read a container's stdout/stderr (Docker mode). Returns a LogFileContent
+/// shaped the same as host files so the frontend can render uniformly.
+async fn read_container_log(
+    container: &str,
+    tail: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<LogFileContent, crate::error::NucleusError> {
+    // Container logs have no random-access offset — Docker only supports
+    // "last N lines". So `tail` is the primary control; `offset`/`limit`
+    // narrow the returned window client-side after fetch.
+    let fetch_tail = tail.unwrap_or(1000) as u64;
+    let raw = crate::services::get_container_logs(container, fetch_tail, None, None).await?;
+
+    let all_lines: Vec<&str> = raw.lines().collect();
+    let total_lines = all_lines.len();
+
+    let (selected, actual_offset) = if let Some(off) = offset {
+        let lim = limit.unwrap_or(500);
+        let start = off.min(total_lines);
+        let end = (start + lim).min(total_lines);
+        (&all_lines[start..end], start)
+    } else {
+        (&all_lines[..], 0)
+    };
+
+    Ok(LogFileContent {
+        path: format!("{}{}", CONTAINER_PREFIX, container),
+        content: selected.join("\n"),
+        total_lines,
+        offset: actual_offset,
+        lines_returned: selected.len(),
+    })
+}
+
+/// Read a host filesystem log file with optional tail or offset+limit
+/// pagination. (Original `read_log_file` body, now private + invoked via
+/// the async dispatcher above.)
+fn read_host_file(
     path: &str,
     tail: Option<usize>,
     offset: Option<usize>,
@@ -327,6 +447,235 @@ pub fn read_log_file(
         offset: actual_offset,
         lines_returned,
     })
+}
+
+// ── Live tail streaming ─────────────────────────────────────────────────────
+//
+// Two backends share the same surface (start_tail / stop_tail + Tauri events
+// named "log-tail-{stream_id}"):
+//
+//   • Host files: poll the file every TAIL_POLL_INTERVAL, track byte
+//     offset, read appended bytes, split into lines, emit. Survives log
+//     rotation (size shrunk → reset offset to 0 and re-read from start).
+//   • Containers: bollard's logs(follow=true) async stream — bytes arrive
+//     as the container writes them; split into lines per chunk.
+//
+// Streams are tracked in STREAMS by an opaque atomic-counter ID. stop_tail
+// aborts the JoinHandle, which cancels the task at the next await point.
+
+const TAIL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
+const TAIL_INITIAL_LINES: usize = 200;
+
+static STREAMS: OnceLock<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> = OnceLock::new();
+static STREAM_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn streams() -> &'static Mutex<HashMap<String, tokio::task::JoinHandle<()>>> {
+    STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_stream_id() -> String {
+    format!("s{}", STREAM_COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn event_name(stream_id: &str) -> String {
+    format!("log-tail-{}", stream_id)
+}
+
+fn emit_lines(app: &tauri::AppHandle, stream_id: &str, lines: Vec<String>) {
+    if lines.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        &event_name(stream_id),
+        LogTailEvent {
+            stream_id: stream_id.to_string(),
+            lines,
+            ended: None,
+        },
+    );
+}
+
+fn emit_end(app: &tauri::AppHandle, stream_id: &str, reason: &str) {
+    let _ = app.emit(
+        &event_name(stream_id),
+        LogTailEvent {
+            stream_id: stream_id.to_string(),
+            lines: Vec::new(),
+            ended: Some(reason.to_string()),
+        },
+    );
+}
+
+/// Start tailing a log source. Dispatches on path (`container:<name>` →
+/// docker stream, otherwise → host file poll). Returns an opaque stream_id
+/// the frontend uses to (a) subscribe to "log-tail-{stream_id}" events and
+/// (b) call stop_tail when done. Initial back-fill of the last
+/// TAIL_INITIAL_LINES is emitted as the first event, then new lines
+/// stream as they appear.
+pub async fn start_tail(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<String, crate::error::NucleusError> {
+    let stream_id = next_stream_id();
+
+    if let Some(container) = path.strip_prefix(CONTAINER_PREFIX) {
+        let handle = spawn_container_tail(app, stream_id.clone(), container.to_string()).await?;
+        streams().lock().unwrap().insert(stream_id.clone(), handle);
+    } else {
+        // Validate before spawning so callers get an immediate error on
+        // bad/forbidden paths rather than a silent no-op task.
+        let canonical = validate_path(Path::new(&path))?;
+        let handle = spawn_file_tail(app, stream_id.clone(), canonical);
+        streams().lock().unwrap().insert(stream_id.clone(), handle);
+    }
+
+    Ok(stream_id)
+}
+
+/// Stop a running tail stream. Safe to call with an unknown id (no-op).
+pub fn stop_tail(stream_id: &str) {
+    if let Some(handle) = streams().lock().unwrap().remove(stream_id) {
+        handle.abort();
+    }
+}
+
+fn spawn_file_tail(
+    app: tauri::AppHandle,
+    stream_id: String,
+    path: PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+
+        // Initial back-fill: read the file end and emit last N lines so the
+        // viewer isn't empty before the next poll tick.
+        let mut byte_offset: u64 = match tokio::fs::metadata(&path).await {
+            Ok(m) => m.len(),
+            Err(e) => {
+                emit_end(&app, &stream_id, &format!("open failed: {}", e));
+                return;
+            }
+        };
+
+        if let Ok(content) = tokio::fs::read_to_string(&path).await {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(TAIL_INITIAL_LINES);
+            let initial: Vec<String> = lines[start..].iter().map(|s| s.to_string()).collect();
+            emit_lines(&app, &stream_id, initial);
+        }
+
+        let mut ticker = tokio::time::interval(TAIL_POLL_INTERVAL);
+        ticker.tick().await; // consume the immediate first tick
+
+        // Partial-line carry-over: if a poll lands mid-line, hold the
+        // tail bytes until the next newline arrives.
+        let mut carry = String::new();
+
+        loop {
+            ticker.tick().await;
+
+            let meta = match tokio::fs::metadata(&path).await {
+                Ok(m) => m,
+                Err(_) => {
+                    emit_end(&app, &stream_id, "file removed");
+                    return;
+                }
+            };
+
+            let size = meta.len();
+            if size < byte_offset {
+                // Log rotation / truncation — reset.
+                byte_offset = 0;
+                carry.clear();
+            }
+            if size == byte_offset {
+                continue;
+            }
+
+            let mut file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if file.seek(SeekFrom::Start(byte_offset)).await.is_err() {
+                continue;
+            }
+
+            let mut buf = Vec::with_capacity((size - byte_offset) as usize);
+            if file.read_to_end(&mut buf).await.is_err() {
+                continue;
+            }
+            byte_offset = size;
+
+            let chunk = String::from_utf8_lossy(&buf);
+            let combined = format!("{}{}", carry, chunk);
+
+            let mut lines: Vec<String> =
+                combined.split('\n').map(|s| s.to_string()).collect();
+            // Last element is empty (trailing newline) or partial.
+            let last = lines.pop().unwrap_or_default();
+            if combined.ends_with('\n') {
+                carry.clear();
+            } else {
+                carry = last;
+            }
+
+            emit_lines(&app, &stream_id, lines);
+        }
+    })
+}
+
+async fn spawn_container_tail(
+    app: tauri::AppHandle,
+    stream_id: String,
+    container: String,
+) -> Result<tokio::task::JoinHandle<()>, crate::error::NucleusError> {
+    use bollard::container::LogsOptions;
+    use futures_util::StreamExt;
+
+    // Connect once on the calling task so a connection failure surfaces as a
+    // start_tail error rather than a silent dead task.
+    let docker = bollard::Docker::connect_with_local_defaults()
+        .map_err(|e| crate::error::NucleusError::Docker(format!("docker connect: {}", e)))?;
+
+    let handle = tokio::spawn(async move {
+        let mut stream = docker.logs(
+            &container,
+            Some(LogsOptions::<String> {
+                stdout: true,
+                stderr: true,
+                follow: true,
+                tail: TAIL_INITIAL_LINES.to_string(),
+                timestamps: true,
+                ..Default::default()
+            }),
+        );
+
+        let mut carry = String::new();
+        while let Some(chunk) = stream.next().await {
+            let text = match chunk {
+                Ok(out) => out.to_string(),
+                Err(e) => {
+                    emit_end(&app, &stream_id, &format!("docker error: {}", e));
+                    return;
+                }
+            };
+
+            let combined = format!("{}{}", carry, text);
+            let mut lines: Vec<String> = combined.split('\n').map(|s| s.to_string()).collect();
+            let last = lines.pop().unwrap_or_default();
+            if combined.ends_with('\n') {
+                carry.clear();
+            } else {
+                carry = last;
+            }
+            emit_lines(&app, &stream_id, lines);
+        }
+
+        // Stream ended naturally (container exited or detached).
+        emit_end(&app, &stream_id, "container stream ended");
+    });
+
+    Ok(handle)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

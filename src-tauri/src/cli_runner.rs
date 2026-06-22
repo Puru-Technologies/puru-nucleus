@@ -23,7 +23,7 @@ pub async fn run(command: Commands) {
         Commands::Binlog(args) => cmd_binlog(args).await,
         Commands::Restore(args) => cmd_restore(args).await,
         Commands::Service(args) => cmd_service(args).await,
-        Commands::LogFile(args) => cmd_log_file(args),
+        Commands::LogFile(args) => cmd_log_file(args).await,
         Commands::Info => cmd_info().await,
         Commands::Network { speed, json } => cmd_network(speed, json).await,
         Commands::Pull => cmd_pull().await,
@@ -1074,7 +1074,7 @@ async fn cmd_service(args: ServiceArgs) {
 
 // ── Log File ─────────────────────────────────────────────────────────────────
 
-fn cmd_log_file(args: LogFileArgs) {
+async fn cmd_log_file(args: LogFileArgs) {
     match args.command {
         LogFileCommands::Sources => {
             let sources = crate::logs::get_known_log_paths();
@@ -1152,7 +1152,7 @@ fn cmd_log_file(args: LogFileArgs) {
             println!();
         }
         LogFileCommands::Read { path, tail, offset, limit } => {
-            match crate::logs::read_log_file(&path, tail, offset, limit) {
+            match crate::logs::read_log_file(&path, tail, offset, limit).await {
                 Ok(content) => {
                     if content.content.is_empty() {
                         println!("{}", "File is empty.".yellow());

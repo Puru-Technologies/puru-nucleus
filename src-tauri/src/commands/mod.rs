@@ -797,19 +797,24 @@ pub async fn read_daemon_log(lines: Option<u32>) -> Result<String, String> {
 
 // ── Log File Reader ──────────────────────────────────────────────────────────
 
-/// Get known log source directories
+/// Get all log sources — known directories + running Docker containers.
+/// Containers are returned with `kind: "container"` and pseudo-path
+/// `container:<container_name>`.
 #[tauri::command]
-pub fn get_log_sources() -> Vec<crate::logs::LogSource> {
-    crate::logs::get_known_log_paths()
+pub async fn get_log_sources() -> Vec<crate::logs::LogSource> {
+    crate::logs::enumerate_sources().await
 }
 
-/// List log files under a path (or aggregate all known sources if no path given)
+/// List log files under a path (or aggregate all known directory sources
+/// if no path given). Container sources have no listable files — they are
+/// addressed directly via read_log_file with the `container:` pseudo-path.
 #[tauri::command]
 pub fn list_log_files(path: Option<String>) -> Result<Vec<crate::logs::LogFileInfo>, String> {
     if let Some(p) = path {
         crate::logs::list_log_files(&p).map_err(|e| e.to_string())
     } else {
-        // Aggregate all known sources
+        // Aggregate all known directory sources (container sources are
+        // skipped — they have no files to list).
         let sources = crate::logs::get_known_log_paths();
         let mut all_files = Vec::new();
         for source in &sources {
@@ -817,21 +822,42 @@ pub fn list_log_files(path: Option<String>) -> Result<Vec<crate::logs::LogFileIn
                 all_files.extend(files);
             }
         }
-        // Sort by modified_at descending
         all_files.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
         Ok(all_files)
     }
 }
 
-/// Read a log file with optional tail or offset+limit pagination
+/// Read a log file with optional tail or offset+limit pagination. Accepts
+/// host paths AND `container:<name>` pseudo-paths.
 #[tauri::command]
-pub fn read_log_file(
+pub async fn read_log_file(
     path: String,
     tail: Option<usize>,
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<crate::logs::LogFileContent, String> {
-    crate::logs::read_log_file(&path, tail, offset, limit).map_err(|e| e.to_string())
+    crate::logs::read_log_file(&path, tail, offset, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Start streaming new lines from a log source. Returns an opaque stream_id;
+/// the frontend subscribes to "log-tail-{stream_id}" Tauri events for line
+/// batches (payload: LogTailEvent). Call tail_log_stop with the same id to
+/// terminate. Dispatches on path: `container:<name>` uses docker follow
+/// stream, otherwise polls the host file every 1s.
+#[tauri::command]
+pub async fn tail_log_start(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    crate::logs::start_tail(app, path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Stop a tail stream started by tail_log_start. No-op if stream_id is
+/// unknown (already stopped or never existed).
+#[tauri::command]
+pub fn tail_log_stop(stream_id: String) {
+    crate::logs::stop_tail(&stream_id);
 }
 
 /// Get a telemetry snapshot (current system + service metrics)
