@@ -961,17 +961,22 @@ const PURU_DATABASES: &[&str] = &[
     "puru_gh",
 ];
 
-/// Docker images to pull from GCR
+/// Docker images to pull from Artifact Registry.
+/// Image names must match the GCS compose fragments at
+/// `gs://puru-releases/templates/fragments/` (note `gcp-puru-*` for pacs/comm/realtime).
+const PURU_REGISTRY: &str = "asia-south2-docker.pkg.dev/puru-255206/puru1";
 const PURU_IMAGES: &[&str] = &[
-    "gcr.io/puru-255206/puru-xenon:latest",
-    "gcr.io/puru-255206/puru-has:latest",
-    "gcr.io/puru-255206/puru-pacs:latest",
-    "gcr.io/puru-255206/puru-argon:latest",
-    "gcr.io/puru-255206/puru-comm:latest",
-    "gcr.io/puru-255206/puru-realtime:latest",
-    "gcr.io/puru-255206/puru-neon:latest",
-    "gcr.io/puru-255206/puru-bridge:latest",
-    "gcr.io/puru-255206/puru-hydrogen:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-auth:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-xenon:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-has:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/gcp-puru-pacs:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-argon:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/gcp-puru-comm:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/gcp-puru-realtime:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-neon:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-bridge:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-integration:latest",
+    "asia-south2-docker.pkg.dev/puru-255206/puru1/puru-hydrogen:production",
 ];
 
 /// Step 1: Verify all prerequisites are installed
@@ -1268,11 +1273,25 @@ pub async fn setup_generate_config() -> Result<(), String> {
     let mysql_on_host = prereqs.iter().any(|p| p.name == "MySQL" && p.installed);
     let rmq_on_host = prereqs.iter().any(|p| p.name == "RabbitMQ" && p.installed);
 
-    // Try fragment-based assembly first (preferred), fallback to inline template
+    // Ensure compose fragments + env templates are present locally. Both calls
+    // are idempotent (skip files that already exist on disk). Without this,
+    // assemble_compose() would silently fall through to the inline fallback,
+    // which carries a stale registry and image names.
+    if let Err(e) = crate::compose_template::download_fragments().await {
+        tracing::warn!("Setup: fragment download failed ({}); will try local fragments or inline fallback", e);
+    }
+    if let Err(e) = crate::compose_template::download_env_templates().await {
+        tracing::warn!("Setup: env template download failed ({}); will rely on existing local env files", e);
+    }
+
+    // Try fragment-based assembly first (preferred), fallback to inline template.
+    // Fragments contain {{PLACEHOLDERS}} that must be substituted before docker can
+    // parse the file; the inline fallback has no placeholders so substitution is a no-op.
     let compose_content = match crate::compose_template::assemble_compose(&modules) {
         Ok(content) => {
             tracing::info!("Setup: assembled docker-compose.yml from fragments");
-            content
+            let vars = crate::compose_template::build_variables_from_config(&config);
+            crate::compose_template::substitute_variables(&content, &vars)
         }
         Err(_) => {
             tracing::info!("Setup: fragments not available, using inline template");
@@ -1382,7 +1401,7 @@ services:
     let svc = |name: &str, image: &str, container: &str, db: &str, port: u16, needs_rmq: bool| -> String {
         let mut s = format!(
             r#"  {container}:
-    image: gcr.io/puru-255206/{image}:latest
+    image: asia-south2-docker.pkg.dev/puru-255206/puru1/{image}:latest
     container_name: {container}
     restart: unless-stopped
     environment:
@@ -1430,16 +1449,16 @@ services:
         compose.push_str(&svc("HAS", "puru-has", "has", "puru_has", 8082, true));
     }
     if modules.pacs {
-        compose.push_str(&svc("PACS", "puru-pacs", "pacs", "puru_dicom", 8083, false));
+        compose.push_str(&svc("PACS", "gcp-puru-pacs", "pacs", "puru_dicom", 8083, false));
     }
     if modules.argon {
         compose.push_str(&svc("Argon", "puru-argon", "pathology", "puru_path", 8084, true));
     }
     if modules.comm {
-        compose.push_str(&svc("Comm", "puru-comm", "comm_server", "puru_im", 8085, true));
+        compose.push_str(&svc("Comm", "gcp-puru-comm", "comm_server", "puru_im", 8085, true));
     }
     if modules.realtime {
-        compose.push_str(&svc("Realtime", "puru-realtime", "realtime", "puru_im", 8086, true));
+        compose.push_str(&svc("Realtime", "gcp-puru-realtime", "realtime", "puru_im", 8086, true));
     }
     if modules.neon {
         compose.push_str(&svc("Neon", "puru-neon", "medical", "puru_med", 8087, false));
@@ -1460,7 +1479,7 @@ services:
     if modules.hydrogen {
         compose.push_str(
             r#"  frontend:
-    image: gcr.io/puru-255206/puru-hydrogen:latest
+    image: asia-south2-docker.pkg.dev/puru-255206/puru1/puru-hydrogen:production
     container_name: frontend
     restart: unless-stopped
     ports:
@@ -1485,22 +1504,23 @@ services:
     compose
 }
 
-/// Step 5: Pull Docker images from GCR
+/// Step 5: Pull Docker images from Artifact Registry
 #[tauri::command]
 pub async fn setup_pull_images() -> Result<(), String> {
     tracing::info!("Setup: pulling Docker images");
 
-    // Authenticate Docker with GCR using the service account key
+    // Authenticate Docker with Artifact Registry using the service account key
     let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    let registry_host = PURU_REGISTRY.split('/').next().unwrap_or("asia-south2-docker.pkg.dev");
     if let Some(ref cred_path) = config.gcs_credentials_path {
         let cred = std::path::Path::new(cred_path);
         if cred.exists() {
-            tracing::info!("Authenticating Docker with GCR using {}", cred_path);
+            tracing::info!("Authenticating Docker with {} using {}", registry_host, cred_path);
             let key_content = std::fs::read_to_string(cred)
                 .map_err(|e| format!("Failed to read credentials: {}", e))?;
 
             let mut child = crate::process::silent_cmd("docker")
-                .args(["login", "-u", "_json_key", "--password-stdin", "gcr.io"])
+                .args(["login", "-u", "_json_key", "--password-stdin", registry_host])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -1521,7 +1541,7 @@ pub async fn setup_pull_images() -> Result<(), String> {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 tracing::warn!("docker login warning: {}", stderr.trim());
             } else {
-                tracing::info!("Docker authenticated with GCR");
+                tracing::info!("Docker authenticated with {}", registry_host);
             }
         } else {
             return Err(format!(

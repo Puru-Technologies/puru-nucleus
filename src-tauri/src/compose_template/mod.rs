@@ -621,7 +621,7 @@ pub fn build_variables_from_config(cfg: &config::NucleusConfig) -> TemplateVaria
         neon_tag: "latest".to_string(),
         bridge_tag: "latest".to_string(),
         integration_tag: "latest".to_string(),
-        hydrogen_tag: "latest".to_string(),
+        hydrogen_tag: "production".to_string(),
     }
 }
 
@@ -733,7 +733,7 @@ services:
         assert_eq!(vars.neon_tag, "latest");
         assert_eq!(vars.bridge_tag, "latest");
         assert_eq!(vars.integration_tag, "latest");
-        assert_eq!(vars.hydrogen_tag, "latest");
+        assert_eq!(vars.hydrogen_tag, "production");
     }
 
     #[test]
