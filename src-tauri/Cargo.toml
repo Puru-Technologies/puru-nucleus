@@ -2,7 +2,7 @@
 name = "puru-nucleus"
 version = "0.7.6"
 description = "Control center for Puru hospital deployments"
-authors = ["Puru Technologies"]
+authors = ["Puru Labs Private Limited"]
 license = "Proprietary"
 repository = ""
 edition = "2021"

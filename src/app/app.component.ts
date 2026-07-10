@@ -29,7 +29,7 @@ import packageJson from '../../package.json';
             </div>
             <div class="brand-text">
               <span class="brand-name">Nucleus</span>
-              <span class="brand-sub">{{ hospitalCode || 'Puru Technologies' }}</span>
+              <span class="brand-sub">{{ hospitalCode || 'Puru Labs Private Limited' }}</span>
             </div>
           </div>
 

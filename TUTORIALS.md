@@ -37,7 +37,7 @@
 
 1. Launch `puru-nucleus` (double-click or run without arguments)
 2. The app redirects to the **Activation** page
-3. Enter your hospital email (provided by Puru Technologies)
+3. Enter your hospital email (provided by Puru Labs Private Limited)
 4. The system looks up your hospital and activates the license
 5. After activation, the **Setup Wizard** runs 9 steps:
 
@@ -497,7 +497,7 @@ Result: three layers of protection — local + cloud (if configured) + LAN.
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| "License expired" | License past valid date | Contact Puru Technologies support |
+| "License expired" | License past valid date | Contact Puru Labs Private Limited support |
 | "MySQL password empty" | MySQL not configured | Settings → enter MySQL credentials → Save |
 | LAN column grey | LAN not enabled or path not mounted | Settings → LAN Backup → enable + validate path |
 | Cloud column grey | No internet or GCS not configured | Check internet; set GCS credentials in Settings |
@@ -590,7 +590,7 @@ The **Dashboard** page shows a summary:
 
 ## 8. Messaging (Inbox)
 
-The hospital inbox receives messages from the Puru Technologies admin team via Firestore.
+The hospital inbox receives messages from the Puru Labs Private Limited admin team via Firestore.
 
 ### Viewing Messages
 
