@@ -232,6 +232,23 @@ fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::Ha
         }
     }
 
+    // Point every service at the single nucleus-managed GCP service account.
+    // PACS resolves creds two ways — ADC (GOOGLE_APPLICATION_CREDENTIALS, for
+    // Healthcare API + raw GCS SDK) and Spring Cloud GCP
+    // (spring.cloud.gcp.credentials.location, for the auto-configured Storage
+    // bean). Setting both env vars overrides the file:puru_gcp_cred.json
+    // default baked into puru-pacs's application.properties without touching
+    // that file, and future GCP-using services get the same wiring for free.
+    if let Some(cred_path) = config.gcs_credentials_path.as_deref() {
+        if !cred_path.is_empty() && std::path::Path::new(cred_path).exists() {
+            vars.insert("GOOGLE_APPLICATION_CREDENTIALS".to_string(), cred_path.to_string());
+            vars.insert(
+                "SPRING_CLOUD_GCP_CREDENTIALS_LOCATION".to_string(),
+                format!("file:{}", cred_path),
+            );
+        }
+    }
+
     vars
 }
 
