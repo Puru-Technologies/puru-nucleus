@@ -173,6 +173,7 @@ pub fn get_known_log_paths() -> Vec<LogSource> {
         name: "Nucleus".into(),
         path: config_dir.display().to_string(),
         source_type: "nucleus".into(),
+        kind: "directory".into(),
     });
 
     // Platform-specific
@@ -182,6 +183,7 @@ pub fn get_known_log_paths() -> Vec<LogSource> {
             name: "System Logs".into(),
             path: "/var/log".into(),
             source_type: "system".into(),
+            kind: "directory".into(),
         });
     }
 
@@ -191,11 +193,13 @@ pub fn get_known_log_paths() -> Vec<LogSource> {
             name: "System Logs".into(),
             path: "/var/log".into(),
             source_type: "system".into(),
+            kind: "directory".into(),
         });
         sources.push(LogSource {
             name: "Homebrew Logs".into(),
             path: "/usr/local/var/log".into(),
             source_type: "system".into(),
+            kind: "directory".into(),
         });
     }
 
