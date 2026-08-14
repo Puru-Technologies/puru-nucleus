@@ -653,6 +653,19 @@ impl FirestoreClient {
             .await
     }
 
+    /// List the most recent commands (any status), newest first — for the GUI's
+    /// command-activity banner.
+    pub async fn list_recent_commands(
+        &self,
+        code: &str,
+        limit: u32,
+    ) -> Result<Vec<FirestoreDocument>, NucleusError> {
+        let token = self.token().await?;
+        let parent = format!("hospital/{}", code);
+        queries::query_subcollection_ordered(&self.http, &token, &parent, "commands", "created_at", limit)
+            .await
+    }
+
     /// Update a command document's status and result fields.
     pub async fn update_command_status(
         &self,

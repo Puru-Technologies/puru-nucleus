@@ -580,6 +580,71 @@ pub struct Alert {
     pub acknowledged_at: Option<String>,
 }
 
+/// A cloud command's live state, for the GUI's command-activity banner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandActivity {
+    pub id: String,
+    pub command_type: String,
+    /// pending | executing | completed | failed
+    pub status: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+/// Recent cloud commands (newest first) so the UI can surface an in-progress
+/// banner. Returns an empty list when offline / unconfigured rather than erroring.
+#[tauri::command]
+pub async fn get_command_activity() -> Result<Vec<CommandActivity>, String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.hospital_code.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = match crate::firestore::FirestoreClient::new_from_config().await {
+        Ok(c) => c,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let docs = match client.list_recent_commands(&config.hospital_code, 5).await {
+        Ok(d) => d,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let sval = |d: &crate::firestore::types::FirestoreDocument, k: &str| -> String {
+        d.fields
+            .get(k)
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let tsval = |d: &crate::firestore::types::FirestoreDocument, k: &str| -> String {
+        d.fields
+            .get(k)
+            .and_then(|v| v.get("stringValue").or_else(|| v.get("timestampValue")))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    Ok(docs
+        .iter()
+        .map(|d| {
+            let err = sval(d, "error");
+            let message = if err.is_empty() { sval(d, "result") } else { err };
+            let status = {
+                let s = sval(d, "status");
+                if s.is_empty() { "pending".to_string() } else { s }
+            };
+            CommandActivity {
+                id: d.name.rsplit('/').next().unwrap_or("").to_string(),
+                command_type: sval(d, "type"),
+                status,
+                message,
+                created_at: tsval(d, "created_at"),
+            }
+        })
+        .collect())
+}
+
 /// Get alerts from Firestore
 #[tauri::command]
 pub async fn get_alerts() -> Result<Vec<Alert>, String> {

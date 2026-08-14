@@ -22,6 +22,14 @@ interface SystemClockStatus {
   message: string;
 }
 
+interface CommandActivity {
+  id: string;
+  command_type: string;
+  status: string; // pending | executing | completed | failed
+  message: string;
+  created_at: string;
+}
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -144,6 +152,24 @@ interface SystemClockStatus {
               </button>
             </div>
           }
+          @if (commandBanner) {
+            <div class="cmd-banner"
+                 [class.running]="isCommandRunning(commandBanner)"
+                 [class.done]="commandBanner.status === 'completed'"
+                 [class.failed]="commandBanner.status === 'failed'">
+              @if (isCommandRunning(commandBanner)) {
+                <span class="spinner"></span>
+              } @else {
+                <span class="material-icons">
+                  {{ commandBanner.status === 'completed' ? 'check_circle' : 'error' }}
+                </span>
+              }
+              <span class="cmd-banner-text">
+                <strong>{{ commandLabel(commandBanner) }}</strong>
+                @if (commandBanner.message) { <span class="cmd-msg">— {{ commandBanner.message }}</span> }
+              </span>
+            </div>
+          }
           <router-outlet></router-outlet>
         </main>
       </div>
@@ -210,6 +236,34 @@ interface SystemClockStatus {
         color: #fff;
         border: none;
       }
+    }
+
+    /* ── Cloud command activity banner ──────────── */
+    .cmd-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      font-size: 0.8rem;
+      border-bottom: 1px solid transparent;
+
+      .cmd-banner-text { flex: 1; }
+      .cmd-msg { color: inherit; opacity: 0.85; }
+      .material-icons { font-size: 18px; }
+      .spinner {
+        width: 16px; height: 16px;
+        border: 2px solid rgba(0, 158, 251, 0.3);
+        border-top-color: var(--brand-blue, #009efb);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        flex-shrink: 0;
+      }
+
+      &.running { background: #e6f4fe; border-bottom-color: #b6e3fd; color: #075985; }
+      &.done    { background: #ecfdf5; border-bottom-color: #a7f3d0; color: #065f46;
+                  .material-icons { color: #059669; } }
+      &.failed  { background: #fef2f2; border-bottom-color: #fecaca; color: #991b1b;
+                  .material-icons { color: #dc2626; } }
     }
 
     /* ── Brand ──────────────────────────────────── */
@@ -403,12 +457,15 @@ export class AppComponent implements OnInit, OnDestroy {
   elevating = false;
   clock: SystemClockStatus | null = null;
   checkingClock = false;
+  commandBanner: CommandActivity | null = null;
 
   conn = inject(ConnectionService);
   private remote = inject(RemoteTransportService);
   private router = inject(Router);
   private unreadSub?: Subscription;
   private healthSub?: Subscription;
+  private commandSub?: Subscription;
+  private commandDismissTimer?: any;
 
   constructor() {
     // Hide sidebar on activation + connect pages (full-screen layouts)
@@ -439,6 +496,72 @@ export class AppComponent implements OnInit, OnDestroy {
     this.healthSub = interval(30_000).subscribe(() => this.refreshHealth());
     this.checkElevation();
     this.checkClock();
+    // Surface cloud-command activity as a top banner on every screen.
+    this.refreshCommands();
+    this.commandSub = interval(4_000).subscribe(() => this.refreshCommands());
+  }
+
+  /** Poll recent cloud commands and drive the top activity banner. */
+  private async refreshCommands(): Promise<void> {
+    let list: CommandActivity[] = [];
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      list = await invoke<CommandActivity[]>('get_command_activity');
+    } catch {
+      return; // offline / unsupported (e.g. remote) — leave the banner as-is
+    }
+    const newest = list && list.length ? list[0] : null;
+    if (!newest) return;
+
+    if (this.isCommandRunning(newest)) {
+      // In-flight: show and cancel any pending auto-dismiss.
+      clearTimeout(this.commandDismissTimer);
+      this.commandDismissTimer = undefined;
+      this.commandBanner = newest;
+      return;
+    }
+
+    // Finished: show the result if we were tracking it, or if it just completed,
+    // then auto-dismiss after a few seconds.
+    const wasTracking = this.commandBanner?.id === newest.id;
+    const ageSecs = this.commandAgeSecs(newest);
+    if (wasTracking || ageSecs <= 20) {
+      this.commandBanner = newest;
+      if (!this.commandDismissTimer) {
+        this.commandDismissTimer = setTimeout(() => {
+          this.commandBanner = null;
+          this.commandDismissTimer = undefined;
+        }, 8_000);
+      }
+    }
+  }
+
+  isCommandRunning(c: CommandActivity): boolean {
+    return c.status === 'pending' || c.status === 'executing';
+  }
+
+  /** Human label for the command + its state. */
+  commandLabel(c: CommandActivity): string {
+    const names: Record<string, string> = {
+      restart_service: 'Restart service',
+      stop_service: 'Stop service',
+      start_service: 'Start service',
+      trigger_backup: 'Backup',
+      restart_all: 'Restart all services',
+    };
+    const base = names[c.command_type] || c.command_type || 'Command';
+    switch (c.status) {
+      case 'pending': return `Queued: ${base}`;
+      case 'executing': return `${base}…`;
+      case 'completed': return `${base} — done`;
+      case 'failed': return `${base} — failed`;
+      default: return base;
+    }
+  }
+
+  private commandAgeSecs(c: CommandActivity): number {
+    const t = c.created_at ? Date.parse(c.created_at) : NaN;
+    return isNaN(t) ? 9999 : (Date.now() - t) / 1000;
   }
 
   /** Verify the local system clock is in sync — a skew breaks cloud sign-in. */
@@ -482,6 +605,8 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.unreadSub?.unsubscribe();
     this.healthSub?.unsubscribe();
+    this.commandSub?.unsubscribe();
+    clearTimeout(this.commandDismissTimer);
   }
 
   goConnect(): void {
