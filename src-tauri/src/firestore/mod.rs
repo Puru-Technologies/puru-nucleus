@@ -122,8 +122,7 @@ impl FirestoreClient {
     }
 
     /// Sync the local nucleus config to the hospital's cloud document.
-    /// Store a single string field on the hospital document. Used to persist the
-    /// generated MySQL root password to the cloud (one of its three sinks).
+    /// Store a single string field on the hospital document.
     pub async fn set_hospital_string_field(
         &self,
         code: &str,
@@ -134,6 +133,56 @@ impl FirestoreClient {
         let path = format!("hospital/{}", code);
         let fields = serde_json::json!({ field: string_value(value) });
         queries::patch_document(&self.http, &token, &path, fields, &[field]).await
+    }
+
+    /// Store the MySQL root password in the hospital doc's nested `credentials`
+    /// map (`credentials.mysql_root_password` + set_by + updated_at), merging
+    /// without clobbering other `credentials.*` fields. This is the cloud sink of
+    /// the 3-place password store and the value other machines read.
+    pub async fn set_hospital_mysql_password(
+        &self,
+        code: &str,
+        password: &str,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut cred = serde_json::Map::new();
+        cred.insert("mysql_root_password".to_string(), string_value(password));
+        cred.insert("mysql_set_by".to_string(), string_value("puru-nucleus"));
+        cred.insert("mysql_updated_at".to_string(), timestamp_value(&now));
+        let fields = serde_json::json!({ "credentials": map_value(cred) });
+        queries::patch_document(
+            &self.http,
+            &token,
+            &path,
+            fields,
+            &[
+                "credentials.mysql_root_password",
+                "credentials.mysql_set_by",
+                "credentials.mysql_updated_at",
+            ],
+        )
+        .await
+    }
+
+    /// Read the MySQL root password from the hospital doc's `credentials` map,
+    /// if an admin (or another machine) has set one. Cloud is the source of truth.
+    pub async fn get_hospital_mysql_password(
+        &self,
+        code: &str,
+    ) -> Result<Option<String>, NucleusError> {
+        let doc = self.get_hospital(code).await?;
+        Ok(doc
+            .fields
+            .get("credentials")
+            .and_then(|c| c.get("mapValue"))
+            .and_then(|m| m.get("fields"))
+            .and_then(|f| f.get("mysql_root_password"))
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty()))
     }
 
     pub async fn sync_config(

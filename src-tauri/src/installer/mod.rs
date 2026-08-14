@@ -587,7 +587,7 @@ async fn do_install_mysql(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResu
         // service, not running): safe to finalize a fresh install + set a new pw.
         emit_progress(app, "MySQL", InstallStage::Installing, 20,
             &format!("MySQL found at {} — initializing service…", dir.display()), 0, 0);
-        let root_pw = generate_password(24);
+        let root_pw = cloud_or_generated_mysql_password().await;
         if let Err(e) = finalize_mysql_service(&dir, &root_pw) {
             emit_progress(app, "MySQL", InstallStage::Failed, 0, &e, 0, 0);
             return mk_fail("MySQL", &e);
@@ -634,7 +634,7 @@ async fn do_install_mysql(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResu
         };
 
     emit_progress(app, "MySQL", InstallStage::Installing, 10, "Setting up MySQL server…", 0, 0);
-    let root_pw = generate_password(24);
+    let root_pw = cloud_or_generated_mysql_password().await;
 
     let setup = if file.to_lowercase().ends_with(".zip") {
         setup_mysql_from_zip(&path, &root_pw)
@@ -772,11 +772,12 @@ async fn persist_mysql_root_password(root_pw: &str) -> Result<usize, String> {
         }
     }
 
-    // Sink 3 — Firestore hospital document
+    // Sink 3 — Firestore hospital document (nested `credentials` map, the value
+    // other machines read as the source of truth).
     if !hospital_code.is_empty() {
         match crate::firestore::FirestoreClient::new_from_config().await {
             Ok(client) => match client
-                .set_hospital_string_field(&hospital_code, "mysql_root_password", root_pw)
+                .set_hospital_mysql_password(&hospital_code, root_pw)
                 .await
             {
                 Ok(_) => sinks += 1,
@@ -865,6 +866,26 @@ fn run_ok<P: AsRef<std::ffi::OsStr>>(program: P, args: &[&str], label: &str) -> 
         ));
     }
     Ok(())
+}
+
+/// The MySQL root password to use at install: reflect the one already published
+/// in the cloud (`credentials.mysql_root_password`) if an admin/other machine set
+/// it — cloud is the source of truth — otherwise generate a fresh one (which
+/// `persist_mysql_root_password` then pushes back up). Safe at install time
+/// because the data dir is freshly initialized, so any value can be set.
+#[cfg(target_os = "windows")]
+async fn cloud_or_generated_mysql_password() -> String {
+    if let Ok(cfg) = crate::config::load_config() {
+        if !cfg.hospital_code.is_empty() {
+            if let Ok(client) = crate::firestore::FirestoreClient::new_from_config().await {
+                if let Ok(Some(pw)) = client.get_hospital_mysql_password(&cfg.hospital_code).await {
+                    tracing::info!("MySQL: using root password from cloud credentials");
+                    return pw;
+                }
+            }
+        }
+    }
+    generate_password(24)
 }
 
 /// Generate a random alphanumeric password (ambiguous chars omitted).
