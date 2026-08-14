@@ -1479,6 +1479,26 @@ fn generate_erlang_cookie() -> String {
     (0..20).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect()
 }
 
+/// Name of the registered RabbitMQ Windows service (via `sc query`), or None.
+/// Version-agnostic — matches `RabbitMQ`, `RabbitMQ Server`, etc.
+#[cfg(target_os = "windows")]
+fn rabbitmq_service_name() -> Option<String> {
+    let out = std::process::Command::new("sc")
+        .args(["query", "state=", "all"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("SERVICE_NAME:") {
+            let name = rest.trim();
+            if name.to_lowercase().contains("rabbitmq") {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Start the RabbitMQ Windows service if it isn't running and wait for the node
 /// to accept AMQP on 5672. The service (SYSTEM) picks up the shared cookie written
 /// by `ensure_erlang_cookie` on start, so this must run after it.
@@ -1496,9 +1516,10 @@ async fn ensure_rabbitmq_running() -> Result<(), String> {
         return Ok(());
     }
 
-    // "RabbitMQ" is the service name registered by the official Windows installer.
+    // Discover the RabbitMQ service name (usually "RabbitMQ", but don't assume).
+    let svc = rabbitmq_service_name().unwrap_or_else(|| "RabbitMQ".to_string());
     let _ = crate::process::silent_cmd("net")
-        .args(["start", "RabbitMQ"])
+        .args(["start", &svc])
         .output()
         .await;
 
