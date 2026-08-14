@@ -645,6 +645,117 @@ pub async fn get_command_activity() -> Result<Vec<CommandActivity>, String> {
         .collect())
 }
 
+/// True if a nucleus daemon is answering its health endpoint on `port`.
+async fn daemon_health_ok(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}/api/health", port);
+    match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(700))
+        .build()
+    {
+        Ok(c) => c
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Process pending cloud commands from the GUI when no daemon is running — so
+/// commands (restart/stop/start service, backup) work whenever the app is open,
+/// not only when the headless daemon is installed. If a daemon IS running it owns
+/// processing and this is a no-op (prevents double-execution). Returns the count
+/// processed. Mirrors the daemon's command_listener body.
+#[tauri::command]
+pub async fn process_pending_commands() -> Result<u32, String> {
+    use crate::firestore::convert::{get_map_fields, get_optional_string, get_string};
+
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.hospital_code.is_empty() {
+        return Ok(0);
+    }
+    // The daemon owns command processing when it's up — don't double-run.
+    let daemon_port = config.daemon.as_ref().map(|d| d.port).unwrap_or(9090);
+    if daemon_health_ok(daemon_port).await {
+        return Ok(0);
+    }
+
+    let client = match crate::firestore::FirestoreClient::new_from_config().await {
+        Ok(c) => c,
+        Err(_) => return Ok(0),
+    };
+    let commands = match client.poll_pending_commands(&config.hospital_code).await {
+        Ok(c) => c,
+        Err(_) => return Ok(0),
+    };
+
+    let mut processed = 0u32;
+    for doc in commands {
+        let command_id = match doc.name.rsplit('/').next() {
+            Some(id) if !id.is_empty() => id.to_string(),
+            _ => continue,
+        };
+
+        // TTL: fail commands older than 5 minutes.
+        let created = doc.fields.get("created_at").and_then(|v| {
+            get_optional_string(v)
+                .or_else(|| v.get("timestampValue").and_then(|t| t.as_str()).map(|s| s.to_string()))
+        });
+        let expired = created
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| chrono::Utc::now() - dt.with_timezone(&chrono::Utc) > chrono::Duration::minutes(5))
+            .unwrap_or(true);
+        if expired {
+            let _ = client
+                .update_command_status(&config.hospital_code, &command_id, "failed", None,
+                    Some("Command expired (older than 5 minutes)"))
+                .await;
+            continue;
+        }
+
+        let command_type = match doc.fields.get("type").and_then(|v| get_string(v).ok()) {
+            Some(t) => t,
+            None => {
+                let _ = client
+                    .update_command_status(&config.hospital_code, &command_id, "failed", None,
+                        Some("Malformed command: missing 'type' field"))
+                    .await;
+                continue;
+            }
+        };
+        let params = doc
+            .fields
+            .get("params")
+            .and_then(|v| get_map_fields(v).ok())
+            .cloned()
+            .unwrap_or_default();
+
+        if client
+            .update_command_status(&config.hospital_code, &command_id, "executing", None, None)
+            .await
+            .is_err()
+        {
+            continue;
+        }
+
+        let result = crate::daemon::commands::execute(&command_type, &params).await;
+        let status = if result.success { "completed" } else { "failed" };
+        let (r, e) = if result.success {
+            (Some(result.message.as_str()), None)
+        } else {
+            (None, Some(result.message.as_str()))
+        };
+        let _ = client
+            .update_command_status(&config.hospital_code, &command_id, status, r, e)
+            .await;
+        processed += 1;
+    }
+
+    Ok(processed)
+}
+
 /// Get alerts from Firestore
 #[tauri::command]
 pub async fn get_alerts() -> Result<Vec<Alert>, String> {

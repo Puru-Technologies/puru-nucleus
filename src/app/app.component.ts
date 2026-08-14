@@ -242,17 +242,20 @@ interface CommandActivity {
     .cmd-banner {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 8px 16px;
-      font-size: 0.8rem;
+      gap: 14px;
+      padding: 16px 22px;
+      font-size: 1rem;
+      font-weight: 500;
       border-bottom: 1px solid transparent;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
 
       .cmd-banner-text { flex: 1; }
-      .cmd-msg { color: inherit; opacity: 0.85; }
-      .material-icons { font-size: 18px; }
+      .cmd-banner-text strong { font-weight: 700; }
+      .cmd-msg { color: inherit; opacity: 0.85; font-weight: 400; }
+      .material-icons { font-size: 26px; }
       .spinner {
-        width: 16px; height: 16px;
-        border: 2px solid rgba(0, 158, 251, 0.3);
+        width: 22px; height: 22px;
+        border: 3px solid rgba(0, 158, 251, 0.3);
         border-top-color: var(--brand-blue, #009efb);
         border-radius: 50%;
         animation: spin 0.7s linear infinite;
@@ -465,6 +468,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private unreadSub?: Subscription;
   private healthSub?: Subscription;
   private commandSub?: Subscription;
+  private commandProcSub?: Subscription;
   private commandDismissTimer?: any;
 
   constructor() {
@@ -499,6 +503,21 @@ export class AppComponent implements OnInit, OnDestroy {
     // Surface cloud-command activity as a top banner on every screen.
     this.refreshCommands();
     this.commandSub = interval(4_000).subscribe(() => this.refreshCommands());
+    // Execute pending commands locally when no daemon is running, so commands
+    // work whenever the app is open (the daemon no-ops this when it's up).
+    this.processCommands();
+    this.commandProcSub = interval(6_000).subscribe(() => this.processCommands());
+  }
+
+  /** Process pending cloud commands locally (no-op if a daemon is running). */
+  private async processCommands(): Promise<void> {
+    if (this.conn.isRemote()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('process_pending_commands');
+    } catch {
+      // offline / unsupported — the daemon (if any) handles it
+    }
   }
 
   /** Poll recent cloud commands and drive the top activity banner. */
@@ -606,6 +625,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.unreadSub?.unsubscribe();
     this.healthSub?.unsubscribe();
     this.commandSub?.unsubscribe();
+    this.commandProcSub?.unsubscribe();
     clearTimeout(this.commandDismissTimer);
   }
 

@@ -251,8 +251,9 @@ fn run_gui() {
             // Alerts
             commands::get_alerts,
             commands::acknowledge_alert,
-            // Cloud command activity (UI banner)
+            // Cloud command activity (UI banner) + GUI-side processing
             commands::get_command_activity,
+            commands::process_pending_commands,
             // Daemon
             commands::get_daemon_status,
             commands::install_daemon_service,
