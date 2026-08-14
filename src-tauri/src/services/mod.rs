@@ -940,82 +940,76 @@ async fn check_compose_prereq() -> PrerequisiteStatus {
 }
 
 async fn check_mysql_prereq() -> PrerequisiteStatus {
-    // 1. Try mysql on PATH
+    // Locate a host MySQL client and its version (PATH, then the standard Windows
+    // install dirs). None if no host binary is present. The *client* existing does
+    // NOT mean the server is usable — that's decided by a reachability probe below.
+    let mut found_version: Option<String> = None;
+
+    // 1. mysql on PATH
     if let Ok(output) = crate::process::silent_cmd("mysql")
         .arg("--version")
         .output()
         .await
     {
         if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            return PrerequisiteStatus {
-                name: "MySQL".to_string(),
-                installed: true,
-                version: extract_version(&raw),
-                required_version: None,
-                installable: false,
-            };
+            found_version = extract_version(&String::from_utf8_lossy(&output.stdout));
         }
     }
 
-    // 2. Windows: check common install paths (mysql is often not on PATH)
+    // 2. Windows: hardcoded fast-paths + a version-agnostic scan of the MySQL dir.
     #[cfg(target_os = "windows")]
-    {
-        let search_paths = [
-            r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
-            r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe",
-            r"C:\Program Files\MySQL\MySQL Server 9.0\bin\mysql.exe",
+    if found_version.is_none() {
+        let mut candidates: Vec<String> = vec![
+            r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe".to_string(),
+            r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe".to_string(),
+            r"C:\Program Files\MySQL\MySQL Server 9.0\bin\mysql.exe".to_string(),
         ];
-        for path in &search_paths {
-            if std::path::Path::new(path).exists() {
-                if let Ok(output) = crate::process::silent_cmd(path)
+        if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\MySQL") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("MySQL Server") {
+                    candidates.push(format!(r"C:\Program Files\MySQL\{}\bin\mysql.exe", name));
+                }
+            }
+        }
+        for path in candidates {
+            if std::path::Path::new(&path).exists() {
+                if let Ok(output) = crate::process::silent_cmd(&path)
                     .arg("--version")
                     .output()
                     .await
                 {
                     if output.status.success() {
-                        let raw = String::from_utf8_lossy(&output.stdout);
-                        return PrerequisiteStatus {
-                            name: "MySQL".to_string(),
-                            installed: true,
-                            version: extract_version(&raw),
-                            required_version: None,
-                            installable: false,
-                        };
-                    }
-                }
-            }
-        }
-        // Also scan for any MySQL Server directory
-        if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\MySQL") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("MySQL Server") {
-                    let mysql_bin = format!(r"C:\Program Files\MySQL\{}\bin\mysql.exe", name);
-                    if std::path::Path::new(&mysql_bin).exists() {
-                        if let Ok(output) = crate::process::silent_cmd(&mysql_bin)
-                            .arg("--version")
-                            .output()
-                            .await
-                        {
-                            if output.status.success() {
-                                let raw = String::from_utf8_lossy(&output.stdout);
-                                return PrerequisiteStatus {
-                                    name: "MySQL".to_string(),
-                                    installed: true,
-                                    version: extract_version(&raw),
-                                    required_version: None,
-                                    installable: false,
-                                };
-                            }
-                        }
+                        found_version = extract_version(&String::from_utf8_lossy(&output.stdout));
+                        break;
                     }
                 }
             }
         }
     }
 
-    // 3. Fallback: detect MySQL Docker container
+    // A host MySQL is present. Its readiness depends on the *server* running, not
+    // just the client binary — probe 3306. Reachable → installed. Not reachable →
+    // "present but not running", reported as installable so the install/setup step
+    // will initialize + start it (rather than passing the prereq gate and then
+    // failing at the database-creation step).
+    if found_version.is_some() {
+        let reachable = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 3306)),
+            std::time::Duration::from_millis(800),
+        )
+        .is_ok();
+        return PrerequisiteStatus {
+            name: "MySQL".to_string(),
+            installed: reachable,
+            version: found_version,
+            required_version: None,
+            installable: !reachable,
+        };
+    }
+
+    // 3. Fallback: a MySQL Docker container (its own deployment — container
+    // presence counts as installed).
     if let Ok(docker) = Docker::connect_with_local_defaults() {
         if let Ok(containers) = docker
             .list_containers(Some(ListContainersOptions::<String> {
@@ -1049,6 +1043,7 @@ async fn check_mysql_prereq() -> PrerequisiteStatus {
         }
     }
 
+    // 4. Not found at all.
     PrerequisiteStatus {
         name: "MySQL".to_string(),
         installed: false,
@@ -1155,14 +1150,16 @@ async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
                             };
                         }
                     }
-                    // Directory exists even if rabbitmqctl fails — it's installed
+                    // Binaries present but rabbitmqctl couldn't reach the node —
+                    // present but not running. Report installable so setup starts +
+                    // configures it, rather than passing the gate and failing later.
                     let version = name.strip_prefix("rabbitmq_server-").map(|v| v.to_string());
                     return PrerequisiteStatus {
                         name: "RabbitMQ".to_string(),
-                        installed: true,
+                        installed: false,
                         version,
                         required_version: None,
-                        installable: false,
+                        installable: true,
                     };
                 }
             }

@@ -1521,6 +1521,20 @@ export class SetupComponent implements OnInit {
     const names = this.installablePrereqs.map(p => p.name);
     if (names.length === 0) return;
 
+    // Installing prerequisites registers Windows services and writes under
+    // Program Files — that needs administrator. Request UAC up front rather than
+    // starting a half-install that would fail at the service-registration step.
+    try {
+      const elevated = await this.tauri.invoke<boolean>('is_elevated');
+      if (!elevated) {
+        this.notification.info('Installing prerequisites needs administrator — restarting as admin…');
+        await this.tauri.invoke('restart_as_admin');
+        return; // app relaunches elevated; the operator runs Install again
+      }
+    } catch {
+      // Couldn't determine elevation — fall through; the backend gate will catch it.
+    }
+
     this.installing = true;
     this.installProgress = null;
     this.installResults = [];
@@ -1546,7 +1560,13 @@ export class SetupComponent implements OnInit {
         this.notification.error(`Failed to install: ${failed.join(', ')}`);
       }
     } catch (err: any) {
-      this.notification.error(err?.message || err || 'Installation failed');
+      const msg = String(err?.message || err || '');
+      if (msg.includes('ELEVATION_REQUIRED')) {
+        this.notification.info('Administrator required — restarting as admin…');
+        try { await this.tauri.invoke('restart_as_admin'); } catch {}
+        return;
+      }
+      this.notification.error(msg || 'Installation failed');
     } finally {
       if (unlisten) unlisten();
       this.installing = false;

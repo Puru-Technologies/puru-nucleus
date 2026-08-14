@@ -668,6 +668,33 @@ async fn seed_rabbitmq_queues(config: &NucleusConfig) -> SeedSection {
         }
     };
 
+    // Wait for the management API to actually accept requests. `rabbitmq-plugins
+    // enable rabbitmq_management` activates the plugin, but its HTTP listener can
+    // take a moment to bind (and if the configure step failed, it may not be up at
+    // all) — poll so we fail with a clear cause rather than a per-queue error.
+    let overview = format!("http://{}:15672/api/overview", host);
+    let mut mgmt_ready = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(resp) = client.get(&overview).basic_auth(&user, Some(&pass)).send().await {
+            if resp.status().is_success() {
+                mgmt_ready = true;
+                break;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    if !mgmt_ready {
+        section.errors.push(format!(
+            "RabbitMQ management API not reachable on {}:15672 — is RabbitMQ running and the rabbitmq_management plugin enabled?",
+            host
+        ));
+        return section;
+    }
+
     // Management plugin API (default port 15672). An existing queue may have
     // been declared with different arguments (x-queue-type, delays, ...) and a
     // blind PUT would 400 on it — so check existence first and never touch

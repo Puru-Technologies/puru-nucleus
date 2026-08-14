@@ -1176,6 +1176,15 @@ pub async fn install_prerequisites(
     app: tauri::AppHandle,
     software: Vec<String>,
 ) -> Result<Vec<crate::installer::InstallResult>, String> {
+    // Installing Windows services and writing under Program Files require
+    // administrator rights. Fail fast with a distinct signal so the UI triggers a
+    // single UAC elevation up front, rather than running a half-install that dies
+    // at the service-registration step and surfaces a confusing error afterwards.
+    #[cfg(target_os = "windows")]
+    if !is_elevated() {
+        return Err("ELEVATION_REQUIRED".to_string());
+    }
+
     tracing::info!("Installing prerequisites: {:?}", software);
     Ok(crate::installer::install_missing(&app, &software).await)
 }
