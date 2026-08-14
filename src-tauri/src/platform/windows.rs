@@ -150,9 +150,15 @@ pub async fn status() -> Result<ServiceStatus, String> {
         });
     }
 
-    // Check if the daemon process is actually running
-    let ps_output = crate::process::silent_cmd("tasklist")
-        .args(["/FI", "IMAGENAME eq puru-nucleus.exe", "/FO", "CSV", "/NH"])
+    // Check if the DAEMON process is actually running. The daemon and the GUI
+    // share the puru-nucleus.exe image, so match by command line ("daemon") — a
+    // plain image-name check would count a running GUI as the daemon.
+    let ps_output = crate::process::silent_cmd("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'puru-nucleus.exe' -and $_.CommandLine -like '*daemon*' } | Select-Object -First 1 -ExpandProperty ProcessId",
+        ])
         .output()
         .await
         .ok();
@@ -161,18 +167,10 @@ pub async fn status() -> Result<ServiceStatus, String> {
     let mut pid = None;
 
     if let Some(ps) = ps_output {
-        let ps_stdout = String::from_utf8_lossy(&ps.stdout);
-        // tasklist CSV format: "puru-nucleus.exe","1234","Console","1","12,345 K"
-        for line in ps_stdout.lines() {
-            if line.contains("puru-nucleus.exe") {
-                running = true;
-                // Extract PID from CSV
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 2 {
-                    pid = parts[1].trim_matches('"').parse::<u32>().ok();
-                }
-                break;
-            }
+        let out = String::from_utf8_lossy(&ps.stdout);
+        if let Ok(p) = out.trim().parse::<u32>() {
+            running = true;
+            pid = Some(p);
         }
     }
 

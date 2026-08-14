@@ -254,6 +254,8 @@ fn run_gui() {
             // Cloud command activity (UI banner) + GUI-side processing
             commands::get_command_activity,
             commands::process_pending_commands,
+            // Status heartbeat (online + telemetry, GUI-driven)
+            commands::send_status_heartbeat,
             // Daemon
             commands::get_daemon_status,
             commands::install_daemon_service,

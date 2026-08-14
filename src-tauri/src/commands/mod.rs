@@ -756,6 +756,30 @@ pub async fn process_pending_commands() -> Result<u32, String> {
     Ok(processed)
 }
 
+/// Push a status heartbeat to Firestore: mark this machine online with a fresh
+/// last_seen (+ serverIp / deployment_mode) and a telemetry snapshot. Driven from
+/// the GUI immediately on startup and every minute, so the cloud dashboard shows
+/// the hospital online whenever the app is open — not only when the daemon runs.
+/// Best-effort: never errors the UI when offline.
+#[tauri::command]
+pub async fn send_status_heartbeat() -> Result<(), String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.hospital_code.is_empty() {
+        return Ok(());
+    }
+    let client = match crate::firestore::FirestoreClient::new_from_config().await {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    // Status: online + last_seen + serverIp + deployment_mode.
+    let _ = client.sync_config(&config.hospital_code, &config).await;
+    // Telemetry snapshot (CPU / RAM / disk).
+    if let Ok(snap) = crate::telemetry::collect_snapshot().await {
+        let _ = client.push_telemetry(&config.hospital_code, &snap).await;
+    }
+    Ok(())
+}
+
 /// Get alerts from Firestore
 #[tauri::command]
 pub async fn get_alerts() -> Result<Vec<Alert>, String> {
@@ -867,13 +891,21 @@ pub async fn get_daemon_status() -> Result<DaemonStatus, String> {
     let daemon_cfg = config.daemon.unwrap_or_default();
     let port = daemon_cfg.port;
 
-    // Probe the daemon API to see if it's actually running
+    // Probe the daemon API — this is the ONLY reliable liveness signal, because
+    // the daemon and the GUI share the `puru-nucleus.exe` image, so a tasklist /
+    // image-name check would count the running GUI as "the daemon". The health
+    // endpoint only answers when the daemon process is actually up.
     let api_url = format!("http://127.0.0.1:{}/api/health", port);
     let running = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
     {
-        Ok(client) => client.get(&api_url).send().await.is_ok(),
+        Ok(client) => client
+            .get(&api_url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false),
         Err(_) => false,
     };
 
@@ -889,7 +921,9 @@ pub async fn get_daemon_status() -> Result<DaemonStatus, String> {
     );
 
     Ok(DaemonStatus {
-        running: running || svc_status.running,
+        // Daemon liveness = the API answered. Do NOT OR in svc_status.running:
+        // that is image-name based and matches the GUI's own puru-nucleus.exe.
+        running,
         docker_connected,
         api_port: port,
         api_url: if running { Some(api_url) } else { None },

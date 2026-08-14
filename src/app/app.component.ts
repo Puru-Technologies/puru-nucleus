@@ -469,6 +469,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private healthSub?: Subscription;
   private commandSub?: Subscription;
   private commandProcSub?: Subscription;
+  private heartbeatSub?: Subscription;
   private commandDismissTimer?: any;
 
   constructor() {
@@ -507,6 +508,21 @@ export class AppComponent implements OnInit, OnDestroy {
     // work whenever the app is open (the daemon no-ops this when it's up).
     this.processCommands();
     this.commandProcSub = interval(6_000).subscribe(() => this.processCommands());
+    // Status heartbeat: mark online immediately on startup and every minute, so
+    // the cloud dashboard shows this machine up while the app is open.
+    this.sendHeartbeat();
+    this.heartbeatSub = interval(60_000).subscribe(() => this.sendHeartbeat());
+  }
+
+  /** Push an online + telemetry heartbeat to the cloud. */
+  private async sendHeartbeat(): Promise<void> {
+    if (this.conn.isRemote()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('send_status_heartbeat');
+    } catch {
+      // offline — nothing to report
+    }
   }
 
   /** Process pending cloud commands locally (no-op if a daemon is running). */
@@ -626,6 +642,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.healthSub?.unsubscribe();
     this.commandSub?.unsubscribe();
     this.commandProcSub?.unsubscribe();
+    this.heartbeatSub?.unsubscribe();
     clearTimeout(this.commandDismissTimer);
   }
 
