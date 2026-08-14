@@ -6,8 +6,21 @@ import { ConnectionService } from './core/services/connection.service';
 import { RemoteTransportService } from './core/services/remote-transport';
 import { resetLicenseCache } from './core/guards/init.guard';
 import { ToastHostComponent } from './core/components/toast-host.component';
+import { PuruLogoComponent } from './core/components/puru-logo.component';
 // @ts-ignore
 import packageJson from '../../package.json';
+
+interface SystemClockStatus {
+  checked: boolean;
+  ok: boolean;
+  skew_seconds: number;
+  tolerance_seconds: number;
+  local_time: string;
+  server_time: string | null;
+  timezone_offset: string;
+  source: string | null;
+  message: string;
+}
 
 @Component({
   selector: 'app-root',
@@ -17,6 +30,7 @@ import packageJson from '../../package.json';
     RouterLink,
     RouterLinkActive,
     ToastHostComponent,
+    PuruLogoComponent,
   ],
   template: `
     @if (showShell) {
@@ -24,13 +38,8 @@ import packageJson from '../../package.json';
         <aside class="sidebar">
           <!-- Brand -->
           <div class="brand">
-            <div class="brand-icon">
-              <span class="material-icons">hub</span>
-            </div>
-            <div class="brand-text">
-              <span class="brand-name">Nucleus</span>
-              <span class="brand-sub">{{ hospitalCode || 'Puru Labs Private Limited' }}</span>
-            </div>
+            <puru-logo variant="normal" theme="dark" [size]="28"></puru-logo>
+            <span class="brand-sub">{{ hospitalCode ? ('Nucleus · ' + hospitalCode) : 'Nucleus' }}</span>
           </div>
 
           <!-- Navigation -->
@@ -123,6 +132,18 @@ import packageJson from '../../package.json';
               </button>
             </div>
           }
+          @if (clock && clock.checked && !clock.ok && !conn.isRemote()) {
+            <div class="clock-banner">
+              <span class="material-icons">schedule</span>
+              <span class="clock-banner-text">
+                {{ clock.message }} (offset {{ clock.timezone_offset }}) —
+                sync via Settings → Time &amp; language → “Set time automatically”.
+              </span>
+              <button class="btn btn-sm" (click)="checkClock()" [disabled]="checkingClock">
+                {{ checkingClock ? 'Checking…' : 'Re-check' }}
+              </button>
+            </div>
+          }
           <router-outlet></router-outlet>
         </main>
       </div>
@@ -171,12 +192,33 @@ import packageJson from '../../package.json';
       .btn { flex-shrink: 0; }
     }
 
+    .clock-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      background: #fff7ed;
+      border-bottom: 1px solid #fed7aa;
+      color: #9a3412;
+      font-size: 0.8rem;
+
+      .material-icons { font-size: 18px; color: #ea580c; }
+      .clock-banner-text { flex: 1; }
+      .btn {
+        flex-shrink: 0;
+        background: #ea580c;
+        color: #fff;
+        border: none;
+      }
+    }
+
     /* ── Brand ──────────────────────────────────── */
     .brand {
       display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 20px 20px 24px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 7px;
+      padding: 22px 20px 24px;
     }
 
     .brand-icon {
@@ -208,11 +250,12 @@ import packageJson from '../../package.json';
     }
 
     .brand-sub {
-      font-size: 0.65rem;
+      font-size: 0.6rem;
       color: #64748b;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
-      font-weight: 500;
+      font-weight: 600;
+      padding-left: 3px;
     }
 
     /* ── Navigation ─────────────────────────────── */
@@ -358,6 +401,8 @@ export class AppComponent implements OnInit, OnDestroy {
   unreadCount = 0;
   isAdmin = true;      // assume true until checked, so the banner doesn't flash
   elevating = false;
+  clock: SystemClockStatus | null = null;
+  checkingClock = false;
 
   conn = inject(ConnectionService);
   private remote = inject(RemoteTransportService);
@@ -393,6 +438,21 @@ export class AppComponent implements OnInit, OnDestroy {
     this.refreshHealth();
     this.healthSub = interval(30_000).subscribe(() => this.refreshHealth());
     this.checkElevation();
+    this.checkClock();
+  }
+
+  /** Verify the local system clock is in sync — a skew breaks cloud sign-in. */
+  async checkClock(): Promise<void> {
+    if (this.conn.isRemote()) return; // the local clock only gates local GCP auth
+    this.checkingClock = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      this.clock = await invoke<SystemClockStatus>('check_system_clock');
+    } catch {
+      this.clock = null; // can't determine → don't nag
+    } finally {
+      this.checkingClock = false;
+    }
   }
 
   /** Detect whether the local app is elevated (Windows admin). */

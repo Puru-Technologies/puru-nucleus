@@ -25,6 +25,7 @@ const SERVICE_PORTS: &[(&str, u16)] = &[
     ("puru-auth", 8080),
     ("puru-mercury", 8089),
     ("puru-integration", 8088),
+    ("puru-counter", 8095),
 ];
 
 /// Separate management/actuator port for services that run actuator on a
@@ -152,6 +153,35 @@ async fn wait_for_port_free(port: u16, max_secs: u64) -> bool {
             return false;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+}
+
+/// Wait until a service's actuator reports readiness `UP`, or `max_secs`
+/// elapses. Used to gate dependent services behind puru-auth at startup so the
+/// rest of the fleet doesn't come up before the token authority is accepting
+/// traffic. Returns true if it became ready, false on timeout / unreachable.
+pub(crate) async fn wait_for_ready(service: &str, max_secs: u64) -> bool {
+    let Some(port) = health_probe_port(service) else {
+        return false;
+    };
+    let url = format!("http://127.0.0.1:{}{}", port, READINESS_ENDPOINT);
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(max_secs);
+    loop {
+        let (_reachable, up, _ms) = probe_url(&client, &url).await;
+        if up == Some(true) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 }
 

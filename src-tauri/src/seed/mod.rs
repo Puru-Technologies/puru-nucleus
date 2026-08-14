@@ -636,7 +636,7 @@ fn load_rabbit_settings(config: &NucleusConfig) -> (String, String, String, Stri
     let vhost = vars
         .get("SPRING_RABBITMQ_VIRTUAL_HOST")
         .cloned()
-        .unwrap_or_else(|| "puru".into());
+        .unwrap_or_else(|| "/".into());
     let user = vars
         .get("SPRING_RABBITMQ_USERNAME")
         .cloned()

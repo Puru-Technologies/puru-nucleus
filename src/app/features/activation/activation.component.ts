@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { TauriService } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
+import { PuruLogoComponent } from '../../core/components/puru-logo.component';
 import { open } from '@tauri-apps/plugin-dialog';
 
 interface CredentialsStatus {
@@ -11,22 +12,53 @@ interface CredentialsStatus {
   path: string;
 }
 
+interface SystemClockStatus {
+  checked: boolean;
+  ok: boolean;
+  skew_seconds: number;
+  tolerance_seconds: number;
+  local_time: string;
+  server_time: string | null;
+  timezone_offset: string;
+  source: string | null;
+  message: string;
+}
+
 @Component({
   selector: 'app-activation',
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule
+    FormsModule,
+    PuruLogoComponent
   ],
   template: `
     <div class="activation-page">
       <div class="card card-pad activation-card">
         <div class="logo">
-          <span class="material-icons">hub</span>
-          <h1>PURU NUCLEUS</h1>
+          <puru-logo variant="full" [size]="52"></puru-logo>
+          <div class="product">NUCLEUS</div>
         </div>
 
         <div class="card-content">
+          <!-- System clock warning — a skewed clock makes GCP sign-in fail -->
+          @if (clock && clock.checked && !clock.ok) {
+            <div class="clock-warning">
+              <span class="material-icons">schedule</span>
+              <div class="clock-text">
+                <span class="clock-title">System clock is out of sync</span>
+                <span class="clock-detail">{{ clock.message }}</span>
+                <span class="clock-hint">
+                  Fix: Windows Settings → Time &amp; language → Date &amp; time →
+                  turn on “Set time automatically”, then “Sync now”. Timezone offset: {{ clock.timezone_offset }}.
+                </span>
+              </div>
+              <button class="btn-icon" (click)="checkClock()" [disabled]="checkingClock" title="Re-check">
+                <span class="material-icons">refresh</span>
+              </button>
+            </div>
+          }
+
           <!-- Step 1: GCS Credentials -->
           @if (!credentialsReady) {
             <h2>Step 1: Service Account</h2>
@@ -184,7 +216,7 @@ interface CredentialsStatus {
       justify-content: center;
       align-items: center;
       min-height: 100vh;
-      background: linear-gradient(135deg, #1a237e 0%, #3f51b5 100%);
+      background: linear-gradient(140deg, #12202e 0%, #0a3a63 52%, #009efb 135%);
     }
 
     .activation-card {
@@ -196,20 +228,18 @@ interface CredentialsStatus {
 
     .logo {
       margin-bottom: 2rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
 
-      .material-icons {
-        font-size: 4rem;
-        width: 4rem;
-        height: 4rem;
-        color: #3f51b5;
-      }
-
-      h1 {
-        margin: 0.5rem 0 0;
-        font-size: 1.5rem;
-        font-weight: 500;
-        letter-spacing: 0.1em;
-        color: #1a237e;
+      .product {
+        font-family: var(--font-support);
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.42em;
+        color: var(--brand-blue);
+        padding-left: 0.42em;
       }
     }
 
@@ -339,6 +369,54 @@ interface CredentialsStatus {
         flex-shrink: 0;
         margin-top: 1px;
       }
+    }
+
+    /* ── System clock warning ──────────────── */
+    .clock-warning {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      background: #fff3e0;
+      border: 1px solid #ffcc80;
+      border-radius: 8px;
+      margin-bottom: 1.25rem;
+      text-align: left;
+
+      > .material-icons {
+        color: #e65100;
+        font-size: 22px;
+        width: 22px;
+        height: 22px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+
+      .clock-text {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .clock-title {
+        font-size: 0.85rem;
+        font-weight: 700;
+        color: #e65100;
+      }
+
+      .clock-detail {
+        font-size: 0.78rem;
+        color: #bf360c;
+      }
+
+      .clock-hint {
+        font-size: 0.72rem;
+        color: #8d6e63;
+      }
+
+      .btn-icon { color: #e65100; flex-shrink: 0; }
     }
 
     /* ── Credentials saved ─────────────────── */
@@ -489,8 +567,26 @@ export class ActivationComponent {
   activating = false;
   error: string | null = null;
 
+  // Environment checks
+  clock: SystemClockStatus | null = null;
+  checkingClock = false;
+
   constructor() {
     this.checkCredentials();
+    this.checkClock();
+  }
+
+  /** Verify the system clock is in sync — a skew breaks GCP sign-in. */
+  async checkClock(): Promise<void> {
+    this.checkingClock = true;
+    try {
+      this.clock = await this.tauri.invoke<SystemClockStatus>('check_system_clock');
+    } catch {
+      // Non-fatal — if the check itself fails, don't block activation.
+      this.clock = null;
+    } finally {
+      this.checkingClock = false;
+    }
   }
 
   private async checkCredentials(): Promise<void> {

@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult, BackupRecord } from '../../core/services/tauri.service';
 import { License, getLicenseStatus, LicenseStatus } from '../../core/models/license.model';
+import { PuruLogoComponent } from '../../core/components/puru-logo.component';
 import { interval, Subscription } from 'rxjs';
 
 @Component({
@@ -11,11 +12,13 @@ import { interval, Subscription } from 'rxjs';
   imports: [
     CommonModule,
     RouterLink,
+    PuruLogoComponent,
   ],
   template: `
     <div class="page">
       <!-- Page Header -->
       <div class="page-header">
+        <puru-logo class="dash-logo" variant="normal" [size]="22"></puru-logo>
         <h1>Dashboard</h1>
         <p class="page-subtitle">
           @if (license?.hospital_name) {
@@ -283,6 +286,11 @@ import { interval, Subscription } from 'rxjs';
       max-width: 1200px;
       margin: 0 auto;
       padding: 28px 32px;
+    }
+
+    .dash-logo {
+      display: inline-flex;
+      margin-bottom: 10px;
     }
 
     /* ── License Banner ─────────────────────────── */

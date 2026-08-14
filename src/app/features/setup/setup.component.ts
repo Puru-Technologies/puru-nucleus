@@ -523,21 +523,41 @@ interface SetupStep {
     .pbar {
       position: relative;
       width: 100%;
-      height: 6px;
-      border-radius: 3px;
-      background: #e0e0e0;
-      overflow: hidden;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--brand-track);
+      overflow: visible;
     }
     .pbar-fill {
+      position: relative;
       height: 100%;
-      background: var(--accent-indigo);
-      border-radius: 3px;
-      transition: width 0.2s ease;
+      background: var(--brand-blue);
+      border-radius: 999px;
+      transition: width 0.3s ease;
+    }
+    /* the wordmark's red dot marks the progress head */
+    .pbar-fill::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      margin: -7px -7px 0 0;
+      border-radius: 50%;
+      background: var(--brand-red);
+      border: 3px solid var(--bg-card);
+      box-sizing: border-box;
+    }
+    .pbar.indeterminate {
+      overflow: hidden;
     }
     .pbar.indeterminate .pbar-fill {
+      position: absolute;
       width: 40% !important;
       animation: pbar-indeterminate 1.2s infinite ease-in-out;
     }
+    .pbar.indeterminate .pbar-fill::after { display: none; }
     @keyframes pbar-indeterminate {
       0%   { margin-left: -40%; }
       100% { margin-left: 100%; }

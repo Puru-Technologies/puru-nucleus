@@ -46,6 +46,9 @@ sysinfo = "0.29"
 sha2 = "0.10"
 mac_address = "1.1"
 
+# Secure random (generated MySQL root password)
+rand = "0.8"
+
 # Docker
 bollard = "0.15"
 futures-util = "0.3"

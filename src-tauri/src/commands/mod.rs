@@ -973,6 +973,133 @@ fn validate_credentials_json(content: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── System Clock Check ────────────────────────────────────────────────────────
+
+/// Result of comparing the local system clock to real-world time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemClockStatus {
+    /// Whether we could reach a time source at all (false = offline; don't nag).
+    pub checked: bool,
+    /// True when the skew is within tolerance (clock is fine).
+    pub ok: bool,
+    /// Local clock minus real time, in seconds. Positive = clock is ahead.
+    pub skew_seconds: i64,
+    /// Skew magnitude allowed before we warn.
+    pub tolerance_seconds: i64,
+    /// Local time (RFC 3339, with the machine's UTC offset).
+    pub local_time: String,
+    /// Real time from the reference server (RFC 3339, UTC), if reachable.
+    pub server_time: Option<String>,
+    /// The machine's current UTC offset, e.g. "+05:30".
+    pub timezone_offset: String,
+    /// Which reference host answered, if any.
+    pub source: Option<String>,
+    /// Human-readable summary for the UI.
+    pub message: String,
+}
+
+/// Compare the local system clock against real-world time, read from the HTTP
+/// `Date` header of a Google endpoint — the same clock authority that signs GCP
+/// tokens. A large skew makes token requests fail with `invalid_grant`, which
+/// otherwise surfaces only as an opaque "Cloud authentication failed" error.
+#[tauri::command]
+pub async fn check_system_clock() -> Result<SystemClockStatus, String> {
+    // Google rejects a JWT whose iat/exp fall outside a small window, so keep
+    // the warning threshold tight. 90s absorbs request latency and the Date
+    // header's 1-second resolution without missing a real, auth-breaking skew.
+    const TOLERANCE_SECS: i64 = 90;
+
+    let local_now = chrono::Local::now();
+    let timezone_offset = local_now.offset().to_string();
+    let local_time = local_now.to_rfc3339();
+
+    // A response that could not be produced is not proof the clock is wrong —
+    // when offline we report checked=false, ok=true so the UI stays quiet.
+    let offline = |msg: String| SystemClockStatus {
+        checked: false,
+        ok: true,
+        skew_seconds: 0,
+        tolerance_seconds: TOLERANCE_SECS,
+        local_time: local_time.clone(),
+        server_time: None,
+        timezone_offset: timezone_offset.clone(),
+        source: None,
+        message: msg,
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return Ok(offline(format!("Could not build HTTP client: {}", e))),
+    };
+
+    // Prefer the token endpoint itself (most relevant), then a plain fallback.
+    let sources = [
+        "https://oauth2.googleapis.com/token",
+        "https://www.google.com/generate_204",
+    ];
+
+    let mut reference: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+    for url in sources {
+        if let Ok(resp) = client.get(url).send().await {
+            if let Some(date) = resp.headers().get(reqwest::header::DATE) {
+                if let Ok(s) = date.to_str() {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(s) {
+                        reference = Some((dt.with_timezone(&chrono::Utc), url.to_string()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let (server_utc, source) = match reference {
+        Some(v) => v,
+        None => {
+            return Ok(offline(
+                "Could not reach a time source to verify the clock (offline?).".to_string(),
+            ))
+        }
+    };
+
+    let skew_seconds = chrono::Utc::now()
+        .signed_duration_since(server_utc)
+        .num_seconds();
+    let ok = skew_seconds.abs() <= TOLERANCE_SECS;
+
+    let message = if ok {
+        "System clock is in sync with real time.".to_string()
+    } else {
+        let dir = if skew_seconds > 0 { "ahead of" } else { "behind" };
+        let mag = skew_seconds.abs();
+        let human = if mag >= 3600 {
+            format!("{}h {}m", mag / 3600, (mag % 3600) / 60)
+        } else if mag >= 60 {
+            format!("{}m {}s", mag / 60, mag % 60)
+        } else {
+            format!("{}s", mag)
+        };
+        format!(
+            "System clock is {} {} real time. Cloud sign-in (GCP) will fail until the clock is synced.",
+            human, dir
+        )
+    };
+
+    Ok(SystemClockStatus {
+        checked: true,
+        ok,
+        skew_seconds,
+        tolerance_seconds: TOLERANCE_SECS,
+        local_time,
+        server_time: Some(server_utc.to_rfc3339()),
+        timezone_offset,
+        source: Some(source),
+        message,
+    })
+}
+
 // ── Setup Wizard Commands ────────────────────────────────────────────────────
 
 /// Known Puru databases to create during setup
@@ -1079,6 +1206,27 @@ pub async fn setup_create_databases() -> Result<(), String> {
         .await
         .ok_or_else(|| "MySQL client not found. Add mysql to PATH or install MySQL.".to_string())?;
 
+    // Preflight: the server must actually be accepting connections. Without this,
+    // a stopped MySQL surfaces as a raw "ERROR 2003 ... (10061)" driver message
+    // two layers down instead of a clear, actionable one here.
+    let reachable = {
+        use std::net::ToSocketAddrs;
+        (config.mysql_host.as_str(), config.mysql_port)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .map(|addr| {
+                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(1200)).is_ok()
+            })
+            .unwrap_or(false)
+    };
+    if !reachable {
+        return Err(format!(
+            "MySQL is not running on {}:{}. Run the \"Install Prerequisites\" step (it initializes and starts MySQL), or start the MySQL service, then retry.",
+            config.mysql_host, config.mysql_port
+        ));
+    }
+
     let output = crate::process::silent_cmd(&mysql_bin)
         .env("MYSQL_PWD", &config.mysql_password)
         .args([
@@ -1101,40 +1249,53 @@ pub async fn setup_create_databases() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 3: Configure RabbitMQ vhost and user for Puru services
+/// Step 3: Configure RabbitMQ user + permissions for Puru services.
+///
+/// We deliberately do **not** create an extra vhost — services use the default
+/// `/` vhost. This grants user `puru`/`puru123` full permissions on `/`, tags it
+/// `administrator`, and enables the management + delayed-message-exchange
+/// plugins. On the host path we first repair the Erlang cookie so `rabbitmqctl`
+/// can authenticate against the node.
 #[tauri::command]
 pub async fn setup_configure_rabbitmq() -> Result<(), String> {
-    tracing::info!("Setup: configuring RabbitMQ");
+    tracing::info!("Setup: configuring RabbitMQ (default vhost \"/\")");
 
-    // Try Docker exec first (most common setup — RabbitMQ runs in container)
-    let docker_exec = crate::process::silent_cmd("docker")
-        .args([
-            "exec", "rabbitmq", "rabbitmqctl", "add_vhost", "puru",
-        ])
+    // Detect a containerised RabbitMQ with a read-only probe (no side effects).
+    let docker_probe = crate::process::silent_cmd("docker")
+        .args(["exec", "rabbitmq", "rabbitmqctl", "-q", "list_vhosts"])
         .output()
         .await;
+    let use_docker = matches!(&docker_probe, Ok(out) if out.status.success());
 
-    let use_docker = match &docker_exec {
-        Ok(out) => out.status.success() || String::from_utf8_lossy(&out.stderr).contains("already exists"),
-        Err(_) => false,
+    // Configuration verbs, applied against the default "/" vhost. "already
+    // exists" is swallowed so re-running setup is idempotent.
+    let configure = |ctl_args: &[&str]| -> Vec<Vec<String>> {
+        let base: Vec<String> = ctl_args.iter().map(|s| s.to_string()).collect();
+        let mut cmds = Vec::new();
+        for verb in [
+            vec!["add_user", "puru", "puru123"],
+            vec!["set_permissions", "-p", "/", "puru", ".*", ".*", ".*"],
+            vec!["set_user_tags", "puru", "administrator"],
+        ] {
+            let mut c = base.clone();
+            c.extend(verb.iter().map(|s| s.to_string()));
+            cmds.push(c);
+        }
+        cmds
     };
 
-    if use_docker {
-        // Set up user and permissions via docker exec
-        let commands: &[&[&str]] = &[
-            &["exec", "rabbitmq", "rabbitmqctl", "add_user", "puru", "puru123"],
-            &["exec", "rabbitmq", "rabbitmqctl", "set_permissions", "-p", "puru", "puru", ".*", ".*", ".*"],
-            &["exec", "rabbitmq", "rabbitmqctl", "set_user_tags", "puru", "administrator"],
-        ];
+    // Explains a host-path auth failure (Erlang cookie) precisely in the error.
+    #[allow(unused_mut)]
+    let mut cookie_note = String::new();
 
-        for args in commands {
+    if use_docker {
+        let cmds = configure(&["exec", "rabbitmq", "rabbitmqctl"]);
+        for args in &cmds {
             let output = crate::process::silent_cmd("docker")
-                .args(*args)
+                .args(args)
                 .output()
                 .await
                 .map_err(|e| format!("Failed to configure RabbitMQ: {}", e))?;
-
-            // Ignore "already exists" errors — idempotent setup
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.contains("already exists") && !stderr.contains("already_exists") {
@@ -1142,57 +1303,43 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
                 }
             }
         }
+        enable_rabbitmq_plugins_docker().await;
 
-        // Enable required plugins. `rabbitmq_management` ships with RabbitMQ and
-        // powers the API our queue seeding uses (port 15672) — enabling is
-        // idempotent. `rabbitmq_delayed_message_exchange` is a community .ez that
-        // may be absent; warn (don't fail) so the operator knows to install it.
-        for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
-            let out = crate::process::silent_cmd("docker")
-                .args(["exec", "rabbitmq", "rabbitmq-plugins", "enable", plugin])
-                .output()
-                .await;
-            match out {
-                Ok(o) if o.status.success() => tracing::info!("RabbitMQ: enabled {}", plugin),
-                Ok(o) => tracing::warn!(
-                    "RabbitMQ: could not enable {} — {}",
-                    plugin,
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ),
-                Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
-            }
+        // Verify the user actually exists — the loop above swallows per-command
+        // failures, so a node that's up but unreachable would otherwise look green.
+        let ok = crate::process::silent_cmd("docker")
+            .args(["exec", "rabbitmq", "rabbitmqctl", "authenticate_user", "puru", "puru123"])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err("RabbitMQ user 'puru' could not be created/verified. Is the rabbitmq container running and healthy?".to_string());
         }
     } else {
-        // Fallback: try host-installed rabbitmqctl
+        // Host-installed RabbitMQ: repair the Erlang cookie first so rabbitmqctl
+        // can talk to the LocalSystem node, then apply the same config.
+        #[cfg(target_os = "windows")]
+        match sync_erlang_cookie() {
+            Ok(_) => {}
+            Err(e) => {
+                cookie_note = format!(
+                    " (Erlang cookie sync failed: {} — run as administrator with RabbitMQ started)",
+                    e
+                );
+            }
+        }
+
         let rabbitmqctl = find_rabbitmqctl().await
             .ok_or_else(|| "Cannot reach RabbitMQ. rabbitmqctl not found on PATH or in default install directory.".to_string())?;
 
-        let vhost_output = crate::process::silent_cmd(&rabbitmqctl)
-            .args(["add_vhost", "puru"])
-            .output()
-            .await
-            .map_err(|e| format!("Cannot reach RabbitMQ. Is it running? ({})", e))?;
-
-        if !vhost_output.status.success() {
-            let stderr = String::from_utf8_lossy(&vhost_output.stderr);
-            if !stderr.contains("already exists") && !stderr.contains("already_exists") {
-                return Err(format!("RabbitMQ vhost creation failed: {}", stderr.trim()));
-            }
-        }
-
-        let user_commands: &[&[&str]] = &[
-            &["add_user", "puru", "puru123"],
-            &["set_permissions", "-p", "puru", "puru", ".*", ".*", ".*"],
-            &["set_user_tags", "puru", "administrator"],
-        ];
-
-        for args in user_commands {
+        let cmds = configure(&[]);
+        for args in &cmds {
             let output = crate::process::silent_cmd(&rabbitmqctl)
-                .args(*args)
+                .args(args)
                 .output()
                 .await
                 .map_err(|e| format!("Failed to configure RabbitMQ: {}", e))?;
-
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.contains("already exists") && !stderr.contains("already_exists") {
@@ -1201,11 +1348,6 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
             }
         }
 
-        // Enable required plugins via the sibling `rabbitmq-plugins` binary.
-        // `rabbitmq_management` is bundled with RabbitMQ and powers the API our
-        // queue seeding uses (port 15672) — enabling is idempotent.
-        // `rabbitmq_delayed_message_exchange` is a community .ez that may be
-        // absent; warn (don't fail) so the operator knows to install it.
         let plugins_bin = rabbitmq_plugins_from_ctl(&rabbitmqctl);
         for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
             let out = crate::process::silent_cmd(&plugins_bin)
@@ -1222,10 +1364,97 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
                 Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
             }
         }
+
+        // Verify the user exists — surfaces a cookie/auth failure at *this* step
+        // rather than as a confusing failure during queue seeding.
+        let ok = crate::process::silent_cmd(&rabbitmqctl)
+            .args(["authenticate_user", "puru", "puru123"])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err(format!(
+                "RabbitMQ user 'puru' could not be created/verified — rabbitmqctl cannot authenticate to the node.{}",
+                cookie_note
+            ));
+        }
     }
 
-    tracing::info!("Setup: RabbitMQ configured (vhost=puru, user=puru)");
+    tracing::info!("Setup: RabbitMQ configured (vhost=\"/\", user=puru)");
     Ok(())
+}
+
+/// Enable RabbitMQ plugins inside the `rabbitmq` Docker container. Both are
+/// best-effort: `rabbitmq_management` is bundled (idempotent), while
+/// `rabbitmq_delayed_message_exchange` needs its `.ez` present in the plugins
+/// dir first — warn (don't fail) if it isn't there yet.
+async fn enable_rabbitmq_plugins_docker() {
+    for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
+        let out = crate::process::silent_cmd("docker")
+            .args(["exec", "rabbitmq", "rabbitmq-plugins", "enable", plugin])
+            .output()
+            .await;
+        match out {
+            Ok(o) if o.status.success() => tracing::info!("RabbitMQ: enabled {}", plugin),
+            Ok(o) => tracing::warn!(
+                "RabbitMQ: could not enable {} — {}",
+                plugin,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
+        }
+    }
+}
+
+/// Repair the Erlang cookie on Windows: the RabbitMQ node runs as LocalSystem
+/// while `rabbitmqctl` runs as the invoking (admin) user. Erlang authenticates
+/// the two by a shared `.erlang.cookie`; a mismatch causes "Could not connect /
+/// auth failed". Copy the node's cookie into the user's home so they match.
+#[cfg(target_os = "windows")]
+fn sync_erlang_cookie() -> Result<(), String> {
+    use std::path::PathBuf;
+
+    let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let sources = [
+        PathBuf::from(&sys_root).join(r"System32\config\systemprofile\.erlang.cookie"),
+        PathBuf::from(&sys_root).join(r"SysWOW64\config\systemprofile\.erlang.cookie"),
+        PathBuf::from(&sys_root).join(".erlang.cookie"),
+    ];
+    let source = sources
+        .iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| "node .erlang.cookie not found (is RabbitMQ installed and started?)".to_string())?;
+
+    let cookie = std::fs::read(source).map_err(|e| format!("cannot read node cookie: {}", e))?;
+
+    // Locations rabbitmqctl reads the caller's cookie from.
+    let mut dests: Vec<PathBuf> = Vec::new();
+    if let Ok(up) = std::env::var("USERPROFILE") {
+        dests.push(PathBuf::from(up).join(".erlang.cookie"));
+    }
+    if let (Ok(hd), Ok(hp)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        dests.push(PathBuf::from(format!("{}{}", hd, hp)).join(".erlang.cookie"));
+    }
+
+    let mut wrote = false;
+    for dest in dests {
+        if dest.as_path() == source.as_path() {
+            continue;
+        }
+        match std::fs::write(&dest, &cookie) {
+            Ok(_) => {
+                tracing::info!("RabbitMQ: synced Erlang cookie -> {}", dest.display());
+                wrote = true;
+            }
+            Err(e) => tracing::warn!("RabbitMQ: could not write cookie to {}: {}", dest.display(), e),
+        }
+    }
+    if wrote {
+        Ok(())
+    } else {
+        Err("no writable user cookie destination".to_string())
+    }
 }
 
 /// Derive the `rabbitmq-plugins` binary from a resolved `rabbitmqctl` path —
@@ -1425,18 +1654,28 @@ services:
 
     // Helper to generate a Spring Boot service block
     let svc = |name: &str, image: &str, container: &str, db: &str, port: u16, needs_rmq: bool| -> String {
+        // Every backend microservice waits for auth to be created first — auth is
+        // the token authority the rest authenticate against. Compose `depends_on`
+        // orders container startup; `restart: unless-stopped` + Spring retries
+        // cover the gap until auth is actually ready, mirroring the native gate.
+        let depends = if modules.auth && container != "auth" {
+            "    depends_on:\n      - auth\n"
+        } else {
+            ""
+        };
         let mut s = format!(
             r#"  {container}:
     image: asia-south2-docker.pkg.dev/puru-255206/puru1/{image}:latest
     container_name: {container}
     restart: unless-stopped
-    environment:
+{depends}    environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://{db_host}:{db_port}/{db}?useSSL=false&allowPublicKeyRetrieval=true
       SPRING_DATASOURCE_USERNAME: {user}
       SPRING_DATASOURCE_PASSWORD: {pw}
 "#,
             container = container,
             image = image,
+            depends = depends,
             db_host = db_host,
             db_port = config.mysql_port,
             db = db,
@@ -1444,9 +1683,10 @@ services:
             pw = config.mysql_password,
         );
         if needs_rmq {
+            // Default vhost "/" — we deliberately do not create an extra vhost.
             s.push_str(&format!(
                 r#"      SPRING_RABBITMQ_HOST: {rmq}
-      SPRING_RABBITMQ_VIRTUAL_HOST: puru
+      SPRING_RABBITMQ_VIRTUAL_HOST: "/"
       SPRING_RABBITMQ_USERNAME: puru
       SPRING_RABBITMQ_PASSWORD: puru123
 "#,
@@ -1693,11 +1933,11 @@ pub async fn setup_generate_env_files() -> Result<(), String> {
         .await
         .map_err(|e| format!("Failed to write database.env: {}", e))?;
 
-    // rabbitmq.env
+    // rabbitmq.env — default "/" vhost (we do not create an extra vhost)
     let rabbitmq = "# Generated by puru-nucleus\n\
          SPRING_RABBITMQ_HOST=127.0.0.1\n\
          SPRING_RABBITMQ_PORT=5672\n\
-         SPRING_RABBITMQ_VIRTUAL_HOST=puru\n\
+         SPRING_RABBITMQ_VIRTUAL_HOST=/\n\
          SPRING_RABBITMQ_USERNAME=puru\n\
          SPRING_RABBITMQ_PASSWORD=puru123\n";
     tokio::fs::write(env_dir.join("rabbitmq.env"), rabbitmq)
@@ -1871,6 +2111,92 @@ pub async fn setup_start_native_services(
 
 /// Core of the native start/sync step, shared by the GUI command (which passes
 /// an AppHandle to emit progress) and the daemon route (which passes None).
+/// Start or reconcile a single native service. Returns the action taken plus
+/// `(attempted, ok)` counters: `attempted` is true when we actually tried to
+/// launch a stopped-but-enabled service, `ok` when that launch succeeded.
+async fn sync_one_native_service(
+    svc: &str,
+    enabled: bool,
+    config: &crate::config::NucleusConfig,
+) -> (NativeServiceAction, bool, bool) {
+    if enabled {
+        // Enabled and being synced — supersede any prior manual stop.
+        crate::services::clear_manually_stopped(svc);
+        if crate::services::native::is_running(config, svc) {
+            return (
+                NativeServiceAction {
+                    service: svc.to_string(),
+                    action: "already-running".into(),
+                    success: true,
+                    message: "Already running".into(),
+                },
+                false,
+                false,
+            );
+        }
+        match crate::services::native::start_service(svc, config).await {
+            Ok(_) => {
+                tracing::info!("Setup (native): started {}", svc);
+                (
+                    NativeServiceAction {
+                        service: svc.to_string(),
+                        action: "started".into(),
+                        success: true,
+                        message: "Started".into(),
+                    },
+                    true,
+                    true,
+                )
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Setup (native): failed to start {}: {}",
+                    svc,
+                    e.user_message()
+                );
+                (
+                    NativeServiceAction {
+                        service: svc.to_string(),
+                        action: "failed".into(),
+                        success: false,
+                        message: e.user_message(),
+                    },
+                    true,
+                    false,
+                )
+            }
+        }
+    } else {
+        // De-selected: stop and remove it (and drop any stop marker — it's gone).
+        crate::services::clear_manually_stopped(svc);
+        match crate::services::native::remove_service(config, svc).await {
+            Ok(_) => {
+                tracing::info!("Setup (native): removed de-selected service {}", svc);
+                (
+                    NativeServiceAction {
+                        service: svc.to_string(),
+                        action: "removed".into(),
+                        success: true,
+                        message: "Stopped and removed (no longer enabled)".into(),
+                    },
+                    false,
+                    false,
+                )
+            }
+            Err(e) => (
+                NativeServiceAction {
+                    service: svc.to_string(),
+                    action: "failed".into(),
+                    success: false,
+                    message: format!("Remove failed: {}", e.user_message()),
+                },
+                false,
+                false,
+            ),
+        }
+    }
+}
+
 pub(crate) async fn sync_native_services(
     app: Option<&tauri::AppHandle>,
 ) -> Result<Vec<NativeServiceAction>, String> {
@@ -1944,66 +2270,64 @@ pub(crate) async fn sync_native_services(
         }
     };
 
-    for svc in &jar_services {
-        let action = if is_enabled(svc) {
-            // Enabled and being synced — supersede any prior manual stop.
-            crate::services::clear_manually_stopped(svc);
-            // Enabled: ensure it's running.
-            if crate::services::native::is_running(&config, svc) {
-                NativeServiceAction {
-                    service: svc.clone(),
-                    action: "already-running".into(),
-                    success: true,
-                    message: "Already running".into(),
-                }
-            } else {
+    // Startup order is not negotiable: puru-auth (the token authority the rest
+    // authenticate against) and puru-hydrogen (the frontend) must come up before
+    // any other microservice. We start that first tier, wait for auth to report
+    // ready, then bring up everything else. puru-hydrogen is the static frontend
+    // (managed nginx), not a JAR, so it isn't in `jar_services` — start it
+    // explicitly here when enabled.
+    macro_rules! record {
+        ($action:expr, $attempted:expr, $ok:expr) => {{
+            if $attempted {
                 start_attempts += 1;
-                match crate::services::native::start_service(svc, &config).await {
-                    Ok(_) => {
-                        start_ok += 1;
-                        tracing::info!("Setup (native): started {}", svc);
-                        NativeServiceAction {
-                            service: svc.clone(),
-                            action: "started".into(),
-                            success: true,
-                            message: "Started".into(),
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Setup (native): failed to start {}: {}", svc, e.user_message());
-                        NativeServiceAction {
-                            service: svc.clone(),
-                            action: "failed".into(),
-                            success: false,
-                            message: e.user_message(),
-                        }
-                    }
+                if $ok {
+                    start_ok += 1;
                 }
             }
-        } else {
-            // De-selected: stop and remove it (and drop any stop marker — it's gone).
-            crate::services::clear_manually_stopped(svc);
-            match crate::services::native::remove_service(&config, svc).await {
-                Ok(_) => {
-                    tracing::info!("Setup (native): removed de-selected service {}", svc);
-                    NativeServiceAction {
-                        service: svc.clone(),
-                        action: "removed".into(),
-                        success: true,
-                        message: "Stopped and removed (no longer enabled)".into(),
-                    }
-                }
-                Err(e) => NativeServiceAction {
-                    service: svc.clone(),
-                    action: "failed".into(),
-                    success: false,
-                    message: format!("Remove failed: {}", e.user_message()),
-                },
-            }
-        };
+            emit(app, &$action);
+            actions.push($action);
+        }};
+    }
 
+    let auth_installed = jar_services.iter().any(|s| s == "puru-auth");
+    let hydrogen_enabled = is_enabled("puru-hydrogen");
+
+    // ── Tier 1: auth first, then hydrogen ──
+    let mut auth_started = false;
+    if auth_installed {
+        let en = is_enabled("puru-auth");
+        let (action, attempted, ok) = sync_one_native_service("puru-auth", en, &config).await;
+        auth_started = en && (action.action == "started" || action.action == "already-running");
+        record!(action, attempted, ok);
+    }
+    if hydrogen_enabled {
+        let (action, attempted, ok) =
+            sync_one_native_service("puru-hydrogen", true, &config).await;
+        record!(action, attempted, ok);
+    }
+
+    // ── Gate: don't start the rest until auth is actually ready ──
+    if auth_started {
+        let ready = crate::services::native::wait_for_ready("puru-auth", 90).await;
+        let action = NativeServiceAction {
+            service: "puru-auth".into(),
+            action: if ready { "ready".into() } else { "wait-timeout".into() },
+            success: ready,
+            message: if ready {
+                "Auth is ready — starting remaining services".into()
+            } else {
+                "Auth not ready after 90s — starting remaining services anyway".into()
+            },
+        };
         emit(app, &action);
         actions.push(action);
+    }
+
+    // ── Tier 2: everything else (skip auth, already handled above) ──
+    for svc in jar_services.iter().filter(|s| *s != "puru-auth").cloned().collect::<Vec<_>>() {
+        let (action, attempted, ok) =
+            sync_one_native_service(&svc, is_enabled(&svc), &config).await;
+        record!(action, attempted, ok);
     }
 
     // Enabled services that have no JAR on disk yet — report so the operator

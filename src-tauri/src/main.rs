@@ -279,6 +279,8 @@ fn run_gui() {
             commands::check_credentials_file,
             commands::import_credentials_file,
             commands::save_credentials_content,
+            // Environment checks
+            commands::check_system_clock,
             // Logging
             commands::log_error,
             // Setup

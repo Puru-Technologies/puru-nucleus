@@ -3,20 +3,38 @@
 
 // ── CSS Custom Properties ────────────────────────────────────────
 :root {
+  // ── Puru Labs brand ────────────────────────────────────────────
+  // Comfortaa = logo/headings, Quicksand = supporting/body text.
+  --font-brand: 'Comfortaa', 'Quicksand', sans-serif;
+  --font-support: 'Quicksand', 'Inter', "Helvetica Neue", sans-serif;
+
+  --brand-blue: #009efb;        // product blue (primary)
+  --brand-blue-2: #4da6e7;      // lighter blue (dark surfaces / "labs")
+  --brand-blue-dark: #0d8ce0;   // hover/pressed
+  --brand-red: #e83a3a;         // the dot / accent
+  --brand-red-light: #ff5e5e;   // dot on dark surfaces
+  --brand-ink: #1b2a3a;         // "puru" wordmark ink
+  --brand-navy: #12202e;        // dark logo surface
+  --brand-track: #e3ebf5;       // progress/track background
+  --brand-green: #3ac977;       // complete
+  --brand-amber: #ff9f00;       // on hold
+
   --bg-primary: #f8f9fb;
   --bg-card: #ffffff;
   --bg-sidebar: #0f172a;
   --bg-sidebar-hover: rgba(255, 255, 255, 0.06);
-  --bg-sidebar-active: rgba(99, 102, 241, 0.15);
+  --bg-sidebar-active: rgba(0, 158, 251, 0.16);
 
   --text-primary: #1e293b;
   --text-secondary: #64748b;
   --text-muted: #94a3b8;
   --text-on-dark: #e2e8f0;
 
-  --accent-indigo: #6366f1;
-  --accent-indigo-light: #eef2ff;
-  --accent-blue: #3b82f6;
+  // Primary accent is now brand blue (kept under the old name so the whole
+  // UI kit repoints in one place).
+  --accent-indigo: #009efb;
+  --accent-indigo-light: #e6f4fe;
+  --accent-blue: #009efb;
 
   --status-green: #22c55e;
   --status-green-bg: #f0fdf4;
@@ -51,7 +69,7 @@ html, body {
   // Smaller root size — everything is rem-based, so this tightens the whole app
   // (incl. the still-Material Setup screen) without touching each component.
   font-size: 14px;
-  font-family: 'Inter', Roboto, "Helvetica Neue", sans-serif;
+  font-family: var(--font-support);
   background-color: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
@@ -161,7 +179,7 @@ a, button {
   padding: 7px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
-  font: 500 0.8125rem 'Inter', sans-serif;
+  font: 500 0.8125rem var(--font-support);
   line-height: 1.2;
   cursor: pointer;
   white-space: nowrap;
@@ -175,9 +193,9 @@ a, button {
 }
 
 .btn-primary {
-  background: var(--accent-indigo);
+  background: var(--brand-blue);
   color: #fff;
-  &:hover:not(:disabled) { background: #4f52d6; }
+  &:hover:not(:disabled) { background: var(--brand-blue-dark); }
 }
 
 .btn-stroked {
@@ -263,11 +281,11 @@ a, button {
   padding: 8px 10px;
   border: 1px solid var(--border-light);
   border-radius: var(--radius-sm);
-  font: 400 0.875rem 'Inter', sans-serif;
+  font: 400 0.875rem var(--font-support);
   color: var(--text-primary);
   background: var(--bg-card);
   outline: none;
-  &:focus { border-color: var(--accent-indigo); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12); }
+  &:focus { border-color: var(--brand-blue); box-shadow: 0 0 0 3px rgba(0, 158, 251, 0.14); }
   &:disabled { background: #f8fafc; color: var(--text-muted); }
 }
 
@@ -301,17 +319,36 @@ a, button {
   tbody tr:hover { background: #f8fafc; }
 }
 
-// ── Spinner ──────────────────────────────────────────────────────
+// ── Spinner (Puru: blue arc on a light ring, red dot leads the edge) ──
 .spinner {
   display: inline-block;
+  position: relative;
   width: 20px;
   height: 20px;
-  border: 2px solid rgba(99, 102, 241, 0.25);
-  border-top-color: var(--accent-indigo);
+  border: 2px solid var(--brand-track);
+  border-top-color: var(--brand-blue);
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  animation: spin 0.8s linear infinite;
+
+  // The wordmark's red dot rides the leading (top) edge of the arc.
+  &::after {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: 50%;
+    width: 4px;
+    height: 4px;
+    margin-left: -2px;
+    border-radius: 50%;
+    background: var(--brand-red);
+  }
 }
-.spinner-lg { width: 36px; height: 36px; border-width: 3px; }
+.spinner-lg {
+  width: 36px;
+  height: 36px;
+  border-width: 3px;
+  &::after { width: 7px; height: 7px; margin-left: -3.5px; top: -3px; }
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 
 // ── Dropdown menu (custom, for per-row actions etc.) ─────────────

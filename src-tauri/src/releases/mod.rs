@@ -374,6 +374,157 @@ pub(crate) async fn download_gcs_to_file(
     download_gcs_to_file_from(client, RELEASES_BUCKET, object_path, local_path).await
 }
 
+// ── Infra prerequisite manifest (installers hosted by oxygen) ─────────────────
+//
+// Nucleus resolves prerequisites through `infra/infra-manifest.json` (written by
+// oxygen's /management/releases upload UI) rather than listing the folder — an
+// artifact without a manifest entry is invisible. Schema matches oxygen's
+// `Release.ts`: component id → { version, platforms: { <key>: { file, sha256? }}}.
+
+const INFRA_MANIFEST_PATH: &str = "infra/infra-manifest.json";
+
+/// One platform's file for an infra component.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct InfraPlatformFile {
+    pub file: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+/// A prerequisite component (mysql, erlang, rabbitmq, …) in the infra manifest.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct InfraComponent {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub platforms: std::collections::HashMap<String, InfraPlatformFile>,
+}
+
+/// `infra/infra-manifest.json` — component id → component.
+pub(crate) type InfraManifest = std::collections::HashMap<String, InfraComponent>;
+
+/// A resolved infra artifact ready to download.
+#[derive(Debug, Clone)]
+pub(crate) struct InfraArtifact {
+    pub component: String,
+    pub version: String,
+    pub file: String,
+    pub object_path: String,
+    pub sha256: Option<String>,
+}
+
+/// Platform key used in the infra manifest (matches oxygen's `INFRA_PLATFORMS`).
+pub(crate) fn infra_platform_key() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", _) => "windows-x64",
+        ("linux", _) => "linux-x64",
+        ("macos", "aarch64") => "macos-arm64",
+        ("macos", _) => "macos-x64",
+        _ => "windows-x64",
+    }
+}
+
+/// Download and parse `infra/infra-manifest.json` from the releases bucket.
+pub(crate) async fn fetch_infra_manifest(
+    client: &google_cloud_storage::client::Client,
+) -> Result<InfraManifest, NucleusError> {
+    let bytes = download_gcs_bytes(client, INFRA_MANIFEST_PATH).await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| NucleusError::Validation(format!("infra manifest parse error: {}", e)))
+}
+
+/// Resolve a component id to a concrete artifact for this platform, or None if
+/// the component (or its platform entry) is missing from the manifest.
+pub(crate) fn resolve_infra_artifact(
+    manifest: &InfraManifest,
+    component: &str,
+) -> Option<InfraArtifact> {
+    let comp = manifest.get(component)?;
+    let pf = comp.platforms.get(infra_platform_key())?;
+    Some(InfraArtifact {
+        component: component.to_string(),
+        version: comp.version.clone(),
+        file: pf.file.clone(),
+        object_path: format!("infra/{}", pf.file),
+        sha256: pf.sha256.clone(),
+    })
+}
+
+/// Stream-download an infra artifact to `dest`, invoking `on_progress(done,
+/// total)` as bytes arrive, and verifying the manifest sha256 when present.
+/// `total` is 0 when the object size couldn't be read (progress then shows
+/// bytes-only). On sha256 mismatch the partial file is removed and an error
+/// returned.
+pub(crate) async fn download_infra_artifact<F>(
+    client: &google_cloud_storage::client::Client,
+    artifact: &InfraArtifact,
+    dest: &PathBuf,
+    on_progress: F,
+) -> Result<(), NucleusError>
+where
+    F: Fn(u64, u64),
+{
+    use futures_util::StreamExt;
+    use google_cloud_storage::http::objects::download::Range;
+    use google_cloud_storage::http::objects::get::GetObjectRequest;
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncWriteExt;
+
+    // Total size (for percent) from object metadata; 0 if unknown.
+    let total = list_gcs_objects_with_meta(client, RELEASES_BUCKET, &artifact.object_path)
+        .await
+        .ok()
+        .and_then(|v| v.into_iter().find(|m| m.name == artifact.object_path))
+        .map(|m| m.size.max(0) as u64)
+        .unwrap_or(0);
+
+    let stream = client
+        .download_streamed_object(
+            &GetObjectRequest {
+                bucket: RELEASES_BUCKET.to_string(),
+                object: artifact.object_path.clone(),
+                ..Default::default()
+            },
+            &Range::default(),
+        )
+        .await
+        .map_err(|e| NucleusError::GcsConnection(format!("GCS stream download failed: {}", e)))?;
+    futures_util::pin_mut!(stream);
+
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut hasher = Sha256::new();
+    let want_hash = artifact.sha256.is_some();
+    let mut downloaded: u64 = 0;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| NucleusError::GcsConnection(format!("download stream error: {}", e)))?;
+        file.write_all(&chunk).await?;
+        if want_hash {
+            hasher.update(&chunk);
+        }
+        downloaded += chunk.len() as u64;
+        on_progress(downloaded, total);
+    }
+    file.flush().await?;
+
+    if let Some(expected) = &artifact.sha256 {
+        let got: String = hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+        if !got.eq_ignore_ascii_case(expected) {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(NucleusError::Validation(format!(
+                "sha256 mismatch for {} (expected {}, got {})",
+                artifact.file, expected, got
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Metadata for a GCS object — enough to detect content changes cheaply.
 #[derive(Debug, Clone)]
 pub(crate) struct GcsObjectMeta {

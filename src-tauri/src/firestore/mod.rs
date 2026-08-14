@@ -122,6 +122,20 @@ impl FirestoreClient {
     }
 
     /// Sync the local nucleus config to the hospital's cloud document.
+    /// Store a single string field on the hospital document. Used to persist the
+    /// generated MySQL root password to the cloud (one of its three sinks).
+    pub async fn set_hospital_string_field(
+        &self,
+        code: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let fields = serde_json::json!({ field: string_value(value) });
+        queries::patch_document(&self.http, &token, &path, fields, &[field]).await
+    }
+
     pub async fn sync_config(
         &self,
         code: &str,
