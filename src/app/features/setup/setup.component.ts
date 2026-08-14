@@ -1527,7 +1527,7 @@ export class SetupComponent implements OnInit {
     try {
       const elevated = await this.tauri.invoke<boolean>('is_elevated');
       if (!elevated) {
-        this.notification.info('Installing prerequisites needs administrator — restarting as admin…');
+        this.notification.warning('Installing prerequisites needs administrator — restarting as admin…');
         await this.tauri.invoke('restart_as_admin');
         return; // app relaunches elevated; the operator runs Install again
       }
@@ -1562,7 +1562,7 @@ export class SetupComponent implements OnInit {
     } catch (err: any) {
       const msg = String(err?.message || err || '');
       if (msg.includes('ELEVATION_REQUIRED')) {
-        this.notification.info('Administrator required — restarting as admin…');
+        this.notification.warning('Administrator required — restarting as admin…');
         try { await this.tauri.invoke('restart_as_admin'); } catch {}
         return;
       }

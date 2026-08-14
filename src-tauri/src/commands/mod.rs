@@ -1326,16 +1326,17 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
             return Err("RabbitMQ user 'puru' could not be created/verified. Is the rabbitmq container running and healthy?".to_string());
         }
     } else {
-        // Host-installed RabbitMQ: repair the Erlang cookie first so rabbitmqctl
-        // can talk to the LocalSystem node, then apply the same config.
+        // Host-installed RabbitMQ: (1) share the Erlang cookie between the node
+        // (SYSTEM) and rabbitmqctl (this user), (2) start the node — both must
+        // happen before we can create the user. Order matters: write the cookie
+        // first so the service comes up using it.
         #[cfg(target_os = "windows")]
-        match sync_erlang_cookie() {
-            Ok(_) => {}
-            Err(e) => {
-                cookie_note = format!(
-                    " (Erlang cookie sync failed: {} — run as administrator with RabbitMQ started)",
-                    e
-                );
+        {
+            if let Err(e) = ensure_erlang_cookie() {
+                cookie_note = format!(" (Erlang cookie: {} — run as administrator)", e);
+            }
+            if let Err(e) = ensure_rabbitmq_running().await {
+                cookie_note = format!("{} ({})", cookie_note, e);
             }
         }
 
@@ -1421,39 +1422,42 @@ async fn enable_rabbitmq_plugins_docker() {
 /// the two by a shared `.erlang.cookie`; a mismatch causes "Could not connect /
 /// auth failed". Copy the node's cookie into the user's home so they match.
 #[cfg(target_os = "windows")]
-fn sync_erlang_cookie() -> Result<(), String> {
+fn ensure_erlang_cookie() -> Result<(), String> {
     use std::path::PathBuf;
 
     let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let sources = [
-        PathBuf::from(&sys_root).join(r"System32\config\systemprofile\.erlang.cookie"),
-        PathBuf::from(&sys_root).join(r"SysWOW64\config\systemprofile\.erlang.cookie"),
-        PathBuf::from(&sys_root).join(".erlang.cookie"),
-    ];
-    let source = sources
-        .iter()
-        .find(|p| p.exists())
-        .ok_or_else(|| "node .erlang.cookie not found (is RabbitMQ installed and started?)".to_string())?;
+    // LocalSystem's home — where the RabbitMQ service (running as SYSTEM) reads
+    // its cookie from.
+    let systemprofile =
+        PathBuf::from(&sys_root).join(r"System32\config\systemprofile\.erlang.cookie");
+    // The invoking user's home — where rabbitmqctl reads its cookie from.
+    let user = std::env::var("USERPROFILE")
+        .ok()
+        .map(|u| PathBuf::from(u).join(".erlang.cookie"));
 
-    let cookie = std::fs::read(source).map_err(|e| format!("cannot read node cookie: {}", e))?;
+    // Canonical value: an existing user cookie, else the systemprofile cookie,
+    // else a freshly generated one. Whatever it is, we write it to BOTH homes so
+    // the node (SYSTEM) and rabbitmqctl (user) share a cookie and can authenticate.
+    let value: Vec<u8> = user
+        .as_ref()
+        .and_then(|p| std::fs::read(p).ok())
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::fs::read(&systemprofile).ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| generate_erlang_cookie().into_bytes());
 
-    // Locations rabbitmqctl reads the caller's cookie from.
-    let mut dests: Vec<PathBuf> = Vec::new();
-    if let Ok(up) = std::env::var("USERPROFILE") {
-        dests.push(PathBuf::from(up).join(".erlang.cookie"));
-    }
-    if let (Ok(hd), Ok(hp)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
-        dests.push(PathBuf::from(format!("{}{}", hd, hp)).join(".erlang.cookie"));
+    let mut dests: Vec<PathBuf> = vec![systemprofile];
+    if let Some(u) = user {
+        dests.push(u);
     }
 
     let mut wrote = false;
     for dest in dests {
-        if dest.as_path() == source.as_path() {
-            continue;
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::write(&dest, &cookie) {
+        match std::fs::write(&dest, &value) {
             Ok(_) => {
-                tracing::info!("RabbitMQ: synced Erlang cookie -> {}", dest.display());
+                tracing::info!("RabbitMQ: Erlang cookie set at {}", dest.display());
                 wrote = true;
             }
             Err(e) => tracing::warn!("RabbitMQ: could not write cookie to {}: {}", dest.display(), e),
@@ -1462,7 +1466,54 @@ fn sync_erlang_cookie() -> Result<(), String> {
     if wrote {
         Ok(())
     } else {
-        Err("no writable user cookie destination".to_string())
+        Err("could not write the Erlang cookie (need administrator)".to_string())
+    }
+}
+
+/// Generate a RabbitMQ-style Erlang cookie (uppercase alphanumeric, 20 chars).
+#[cfg(target_os = "windows")]
+fn generate_erlang_cookie() -> String {
+    use rand::Rng;
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut rng = rand::thread_rng();
+    (0..20).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect()
+}
+
+/// Start the RabbitMQ Windows service if it isn't running and wait for the node
+/// to accept AMQP on 5672. The service (SYSTEM) picks up the shared cookie written
+/// by `ensure_erlang_cookie` on start, so this must run after it.
+#[cfg(target_os = "windows")]
+async fn ensure_rabbitmq_running() -> Result<(), String> {
+    fn amqp_up() -> bool {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 5672)),
+            std::time::Duration::from_millis(600),
+        )
+        .is_ok()
+    }
+
+    if amqp_up() {
+        return Ok(());
+    }
+
+    // "RabbitMQ" is the service name registered by the official Windows installer.
+    let _ = crate::process::silent_cmd("net")
+        .args(["start", "RabbitMQ"])
+        .output()
+        .await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if amqp_up() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "RabbitMQ service did not come up on 5672 within 60s — check the RabbitMQ service"
+                    .to_string(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 
