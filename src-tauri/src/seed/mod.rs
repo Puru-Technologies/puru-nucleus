@@ -42,12 +42,43 @@ pub struct SeedReport {
 // ── puru_config defaults (puru_auth.puru_config) ─────────────────────────────
 // Only rows whose config_value is still NULL/empty are filled in.
 
+/// The data-root path the backend services should use, correct for the current
+/// deployment mode: the path INSIDE the service containers in Docker mode, or the
+/// native Windows path (from `puru_data_path`, or a sensible default) in native
+/// mode. This is why a native box must not be left with the container's
+/// `/data/puru`, and vice-versa.
+fn service_data_root(config: &NucleusConfig) -> String {
+    match config.deployment_mode {
+        crate::config::DeploymentMode::Docker => "/data/puru".to_string(),
+        crate::config::DeploymentMode::Native => {
+            let configured = config.puru_data_path.as_deref().unwrap_or("").trim();
+            if configured.is_empty() {
+                "C:/PuruData".to_string()
+            } else {
+                configured.replace('\\', "/")
+            }
+        }
+    }
+}
+
+/// Config keys nucleus fully owns and keeps correct for the current deployment
+/// (filesystem paths, server IP, RabbitMQ connection). These are UPSERTED —
+/// overwriting the service's own defaults — because a wrong-but-non-empty value
+/// (e.g. the container's `/data/puru` path on a native Windows box) would
+/// otherwise never be corrected by a fill-when-blank update. Everything else is
+/// only filled when blank, so operator/UI edits are preserved.
+const OVERRIDE_KEYS: &[&str] = &[
+    "puru.data.root.dir",
+    "service.pacs.storagePath",
+    "puru.server.ip",
+    "spring.rabbitmq.host",
+    "spring.rabbitmq.port",
+    "spring.rabbitmq.username",
+    "spring.rabbitmq.password",
+];
+
 fn config_defaults(config: &NucleusConfig) -> Vec<(&'static str, String)> {
-    let data_root = config
-        .puru_data_path
-        .as_deref()
-        .unwrap_or("")
-        .replace('\\', "/");
+    let data_root = service_data_root(config);
     let jwt_secret = generate_secret("jwt");
     let service_key = generate_secret("service-key");
 
@@ -383,14 +414,25 @@ async fn seed_puru_config(pool: &mysql_async::Pool, config: &NucleusConfig) -> S
     };
 
     for (key, value) in config_defaults(config) {
-        let result = conn
-            .exec_drop(
+        let result = if OVERRIDE_KEYS.contains(&key) {
+            // Managed infra/path key — upsert so a wrong non-empty value (e.g. a
+            // Docker path on a native box) is corrected, not just filled-when-blank.
+            conn.exec_drop(
+                "INSERT INTO puru_auth.puru_config (config_key, config_value) VALUES (?, ?) \
+                 ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
+                (key, value.as_str()),
+            )
+            .await
+        } else {
+            // Business default — only fill when blank; never clobber UI edits.
+            conn.exec_drop(
                 "UPDATE puru_auth.puru_config \
                  SET config_value = ? \
                  WHERE config_key = ? AND (config_value IS NULL OR config_value = '')",
                 (value.as_str(), key),
             )
-            .await;
+            .await
+        };
         match result {
             Ok(()) => {
                 if conn.affected_rows() > 0 {
