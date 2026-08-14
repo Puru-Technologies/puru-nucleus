@@ -237,6 +237,17 @@ pub async fn activate_license(email: String, machine_name: String) -> Result<(),
         }
     }
 
+    // Pull the data root (cloud `dataLocation`) so the config seed + Docker volume
+    // mapping have the correct filesystem path from the moment of activation.
+    if let Some(dl) = doc.fields.get("dataLocation")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+    {
+        let dl = dl.trim().to_string();
+        if !dl.is_empty() {
+            config.puru_data_path = Some(dl);
+        }
+    }
+
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
     tracing::info!(
@@ -354,9 +365,21 @@ pub async fn pull_settings() -> Result<PullSettingsResult, String> {
             config_changed = true;
         }
     }
+    // Data root (where hospital files live) is defined in the cloud as
+    // `dataLocation` and mirrored into nucleus config, so both the native path
+    // and the Docker volume mapping derive from a single source of truth.
+    if let Some(dl) = doc.fields.get("dataLocation")
+        .and_then(|v| crate::firestore::convert::get_optional_string(v))
+    {
+        let dl = dl.trim().to_string();
+        if !dl.is_empty() && config.puru_data_path.as_deref() != Some(dl.as_str()) {
+            config.puru_data_path = Some(dl);
+            config_changed = true;
+        }
+    }
     if config_changed {
         crate::config::save_config(&config).map_err(|e| e.user_message())?;
-        tracing::info!("Config synced from cloud (deployment_mode / server_ip)");
+        tracing::info!("Config synced from cloud (deployment_mode / server_ip / dataLocation)");
     }
 
     Ok(PullSettingsResult {
@@ -1781,6 +1804,11 @@ services:
     let db_host = if mysql_is_docker { "database" } else { mysql_host };
     let rmq_host = if rmq_is_docker { "rabbitmq" } else { "localhost" };
 
+    // Host data dir (cloud `dataLocation`) bind-mounted into each container at the
+    // container-side data root `/data/puru`. This is why the config seed uses the
+    // native path in native mode but `/data/puru` in Docker mode — same source.
+    let host_data = config.puru_data_path.as_deref().unwrap_or("").replace('\\', "/");
+
     // Helper to generate a Spring Boot service block
     let svc = |name: &str, image: &str, container: &str, db: &str, port: u16, needs_rmq: bool| -> String {
         // Every backend microservice waits for auth to be created first — auth is
@@ -1822,13 +1850,19 @@ services:
                 rmq = rmq_host,
             ));
         }
+        let volumes = if host_data.is_empty() {
+            String::new()
+        } else {
+            format!("    volumes:\n      - \"{}:/data/puru\"\n", host_data)
+        };
         s.push_str(&format!(
             r#"    ports:
       - "{port}:{port}"
     network_mode: host
-
+{volumes}
 "#,
             port = port,
+            volumes = volumes,
         ));
         let _ = name; // used for clarity in the caller
         s
