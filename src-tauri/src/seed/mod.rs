@@ -94,17 +94,11 @@ fn config_defaults(config: &NucleusConfig) -> Vec<(&'static str, String)> {
         ("puru.server.ip", config.server_ip.clone()),
         ("puru.data.root.dir", data_root.clone()),
         ("puru.service.key", service_key),
-        (
-            "puru.hospital.name.en",
-            format!("{} Hospital", config.hospital_code),
-        ),
-        ("puru.hospital.line2.en", "".into()),
-        ("puru.hospital.line3.en", "".into()),
-        ("puru.hospital.reg.no", "REG-001".into()),
-        ("hospital.short.code", config.hospital_code.clone()),
-        ("hospital.logo.url", "".into()),
-        ("hospital.country-code", "91".into()),
-        ("hospital.phone-length", "10".into()),
+        // Static defaults using the auth service's REAL keys. Hospital *identity*
+        // (name / reg no / code / address / logo) is NOT hardcoded here — it's
+        // pulled from the Firebase hospital doc in seed_puru_config below.
+        ("hospital.country.code", "91".into()),
+        ("hospital.phone.length", "10".into()),
         ("barcode.prefix.store", "ST".into()),
         ("barcode.prefix.ppin", "PP".into()),
         ("barcode.prefix.pathology", "PL".into()),
@@ -445,7 +439,73 @@ async fn seed_puru_config(pool: &mysql_async::Pool, config: &NucleusConfig) -> S
         }
     }
 
+    // Fill hospital identity (name / reg no / code / address / logo) from the
+    // Firebase hospital doc — the cloud is the source of truth for these. Fill
+    // blanks only, so a local edit isn't clobbered.
+    if !config.hospital_code.is_empty() {
+        if let Ok(client) = crate::firestore::FirestoreClient::new_from_config().await {
+            if let Ok(doc) = client.get_hospital(&config.hospital_code).await {
+                for (key, value) in hospital_identity_config(&doc.fields, config) {
+                    if value.is_empty() {
+                        continue;
+                    }
+                    let r = conn
+                        .exec_drop(
+                            "UPDATE puru_auth.puru_config \
+                             SET config_value = ? \
+                             WHERE config_key = ? AND (config_value IS NULL OR config_value = '')",
+                            (value.as_str(), key),
+                        )
+                        .await;
+                    match r {
+                        Ok(()) => {
+                            if conn.affected_rows() > 0 {
+                                section.created += 1;
+                            } else {
+                                section.skipped += 1;
+                            }
+                        }
+                        Err(e) => section.errors.push(format!("{}: {}", key, e)),
+                    }
+                }
+            }
+        }
+    }
+
     section
+}
+
+/// Hospital identity config sourced from the Firebase hospital doc, keyed with
+/// the auth service's real `puru_config` keys. Empty cloud values are skipped by
+/// the caller so they don't overwrite anything.
+fn hospital_identity_config(
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+    config: &NucleusConfig,
+) -> Vec<(&'static str, String)> {
+    let s = |k: &str| -> String {
+        fields
+            .get(k)
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let short = {
+        let sn = s("shortName");
+        if sn.is_empty() { config.hospital_code.clone() } else { sn }
+    };
+    let line2 = {
+        let l = s("line2");
+        if l.is_empty() { s("address") } else { l }
+    };
+    vec![
+        ("hospital.name.en", s("name")),
+        ("hospital.reg.no", s("registrationNo")),
+        ("hospital.code", short),
+        ("hospital.line2.en", line2),
+        ("hospital.line3.en", s("line3")),
+        ("hospital.logo.url", s("logoUrl")),
+    ]
 }
 
 async fn seed_ref_data(pool: &mysql_async::Pool) -> SeedSection {
