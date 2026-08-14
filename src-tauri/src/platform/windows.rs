@@ -97,17 +97,26 @@ pub async fn start() -> Result<ServiceResult, String> {
     })
 }
 
-/// Stop the daemon by killing the process.
+/// Stop the daemon by ending its scheduled task and killing only the daemon
+/// process. The GUI and the daemon share the same `puru-nucleus.exe` image, so we
+/// must NEVER kill by image name / window — we target the process whose command
+/// line contains the `daemon` argument. (The previous `WINDOWTITLE eq *` filter
+/// matched the windowed GUI and missed the headless daemon — exactly backwards.)
 pub async fn stop() -> Result<ServiceResult, String> {
-    // End the scheduled task instance
+    // End the scheduled task instance (terminates the task's process, targeted).
     let _ = crate::process::silent_cmd("schtasks")
         .args(["/End", "/TN", TASK_NAME])
         .output()
         .await;
 
-    // Also kill any running puru-nucleus daemon process
-    let _ = crate::process::silent_cmd("taskkill")
-        .args(["/F", "/FI", "IMAGENAME eq puru-nucleus.exe", "/FI", "WINDOWTITLE eq *"])
+    // Kill any puru-nucleus *daemon* process specifically, matched by command
+    // line — the GUI's command line does not contain "daemon", so it is safe.
+    let _ = crate::process::silent_cmd("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'puru-nucleus.exe' -and $_.CommandLine -like '*daemon*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+        ])
         .output()
         .await;
 

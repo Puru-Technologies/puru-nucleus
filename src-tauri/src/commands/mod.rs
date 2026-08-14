@@ -2653,15 +2653,36 @@ pub async fn setup_tls() -> Result<(), String> {
         Ok(result) => {
             tracing::info!("Setup: TLS configured — {}", result.message);
 
-            // Write nginx HTTPS config
+            // Write the nginx HTTPS server block where it can actually take effect.
             let nginx_config = crate::tls::generate_nginx_https_config(&config.server_ip);
-            let nginx_path = std::path::Path::new("/etc/nginx/conf.d/puru-https.conf");
-            if let Some(parent) = nginx_path.parent() {
-                tokio::fs::create_dir_all(parent).await.ok();
+            #[cfg(unix)]
+            {
+                let nginx_path = std::path::Path::new("/etc/nginx/conf.d/puru-https.conf");
+                if let Some(parent) = nginx_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.ok();
+                }
+                match tokio::fs::write(nginx_path, &nginx_config).await {
+                    Ok(_) => tracing::info!("Setup: nginx HTTPS config written to {:?}", nginx_path),
+                    Err(e) => tracing::warn!("Setup: could not write nginx config: {} (manual setup needed)", e),
+                }
             }
-            match tokio::fs::write(nginx_path, &nginx_config).await {
-                Ok(_) => tracing::info!("Setup: nginx HTTPS config written to {:?}", nginx_path),
-                Err(e) => tracing::warn!("Setup: could not write nginx config: {} (manual setup needed)", e),
+            #[cfg(windows)]
+            {
+                // Native Windows serves via the managed nginx (C:\PuruNucleus\nginx),
+                // not /etc/nginx. Drop the HTTPS block into its conf dir for the
+                // operator; full activation (certs + a 443 server in puru.conf) is
+                // still a manual step on native Windows — do NOT claim it's live.
+                let dest = crate::webserver::conf_dir(&config).join("puru-https.conf");
+                if let Some(parent) = dest.parent() {
+                    tokio::fs::create_dir_all(parent).await.ok();
+                }
+                match tokio::fs::write(&dest, &nginx_config).await {
+                    Ok(_) => tracing::warn!(
+                        "Setup: HTTPS config written to {} — activate manually on native Windows (not auto-applied).",
+                        dest.display()
+                    ),
+                    Err(e) => tracing::warn!("Setup: could not write HTTPS config: {}", e),
+                }
             }
 
             // Generate and save client setup script for download via file explorer
@@ -2677,13 +2698,18 @@ pub async fn setup_tls() -> Result<(), String> {
                 Err(e) => tracing::warn!("Setup: could not write client script: {}", e),
             }
 
-            // Try to reload nginx
-            let reload = crate::process::silent_cmd("nginx")
-                .arg("-s").arg("reload")
-                .output().await;
-            match reload {
-                Ok(o) if o.status.success() => tracing::info!("Setup: nginx reloaded"),
-                _ => tracing::warn!("Setup: nginx reload failed (restart manually)"),
+            // Reload nginx so the new config takes effect. On Windows this is the
+            // managed nginx (handled above / via webserver::start); the bare
+            // `nginx -s reload` only applies to a system nginx on Unix.
+            #[cfg(unix)]
+            {
+                let reload = crate::process::silent_cmd("nginx")
+                    .arg("-s").arg("reload")
+                    .output().await;
+                match reload {
+                    Ok(o) if o.status.success() => tracing::info!("Setup: nginx reloaded"),
+                    _ => tracing::warn!("Setup: nginx reload failed (restart manually)"),
+                }
             }
 
             Ok(())

@@ -10,6 +10,9 @@ use crate::config::NucleusConfig;
 use crate::error::NucleusError;
 use std::path::PathBuf;
 
+/// Fallback nginx version/object used only if the infra manifest has no `nginx`
+/// entry. The live path is resolved from the manifest and the extracted folder,
+/// so bumping nginx in GCS no longer requires editing constants here.
 const NGINX_VERSION: &str = "1.26.3";
 const NGINX_GCS_OBJECT: &str = "infra/nginx-1.26.3-windows.zip";
 const HTTP_PORT: u16 = 80;
@@ -39,23 +42,50 @@ const PROXY_ROUTES: &[(&str, u16)] = &[
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 
-/// nginx install dir, e.g. C:\PuruNucleus\nginx\nginx-1.26.3
-fn nginx_dir(config: &NucleusConfig) -> PathBuf {
+/// Base dir that holds the extracted `nginx-<ver>/` folder, e.g. C:\PuruNucleus\nginx
+fn nginx_base(config: &NucleusConfig) -> PathBuf {
     config
         .nginx_html_dir()
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from(r"C:\PuruNucleus\nginx"))
-        .join(format!("nginx-{}", NGINX_VERSION))
+}
+
+/// Discover an installed nginx dir (`<base>\nginx-*` containing `nginx.exe`),
+/// version-agnostic — matches whatever version the archive extracted to.
+fn find_nginx_dir(config: &NucleusConfig) -> Option<PathBuf> {
+    let base = nginx_base(config);
+    for entry in std::fs::read_dir(&base).ok()?.flatten() {
+        let dir = entry.path();
+        let is_nginx = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("nginx-"))
+            .unwrap_or(false);
+        if is_nginx && dir.join("nginx.exe").exists() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// nginx install dir — the discovered one if present, else the fallback target.
+fn nginx_dir(config: &NucleusConfig) -> PathBuf {
+    find_nginx_dir(config).unwrap_or_else(|| nginx_base(config).join(format!("nginx-{}", NGINX_VERSION)))
 }
 
 fn nginx_exe(config: &NucleusConfig) -> PathBuf {
     nginx_dir(config).join("nginx.exe")
 }
 
+/// The managed nginx `conf/` directory (holds puru.conf and any extra includes).
+pub fn conf_dir(config: &NucleusConfig) -> PathBuf {
+    nginx_dir(config).join("conf")
+}
+
 fn config_path(config: &NucleusConfig) -> PathBuf {
     // Live alongside the install so nginx's relative prefix (logs/, temp/) resolves.
-    nginx_dir(config).join("conf").join("puru.conf")
+    conf_dir(config).join("puru.conf")
 }
 
 /// nginx wants forward slashes (and quotes) in directives, even on Windows.
@@ -180,24 +210,31 @@ http {{
 // ── Provisioning ───────────────────────────────────────────────────────────
 
 /// Download + extract nginx from GCS if not already present. Returns nginx.exe.
+/// The object is resolved from the infra manifest (`nginx` component); the
+/// installed directory is then discovered from the extracted folder, so the
+/// version is never assumed.
 pub async fn ensure_nginx(config: &NucleusConfig) -> Result<PathBuf, NucleusError> {
-    let exe = nginx_exe(config);
-    if exe.exists() {
-        return Ok(exe);
+    if let Some(dir) = find_nginx_dir(config) {
+        return Ok(dir.join("nginx.exe"));
     }
 
-    tracing::info!("nginx {} not found locally, downloading...", NGINX_VERSION);
     let cred_path = crate::releases::get_credentials_path()?;
     let client = crate::releases::create_gcs_client(&cred_path).await?;
 
-    let base = nginx_dir(config)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(r"C:\PuruNucleus\nginx"));
+    let base = nginx_base(config);
     tokio::fs::create_dir_all(&base).await?;
 
+    // Prefer the manifest's nginx artifact; fall back to the legacy object path.
+    let object = match crate::releases::fetch_infra_manifest(&client).await {
+        Ok(manifest) => crate::releases::resolve_infra_artifact(&manifest, "nginx")
+            .map(|a| a.object_path)
+            .unwrap_or_else(|| NGINX_GCS_OBJECT.to_string()),
+        Err(_) => NGINX_GCS_OBJECT.to_string(),
+    };
+    tracing::info!("nginx not found locally, downloading {}...", object);
+
     let tmp_zip = std::env::temp_dir().join("puru-nginx.zip");
-    crate::releases::download_gcs_to_file(&client, NGINX_GCS_OBJECT, &tmp_zip).await?;
+    crate::releases::download_gcs_to_file(&client, &object, &tmp_zip).await?;
 
     // The archive contains a top-level nginx-<ver>/ dir, so extract into `base`.
     let output = crate::process::silent_cmd("tar")
@@ -212,14 +249,15 @@ pub async fn ensure_nginx(config: &NucleusConfig) -> Result<PathBuf, NucleusErro
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    if !exe.exists() {
-        return Err(NucleusError::NotFound(format!(
-            "nginx extracted but binary not found at {}",
-            exe.display()
-        )));
-    }
-    tracing::info!("nginx installed at {}", nginx_dir(config).display());
-    Ok(exe)
+
+    let dir = find_nginx_dir(config).ok_or_else(|| {
+        NucleusError::NotFound(format!(
+            "nginx extracted but no nginx-*/nginx.exe found under {}",
+            base.display()
+        ))
+    })?;
+    tracing::info!("nginx installed at {}", dir.display());
+    Ok(dir.join("nginx.exe"))
 }
 
 // ── Process control ────────────────────────────────────────────────────────
