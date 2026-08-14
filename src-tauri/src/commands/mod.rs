@@ -1326,23 +1326,62 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
             return Err("RabbitMQ user 'puru' could not be created/verified. Is the rabbitmq container running and healthy?".to_string());
         }
     } else {
-        // Host-installed RabbitMQ: (1) share the Erlang cookie between the node
-        // (SYSTEM) and rabbitmqctl (this user), (2) start the node — both must
-        // happen before we can create the user. Order matters: write the cookie
-        // first so the service comes up using it.
+        // Host-installed RabbitMQ. Order is critical:
+        //  1. share the Erlang cookie (node runs as SYSTEM, rabbitmqctl as user),
+        //  2. fix the enabled-plugins set OFFLINE — an enabled plugin whose .ez is
+        //     missing aborts the node on boot, so management is enabled and
+        //     delayed-exchange is enabled ONLY when its .ez is actually present
+        //     (otherwise explicitly disabled to clear any stale entry),
+        //  3. start the node,
+        //  4. create + verify the user.
         #[cfg(target_os = "windows")]
-        {
-            if let Err(e) = ensure_erlang_cookie() {
-                cookie_note = format!(" (Erlang cookie: {} — run as administrator)", e);
-            }
-            if let Err(e) = ensure_rabbitmq_running().await {
-                cookie_note = format!("{} ({})", cookie_note, e);
-            }
+        if let Err(e) = ensure_erlang_cookie() {
+            cookie_note = format!(" (Erlang cookie: {} — run as administrator)", e);
         }
 
         let rabbitmqctl = find_rabbitmqctl().await
             .ok_or_else(|| "Cannot reach RabbitMQ. rabbitmqctl not found on PATH or in default install directory.".to_string())?;
+        let plugins_bin = rabbitmq_plugins_from_ctl(&rabbitmqctl);
 
+        // (2) Fix plugins offline, before the node starts.
+        let _ = crate::process::silent_cmd(&plugins_bin)
+            .args(["enable", "rabbitmq_management"])
+            .output()
+            .await;
+        #[cfg(target_os = "windows")]
+        {
+            if rabbitmq_delayed_ez_present() {
+                let _ = crate::process::silent_cmd(&plugins_bin)
+                    .args(["enable", "rabbitmq_delayed_message_exchange"])
+                    .output()
+                    .await;
+                tracing::info!("RabbitMQ: delayed_message_exchange .ez present — enabled");
+            } else {
+                // No .ez — make sure it is NOT enabled, or the node won't boot.
+                let _ = crate::process::silent_cmd(&plugins_bin)
+                    .args(["disable", "rabbitmq_delayed_message_exchange"])
+                    .output()
+                    .await;
+                tracing::warn!(
+                    "RabbitMQ: delayed_message_exchange .ez missing from the plugins dir — left disabled (upload the matching .ez to infra to enable it)"
+                );
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = crate::process::silent_cmd(&plugins_bin)
+                .args(["enable", "rabbitmq_delayed_message_exchange"])
+                .output()
+                .await;
+        }
+
+        // (3) Now the node can boot cleanly.
+        #[cfg(target_os = "windows")]
+        if let Err(e) = ensure_rabbitmq_running().await {
+            cookie_note = format!("{} ({})", cookie_note, e);
+        }
+
+        // (4) Create the user + permissions on the default "/" vhost.
         let cmds = configure(&[]);
         for args in &cmds {
             let output = crate::process::silent_cmd(&rabbitmqctl)
@@ -1355,23 +1394,6 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
                 if !stderr.contains("already exists") && !stderr.contains("already_exists") {
                     tracing::warn!("RabbitMQ command warning: {}", stderr.trim());
                 }
-            }
-        }
-
-        let plugins_bin = rabbitmq_plugins_from_ctl(&rabbitmqctl);
-        for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
-            let out = crate::process::silent_cmd(&plugins_bin)
-                .args(["enable", plugin])
-                .output()
-                .await;
-            match out {
-                Ok(o) if o.status.success() => tracing::info!("RabbitMQ: enabled {}", plugin),
-                Ok(o) => tracing::warn!(
-                    "RabbitMQ: could not enable {} — {}",
-                    plugin,
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ),
-                Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
             }
         }
 
@@ -1477,6 +1499,32 @@ fn generate_erlang_cookie() -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut rng = rand::thread_rng();
     (0..20).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect()
+}
+
+/// Whether the `rabbitmq_delayed_message_exchange` .ez is actually present in a
+/// RabbitMQ plugins dir. Enabling the plugin without the file makes the node
+/// abort on boot, so we gate the enable on this.
+#[cfg(target_os = "windows")]
+fn rabbitmq_delayed_ez_present() -> bool {
+    let base = std::path::Path::new(r"C:\Program Files\RabbitMQ Server");
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("rabbitmq_server-") {
+            continue;
+        }
+        if let Ok(files) = std::fs::read_dir(entry.path().join("plugins")) {
+            for f in files.flatten() {
+                let fname = f.file_name().to_string_lossy().to_lowercase();
+                if fname.contains("delayed_message_exchange") && fname.ends_with(".ez") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Name of the registered RabbitMQ Windows service (via `sc query`), or None.
