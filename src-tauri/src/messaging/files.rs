@@ -103,7 +103,9 @@ async fn get_access_token() -> Result<String, NucleusError> {
             NucleusError::FirestoreAuth("GCS credentials path not configured.".into())
         })?;
 
-    let token_source = crate::firestore::auth::create_token_source(creds_path).await?;
+    // Storage scope — NOT the Firestore (datastore) scope, which returns 403
+    // "Insufficient Permission" against GCS.
+    let token_source = crate::firestore::auth::create_storage_token_source(creds_path).await?;
     crate::firestore::auth::get_bearer_token(token_source.as_ref()).await
 }
 
