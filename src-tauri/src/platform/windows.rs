@@ -11,27 +11,87 @@ use super::{ServiceResult, ServiceStatus, get_exe_path};
 const TASK_NAME: &str = "PuruNucleus";
 const DISPLAY_NAME: &str = "Puru Nucleus";
 
-/// Register puru-nucleus as a scheduled task that runs at startup.
+/// XML-escape a string for embedding in the task definition.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Register puru-nucleus as a scheduled task that runs the daemon "always":
+/// at every boot (no login required), as LocalSystem with highest privileges,
+/// auto-restarting on failure, with NO execution time limit (a plain
+/// `schtasks /SC ONSTART` task inherits the default 72h limit and would be killed)
+/// and unaffected by battery state.
 pub async fn install() -> Result<ServiceResult, String> {
     let exe_path = get_exe_path()?;
 
-    // Create a scheduled task that:
-    // - Runs at system startup (ONSTART)
-    // - Runs as SYSTEM (highest privileges)
-    // - Restarts on failure (via /RI and repeat)
+    // Full task definition (Task Scheduler 1.2 schema). S-1-5-18 = LocalSystem.
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Puru Nucleus background daemon (heartbeat, commands, backups).</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+      <Arguments>daemon</Arguments>
+    </Exec>
+  </Actions>
+</Task>"#,
+        exe = xml_escape(&exe_path),
+    );
+
+    let xml_path = std::env::temp_dir().join("puru-nucleus-daemon.xml");
+    std::fs::write(&xml_path, xml.as_bytes())
+        .map_err(|e| format!("Could not write task definition: {}", e))?;
+
     let output = crate::process::silent_cmd("schtasks")
         .args([
             "/Create",
-            "/TN", TASK_NAME,
-            "/TR", &format!("\"{}\" daemon", exe_path),
-            "/SC", "ONSTART",
-            "/RU", "SYSTEM",
-            "/RL", "HIGHEST",
-            "/F",  // Force overwrite if exists
+            "/TN",
+            TASK_NAME,
+            "/XML",
+            &xml_path.to_string_lossy(),
+            "/F",
         ])
         .output()
         .await
         .map_err(|e| format!("schtasks create failed: {}", e))?;
+    let _ = std::fs::remove_file(&xml_path);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -39,7 +99,7 @@ pub async fn install() -> Result<ServiceResult, String> {
         return Err(format!("Task registration failed: {}{}", stdout.trim(), stderr.trim()));
     }
 
-    // Start the task immediately
+    // Start it now (in addition to the boot trigger).
     let _ = crate::process::silent_cmd("schtasks")
         .args(["/Run", "/TN", TASK_NAME])
         .output()
@@ -47,7 +107,10 @@ pub async fn install() -> Result<ServiceResult, String> {
 
     Ok(ServiceResult {
         success: true,
-        message: format!("{} installed and started.", DISPLAY_NAME),
+        message: format!(
+            "{} installed — starts at boot as SYSTEM and auto-restarts on failure.",
+            DISPLAY_NAME
+        ),
     })
 }
 
