@@ -102,25 +102,63 @@ pub(crate) fn init_daemon_logging() {
     }
 }
 
-/// Build a 32×32 RGBA round "dot" icon in the given colour on a transparent
-/// background — used as the tray health indicator (green = up, red = down).
+/// Tray icon canvas size (matches the embedded brand mark, 32×32).
+const TRAY_SIZE: u32 = 32;
+
+/// The Puru Labs brand mark (design-system app icon), embedded at compile time
+/// and used as the tray icon base.
+const BRAND_MARK_PNG: &[u8] = include_bytes!("../icons/32x32.png");
+
+/// Decode the embedded brand mark into a 32×32 RGBA buffer. On any decode
+/// failure it returns a transparent buffer so the tray still builds.
+fn brand_mark_rgba() -> Vec<u8> {
+    let needed = (TRAY_SIZE * TRAY_SIZE * 4) as usize;
+    let mut out = vec![0u8; needed];
+    if let Ok(mut reader) = png::Decoder::new(BRAND_MARK_PNG).read_info() {
+        let mut buf = vec![0u8; reader.output_buffer_size()];
+        if reader.next_frame(&mut buf).is_ok() {
+            let n = buf.len().min(needed);
+            out[..n].copy_from_slice(&buf[..n]);
+        }
+    }
+    out
+}
+
+/// Build the tray icon: the Puru Labs brand mark with a small status badge
+/// composited in the bottom-right corner (green = daemon up, red = down,
+/// grey = unknown until the first poll). Keeps the brand visible while still
+/// giving an at-a-glance health signal.
 fn dot_icon(r: u8, g: u8, b: u8) -> tauri::image::Image<'static> {
-    const SIZE: u32 = 32;
-    let radius = 13.0_f32;
-    let center = SIZE as f32 / 2.0;
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
-            if dx * dx + dy * dy <= radius * radius {
-                rgba.extend_from_slice(&[r, g, b, 255]);
-            } else {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
+    let mut rgba = brand_mark_rgba();
+
+    // Badge geometry (bottom-right corner). A white ring separates the coloured
+    // dot from whatever brand pixels sit behind it.
+    let cx = TRAY_SIZE as f32 - 8.0;
+    let cy = TRAY_SIZE as f32 - 8.0;
+    let fill_r = 6.0_f32;
+    let ring_r = 7.75_f32;
+
+    for y in 0..TRAY_SIZE {
+        for x in 0..TRAY_SIZE {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let d2 = dx * dx + dy * dy;
+            let idx = ((y * TRAY_SIZE + x) * 4) as usize;
+            if d2 <= fill_r * fill_r {
+                rgba[idx] = r;
+                rgba[idx + 1] = g;
+                rgba[idx + 2] = b;
+                rgba[idx + 3] = 255;
+            } else if d2 <= ring_r * ring_r {
+                rgba[idx] = 0xff;
+                rgba[idx + 1] = 0xff;
+                rgba[idx + 2] = 0xff;
+                rgba[idx + 3] = 255;
             }
         }
     }
-    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
+
+    tauri::image::Image::new_owned(rgba, TRAY_SIZE, TRAY_SIZE)
 }
 
 /// Reveal and focus the main dashboard window (used by the tray click/menu).
@@ -241,6 +279,7 @@ fn run_gui() {
             // Config
             commands::get_config,
             commands::save_config,
+            commands::mark_setup_completed,
             commands::sync_config_to_cloud,
             commands::get_sync_status,
             // Detection
@@ -308,6 +347,11 @@ fn run_gui() {
             commands::get_deployment_mode,
             commands::update_native_service,
             commands::rollback_native_service,
+            commands::check_service_update,
+            commands::get_staged_update,
+            commands::download_service_update,
+            commands::apply_service_update,
+            commands::discard_service_update,
             // Native Setup Steps
             commands::setup_generate_env_files,
             commands::setup_pull_jars,

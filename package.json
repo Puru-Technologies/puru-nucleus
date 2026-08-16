@@ -2,6 +2,8 @@
   "name": "puru-nucleus",
   "version": "0.8.1",
   "description": "Control center for Puru hospital deployments",
+  "author": "Puru Labs Private Limited",
+  "license": "Proprietary",
   "private": true,
   "scripts": {
     "ng": "ng",

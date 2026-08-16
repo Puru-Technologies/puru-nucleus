@@ -86,28 +86,47 @@ interface CommandActivity {
               <span>Updates</span>
             </a>
 
-            <span class="nav-section">System</span>
+            @if (showConfigNav) {
+              <span class="nav-section nav-section-row">
+                <span>Configuration</span>
+                @if (setupCompleted && !productionMode) {
+                  <button class="nav-lock" (click)="configUnlocked = false" title="Hide configuration screens">
+                    <span class="material-icons">lock_open</span>
+                  </button>
+                }
+              </span>
 
-            <a class="nav-item" routerLink="/settings" routerLinkActive="active">
-              <span class="material-icons">tune</span>
-              <span>Settings</span>
-            </a>
-            <a class="nav-item" routerLink="/compose" routerLinkActive="active">
-              <span class="material-icons">description</span>
-              <span>Compose</span>
-            </a>
-            <a class="nav-item" routerLink="/setup" routerLinkActive="active">
-              <span class="material-icons">build</span>
-              <span>Setup</span>
-            </a>
-            <a class="nav-item" routerLink="/master-data" routerLinkActive="active">
-              <span class="material-icons">dataset</span>
-              <span>Master Data</span>
-            </a>
-            <a class="nav-item" routerLink="/remote-shell" routerLinkActive="active">
-              <span class="material-icons">terminal</span>
-              <span>Shell</span>
-            </a>
+              <a class="nav-item" routerLink="/settings" routerLinkActive="active">
+                <span class="material-icons">tune</span>
+                <span>Settings</span>
+              </a>
+              @if (!isNative) {
+                <a class="nav-item" routerLink="/compose" routerLinkActive="active">
+                  <span class="material-icons">description</span>
+                  <span>Compose</span>
+                </a>
+              }
+              <a class="nav-item" routerLink="/setup" routerLinkActive="active">
+                <span class="material-icons">build</span>
+                <span>Setup</span>
+              </a>
+              <a class="nav-item" routerLink="/master-data" routerLinkActive="active">
+                <span class="material-icons">dataset</span>
+                <span>Master Data</span>
+              </a>
+              <a class="nav-item" routerLink="/remote-shell" routerLinkActive="active">
+                <span class="material-icons">terminal</span>
+                <span>Shell</span>
+              </a>
+            }
+
+            @if (canUnlockConfig) {
+              <button class="nav-item nav-unlock" (click)="configUnlocked = true"
+                      title="Reveal configuration screens (Settings, Setup, Compose, Master Data, Shell)">
+                <span class="material-icons">lock</span>
+                <span>Configuration</span>
+              </button>
+            }
           </nav>
 
           <!-- Footer -->
@@ -331,6 +350,22 @@ interface CommandActivity {
       color: #475569;
       padding: 16px 12px 8px;
     }
+    .nav-section-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-lock {
+      background: none; border: none; cursor: pointer; color: #475569;
+      display: inline-flex; padding: 0; line-height: 1;
+    }
+    .nav-lock .material-icons { font-size: 15px; }
+    .nav-lock:hover { color: #94a3b8; }
+    /* The "unlock configuration" button reuses .nav-item; make it button-shaped. */
+    .nav-unlock {
+      width: 100%; background: none; border: none; text-align: left;
+      cursor: pointer; font-family: inherit; margin-top: 8px;
+    }
 
     .nav-item {
       display: flex;
@@ -461,6 +496,25 @@ export class AppComponent implements OnInit, OnDestroy {
   clock: SystemClockStatus | null = null;
   checkingClock = false;
   commandBanner: CommandActivity | null = null;
+
+  // ── Config-screen visibility ────────────────────────────────────────────────
+  isNative = false;
+  productionMode = false;
+  setupCompleted = false;
+  /** Session-only: reveals the config screens after setup via a button click. */
+  configUnlocked = false;
+
+  /** Show the Configuration nav section? Hidden in production; before setup it's
+   *  always available (Setup is needed); after setup it's hidden until unlocked. */
+  get showConfigNav(): boolean {
+    if (this.productionMode) return false;
+    if (!this.setupCompleted) return true;
+    return this.configUnlocked;
+  }
+  /** Offer the "unlock configuration" button (post-setup, non-prod, still locked). */
+  get canUnlockConfig(): boolean {
+    return !this.productionMode && this.setupCompleted && !this.configUnlocked;
+  }
 
   conn = inject(ConnectionService);
   private remote = inject(RemoteTransportService);
@@ -685,9 +739,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private async loadHospitalCode(): Promise<void> {
     try {
+      type ShellConfig = { hospital_code: string; deployment_mode?: string; production_mode?: boolean; setup_completed?: boolean };
       const config = this.conn.isRemote()
-        ? await this.remote.execute<{ hospital_code: string }>('get_config')
-        : await (await import('@tauri-apps/api/core')).invoke<{ hospital_code: string }>('get_config');
+        ? await this.remote.execute<ShellConfig>('get_config')
+        : await (await import('@tauri-apps/api/core')).invoke<ShellConfig>('get_config');
+      this.isNative = config?.deployment_mode === 'native';
+      this.productionMode = !!config?.production_mode;
+      this.setupCompleted = !!config?.setup_completed;
       if (config?.hospital_code) {
         this.hospitalCode = config.hospital_code;
         // Update window title (the GUI is still a local Tauri window)

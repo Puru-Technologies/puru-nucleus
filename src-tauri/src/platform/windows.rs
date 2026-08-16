@@ -29,7 +29,7 @@ pub async fn install() -> Result<ServiceResult, String> {
 
     // Full task definition (Task Scheduler 1.2 schema). S-1-5-18 = LocalSystem.
     let xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+        r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Puru Nucleus background daemon (heartbeat, commands, backups).</Description>
@@ -76,7 +76,13 @@ pub async fn install() -> Result<ServiceResult, String> {
     );
 
     let xml_path = std::env::temp_dir().join("puru-nucleus-daemon.xml");
-    std::fs::write(&xml_path, xml.as_bytes())
+    // `schtasks /Create /XML` requires the file to be UTF-16LE (with BOM);
+    // a UTF-8 file fails with "unable to switch the encoding". Encode explicitly.
+    let mut utf16: Vec<u8> = vec![0xFF, 0xFE]; // UTF-16LE BOM
+    for unit in xml.encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    std::fs::write(&xml_path, &utf16)
         .map_err(|e| format!("Could not write task definition: {}", e))?;
 
     let output = crate::process::silent_cmd("schtasks")

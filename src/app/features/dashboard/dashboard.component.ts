@@ -124,7 +124,12 @@ import { interval, Subscription } from 'rxjs';
               <span class="material-icons">arrow_forward</span>
             </button>
           </div>
-          @if (services.length > 0) {
+          @if (servicesLoading) {
+            <div class="svc-loading">
+              <span class="spinner"></span>
+              <span>Loading services…</span>
+            </div>
+          } @else if (services.length > 0) {
             <div class="service-list">
               @for (service of services.slice(0, 8); track service.name) {
                 <div class="svc-row">
@@ -143,7 +148,7 @@ import { interval, Subscription } from 'rxjs';
           } @else {
             <div class="empty-state">
               <span class="material-icons">cloud_off</span>
-              <span>No Docker services detected</span>
+              <span>No services detected</span>
               <a routerLink="/setup" class="empty-link">Run Setup</a>
             </div>
           }
@@ -556,6 +561,15 @@ import { interval, Subscription } from 'rxjs';
     }
 
     /* ── Empty State ────────────────────────────── */
+    .svc-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 40px 20px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
     .empty-state {
       display: flex;
       flex-direction: column;
@@ -782,6 +796,8 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
   systemInfo: SystemInfo | null = null;
   services: ServiceInfo[] = [];
+  /** True until the first services fetch resolves — gates the spinner vs the "Run Setup" empty state. */
+  servicesLoading = true;
   license: License | null = null;
   licenseStatus: LicenseStatus | null = null;
   daemonRunning = false;
@@ -903,6 +919,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
       this.tauri.invokeSilent<BackupRecord[]>('get_backup_history'),
     ]);
 
+    this.servicesLoading = false;
     if (servicesResult.status === 'fulfilled') {
       this.services = servicesResult.value;
     }

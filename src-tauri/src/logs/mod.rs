@@ -418,9 +418,12 @@ fn read_host_file(
         )));
     }
 
-    let content = std::fs::read_to_string(&canonical).map_err(|e| {
-        crate::error::NucleusError::Io(e)
-    })?;
+    // Read bytes and decode lossily — service logs (Java on Windows, ANSI colour
+    // codes, console codepages) frequently contain non-UTF-8 bytes, and a strict
+    // `read_to_string` fails the whole view with "stream did not contain valid
+    // UTF-8". Lossy decoding substitutes U+FFFD for bad bytes so logs still show.
+    let bytes = std::fs::read(&canonical).map_err(crate::error::NucleusError::Io)?;
+    let content = String::from_utf8_lossy(&bytes).into_owned();
 
     let all_lines: Vec<&str> = content.lines().collect();
     let total_lines = all_lines.len();
@@ -561,7 +564,10 @@ fn spawn_file_tail(
             }
         };
 
-        if let Ok(content) = tokio::fs::read_to_string(&path).await {
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            // Lossy decode — logs can contain non-UTF-8 bytes; don't drop the
+            // initial tail just because one byte is invalid.
+            let content = String::from_utf8_lossy(&bytes);
             let lines: Vec<&str> = content.lines().collect();
             let start = lines.len().saturating_sub(TAIL_INITIAL_LINES);
             let initial: Vec<String> = lines[start..].iter().map(|s| s.to_string()).collect();

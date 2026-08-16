@@ -374,6 +374,65 @@ pub(crate) async fn download_gcs_to_file(
     download_gcs_to_file_from(client, RELEASES_BUCKET, object_path, local_path).await
 }
 
+/// Stream-download a releases object to `local_path`, invoking
+/// `on_progress(downloaded_bytes, total_bytes)` as chunks arrive. `total` is 0
+/// when the object size can't be read (the UI then shows an indeterminate bar).
+/// Returns the downloaded size in MB. Unlike `download_gcs_to_file`, this never
+/// buffers the whole file in memory and reports real progress.
+pub(crate) async fn download_gcs_to_file_progress<F>(
+    client: &google_cloud_storage::client::Client,
+    object_path: &str,
+    local_path: &PathBuf,
+    on_progress: F,
+) -> Result<f64, NucleusError>
+where
+    F: Fn(u64, u64),
+{
+    use futures_util::StreamExt;
+    use google_cloud_storage::http::objects::download::Range;
+    use google_cloud_storage::http::objects::get::GetObjectRequest;
+    use tokio::io::AsyncWriteExt;
+
+    // Total size (for percent) from object metadata; 0 if unknown.
+    let total = list_gcs_objects_with_meta(client, RELEASES_BUCKET, object_path)
+        .await
+        .ok()
+        .and_then(|v| v.into_iter().find(|m| m.name == object_path))
+        .map(|m| m.size.max(0) as u64)
+        .unwrap_or(0);
+
+    let stream = client
+        .download_streamed_object(
+            &GetObjectRequest {
+                bucket: RELEASES_BUCKET.to_string(),
+                object: object_path.to_string(),
+                ..Default::default()
+            },
+            &Range::default(),
+        )
+        .await
+        .map_err(|e| NucleusError::GcsConnection(format!("GCS stream download failed: {}", e)))?;
+    futures_util::pin_mut!(stream);
+
+    if let Some(parent) = local_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = tokio::fs::File::create(local_path).await?;
+    let mut downloaded: u64 = 0;
+    on_progress(0, total);
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| NucleusError::GcsConnection(format!("download stream error: {}", e)))?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        on_progress(downloaded, total);
+    }
+    file.flush().await?;
+
+    Ok(downloaded as f64 / (1024.0 * 1024.0))
+}
+
 // ── Infra prerequisite manifest (installers hosted by oxygen) ─────────────────
 //
 // Nucleus resolves prerequisites through `infra/infra-manifest.json` (written by
@@ -946,6 +1005,16 @@ pub struct JarUpdateCheck {
     pub update_available: bool,
 }
 
+/// A downloaded-but-not-yet-applied JAR update, staged next to the live JAR.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StagedUpdate {
+    pub service: String,
+    pub short_sha: String,
+    pub built_at: String,
+    pub size_mb: f64,
+    pub staged_path: String,
+}
+
 /// JRE manifest from GCS (maps java_version → { platform → filename })
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JreManifest(pub std::collections::HashMap<String, std::collections::HashMap<String, String>>);
@@ -979,6 +1048,20 @@ fn resolve_jre_platform() -> String {
 /// Pull latest JAR for a single service from GCS.
 /// Downloads to jars_dir, backs up existing JAR as .bak.
 pub async fn pull_jar(service_name: &str) -> Result<JarPullResult, NucleusError> {
+    pull_jar_progress(service_name, |_, _| {}).await
+}
+
+/// Like [`pull_jar`], but streams the JAR download and invokes
+/// `on_progress(downloaded_bytes, total_bytes)` as it arrives, so the UI can
+/// render a real progress bar. (The `puru-hydrogen` Angular bundle has no single
+/// byte-countable artifact, so no byte progress is reported for it.)
+pub async fn pull_jar_progress<F>(
+    service_name: &str,
+    on_progress: F,
+) -> Result<JarPullResult, NucleusError>
+where
+    F: Fn(u64, u64) + Send + Sync,
+{
     if !UPDATABLE_SERVICES.contains(&service_name) && service_name != "puru-hydrogen" {
         return Err(NucleusError::Validation(format!(
             "Unknown service: '{}'. Valid services: {}",
@@ -1013,7 +1096,8 @@ pub async fn pull_jar(service_name: &str) -> Result<JarPullResult, NucleusError>
         let _ = tokio::fs::rename(&local_jar, &bak).await;
     }
 
-    let size_mb = download_gcs_to_file(&client, &jar_gcs_path, &local_jar).await?;
+    let size_mb =
+        download_gcs_to_file_progress(&client, &jar_gcs_path, &local_jar, &on_progress).await?;
 
     // Save meta locally
     let local_meta = jars_dir.join(format!("{}.meta.json", service_name));
@@ -1034,6 +1118,137 @@ pub async fn pull_jar(service_name: &str) -> Result<JarPullResult, NucleusError>
         size_mb,
         message: "OK".to_string(),
     })
+}
+
+// ── Staged updates (download now, apply later) ──────────────────────────────
+
+fn staged_jar_path(jars_dir: &std::path::Path, service: &str) -> PathBuf {
+    jars_dir.join(format!("{}.jar.staged", service))
+}
+fn staged_meta_path(jars_dir: &std::path::Path, service: &str) -> PathBuf {
+    jars_dir.join(format!("{}.staged.meta.json", service))
+}
+
+/// Download the latest JAR for `service` to a STAGING file next to the live JAR,
+/// **without touching the running service**. Reports byte progress. Apply it
+/// later with [`apply_staged_jar`]. JAR services only (not the hydrogen bundle).
+pub async fn stage_jar_progress<F>(
+    service_name: &str,
+    on_progress: F,
+) -> Result<StagedUpdate, NucleusError>
+where
+    F: Fn(u64, u64) + Send + Sync,
+{
+    if !UPDATABLE_SERVICES.contains(&service_name) {
+        return Err(NucleusError::Validation(format!(
+            "Staged updates are only supported for JAR services (not '{}'). Valid: {}",
+            service_name,
+            UPDATABLE_SERVICES.join(", ")
+        )));
+    }
+
+    let cfg = config::load_config()?;
+    let cred_path = get_credentials_path()?;
+    let client = create_gcs_client(&cred_path).await?;
+    let jars_dir = cfg.jars_dir();
+
+    // meta.json first (for the sha/built-at)
+    let meta_path = format!("jars/{}/latest/meta.json", service_name);
+    let meta_bytes = download_gcs_bytes(&client, &meta_path).await?;
+    let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
+
+    // Download the JAR to the staging file (live JAR + running process untouched).
+    let jar_gcs_path = format!("jars/{}/latest/{}.jar", service_name, service_name);
+    let staged = staged_jar_path(&jars_dir, service_name);
+    let size_mb =
+        download_gcs_to_file_progress(&client, &jar_gcs_path, &staged, &on_progress).await?;
+
+    // Persist the staged meta alongside it.
+    tokio::fs::write(staged_meta_path(&jars_dir, service_name), &meta_bytes).await?;
+
+    tracing::info!(
+        "Staged update for {} (sha {}, {:.1} MB) — not yet applied",
+        service_name,
+        meta.short_sha,
+        size_mb
+    );
+    Ok(StagedUpdate {
+        service: service_name.to_string(),
+        short_sha: meta.short_sha,
+        built_at: meta.built_at,
+        size_mb,
+        staged_path: staged.to_string_lossy().to_string(),
+    })
+}
+
+/// Info about a staged (downloaded, not-yet-applied) update, if one exists.
+pub fn staged_update_info(service_name: &str) -> Option<StagedUpdate> {
+    let cfg = config::load_config().ok()?;
+    let jars_dir = cfg.jars_dir();
+    let staged = staged_jar_path(&jars_dir, service_name);
+    let meta_p = staged_meta_path(&jars_dir, service_name);
+    if !staged.exists() || !meta_p.exists() {
+        return None;
+    }
+    let meta: JarBuildMeta = serde_json::from_slice(&std::fs::read(&meta_p).ok()?).ok()?;
+    let size_mb = std::fs::metadata(&staged)
+        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+    Some(StagedUpdate {
+        service: service_name.to_string(),
+        short_sha: meta.short_sha,
+        built_at: meta.built_at,
+        size_mb,
+        staged_path: staged.to_string_lossy().to_string(),
+    })
+}
+
+/// Promote a staged JAR into place (backing up the current one as `.bak`) and
+/// promote its meta. The caller MUST have stopped the service first. Returns the
+/// newly-applied short sha.
+pub async fn apply_staged_jar(service_name: &str) -> Result<String, NucleusError> {
+    let cfg = config::load_config()?;
+    let jars_dir = cfg.jars_dir();
+    let staged = staged_jar_path(&jars_dir, service_name);
+    let staged_meta = staged_meta_path(&jars_dir, service_name);
+    if !staged.exists() {
+        return Err(NucleusError::Validation(format!(
+            "No staged update to apply for '{}'.",
+            service_name
+        )));
+    }
+
+    let live_jar = jars_dir.join(format!("{}.jar", service_name));
+    let live_meta = jars_dir.join(format!("{}.meta.json", service_name));
+
+    // Back up the current JAR, then swap the staged one in.
+    if live_jar.exists() {
+        let bak = jars_dir.join(format!("{}.jar.bak", service_name));
+        let _ = tokio::fs::rename(&live_jar, &bak).await;
+    }
+    tokio::fs::rename(&staged, &live_jar).await?;
+
+    let short_sha = if staged_meta.exists() {
+        let meta_bytes = tokio::fs::read(&staged_meta).await.unwrap_or_default();
+        let _ = tokio::fs::rename(&staged_meta, &live_meta).await;
+        serde_json::from_slice::<JarBuildMeta>(&meta_bytes)
+            .map(|m| m.short_sha)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    tracing::info!("Applied staged update for {} (sha {})", service_name, short_sha);
+    Ok(short_sha)
+}
+
+/// Discard a staged (downloaded, not-applied) update.
+pub async fn discard_staged_jar(service_name: &str) -> Result<(), NucleusError> {
+    let cfg = config::load_config()?;
+    let jars_dir = cfg.jars_dir();
+    let _ = tokio::fs::remove_file(staged_jar_path(&jars_dir, service_name)).await;
+    let _ = tokio::fs::remove_file(staged_meta_path(&jars_dir, service_name)).await;
+    Ok(())
 }
 
 /// Pull a specific build by short SHA (for rollback).
@@ -1090,11 +1305,25 @@ pub async fn pull_jar_by_sha(service_name: &str, sha: &str) -> Result<JarPullRes
 
 /// Pull latest JARs for multiple services.
 pub async fn pull_all_jars(services: &[String]) -> Result<PullAllResult, NucleusError> {
+    pull_all_jars_progress(services, |_, _, _, _, _| {}).await
+}
+
+/// Like [`pull_all_jars`], but reports per-service byte progress through
+/// `on(service, index, count, downloaded, total)` (`index` is 1-based).
+pub async fn pull_all_jars_progress<F>(
+    services: &[String],
+    on: F,
+) -> Result<PullAllResult, NucleusError>
+where
+    F: Fn(&str, u32, u32, u64, u64) + Send + Sync,
+{
     let mut results = Vec::new();
     let mut total_size = 0.0;
+    let count = services.len() as u32;
 
-    for svc in services {
-        match pull_jar(svc).await {
+    for (i, svc) in services.iter().enumerate() {
+        let idx = i as u32 + 1;
+        match pull_jar_progress(svc, |d, t| on(svc, idx, count, d, t)).await {
             Ok(r) => {
                 total_size += r.size_mb;
                 results.push(r);
@@ -1416,7 +1645,19 @@ pub async fn ensure_jre(java_version: &str) -> Result<PathBuf, NucleusError> {
 
 /// Pull JARs + ensure required JREs are present.
 pub async fn pull_all_with_jres(services: &[String]) -> Result<PullAllResult, NucleusError> {
-    let result = pull_all_jars(services).await?;
+    pull_all_with_jres_progress(services, |_, _, _, _, _| {}).await
+}
+
+/// Like [`pull_all_with_jres`], but reports per-service byte progress through
+/// `on(service, index, count, downloaded, total)` for the setup progress bar.
+pub async fn pull_all_with_jres_progress<F>(
+    services: &[String],
+    on: F,
+) -> Result<PullAllResult, NucleusError>
+where
+    F: Fn(&str, u32, u32, u64, u64) + Send + Sync,
+{
+    let result = pull_all_jars_progress(services, on).await?;
 
     // Collect unique java versions needed from successfully pulled services
     let mut java_versions = std::collections::HashSet::new();

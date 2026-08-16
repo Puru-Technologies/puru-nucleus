@@ -9,6 +9,45 @@ use crate::error::NucleusError;
 use crate::releases;
 use crate::services::{HealthStatus, ServiceInfo, ServiceStatus};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// Short-lived cache of the enabled-service list fetched from Firestore. The
+/// services screen refetches on every load/refresh, and each fetch is a token
+/// exchange + query (1–3s); caching for a few seconds keeps repeat loads snappy
+/// without going noticeably stale when modules change in the admin console.
+static ENABLED_SERVICES_CACHE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+const ENABLED_SERVICES_TTL: Duration = Duration::from_secs(20);
+
+/// Resolve the enabled-service names, using a short in-memory cache to avoid a
+/// Firestore round-trip on every `get_services` call. Falls back to all
+/// updatable services when the cloud can't be reached.
+async fn enabled_services_cached(config: &NucleusConfig) -> Vec<String> {
+    if let Ok(guard) = ENABLED_SERVICES_CACHE.lock() {
+        if let Some((fetched_at, list)) = guard.as_ref() {
+            if fetched_at.elapsed() < ENABLED_SERVICES_TTL {
+                return list.clone();
+            }
+        }
+    }
+
+    let list = if !config.hospital_code.is_empty() {
+        match crate::firestore::FirestoreClient::new_from_config().await {
+            Ok(client) => match client.fetch_modules(&config.hospital_code).await {
+                Ok(modules) => modules.enabled_service_names(),
+                Err(_) => releases::all_updatable_services(),
+            },
+            Err(_) => releases::all_updatable_services(),
+        }
+    } else {
+        releases::all_updatable_services()
+    };
+
+    if let Ok(mut guard) = ENABLED_SERVICES_CACHE.lock() {
+        *guard = Some((Instant::now(), list.clone()));
+    }
+    list
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -471,18 +510,10 @@ pub async fn restart_service(name: &str, config: &NucleusConfig) -> Result<(), N
 
 /// List all services with status (running/stopped), PID, port, health.
 pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, NucleusError> {
-    // Fetch enabled modules from Firestore — only show configured services
-    let enabled_services = if !config.hospital_code.is_empty() {
-        match crate::firestore::FirestoreClient::new_from_config().await {
-            Ok(client) => match client.fetch_modules(&config.hospital_code).await {
-                Ok(modules) => modules.enabled_service_names(),
-                Err(_) => releases::all_updatable_services(),
-            },
-            Err(_) => releases::all_updatable_services(),
-        }
-    } else {
-        releases::all_updatable_services()
-    };
+    // Enabled services come from Firestore, but through a short-lived cache so
+    // repeated services-screen loads/refreshes don't pay a token exchange +
+    // query every time (that round-trip was the bulk of the load latency).
+    let enabled_services = enabled_services_cached(config).await;
 
     let mut services = Vec::new();
 
@@ -647,8 +678,11 @@ pub async fn get_logs(
         return Ok(format!("No log file found for {}", name));
     }
 
-    // Read the file and return last N lines
-    let content = tokio::fs::read_to_string(&path).await?;
+    // Read the file and return last N lines. Decode lossily — service stdout on
+    // Windows/Java is often not valid UTF-8, and a strict read would fail the
+    // whole log view with "stream did not contain valid UTF-8".
+    let bytes = tokio::fs::read(&path).await?;
+    let content = String::from_utf8_lossy(&bytes).into_owned();
     let lines: Vec<&str> = content.lines().collect();
     let start = if lines.len() > tail as usize {
         lines.len() - tail as usize
@@ -662,6 +696,21 @@ pub async fn get_logs(
 /// Update a service: stop → pull new JAR → start.
 /// Returns the pull result with new SHA info.
 pub async fn update_service(name: &str, config: &NucleusConfig) -> Result<releases::JarPullResult, NucleusError> {
+    update_service_progress(name, config, |_, _, _| {}).await
+}
+
+/// Like [`update_service`], but reports progress through `on(phase, downloaded,
+/// total)` so the UI can show a proper progress bar. `phase` is one of
+/// `"stopping"`, `"downloading"`, `"starting"`; `downloaded`/`total` are bytes
+/// during the download phase (0 otherwise).
+pub async fn update_service_progress<F>(
+    name: &str,
+    config: &NucleusConfig,
+    on: F,
+) -> Result<releases::JarPullResult, NucleusError>
+where
+    F: Fn(&str, u64, u64) + Send + Sync,
+{
     tracing::info!("Updating {} ...", name);
 
     // Stop if running (ignore errors — might already be stopped)
@@ -670,16 +719,20 @@ pub async fn update_service(name: &str, config: &NucleusConfig) -> Result<releas
         .unwrap_or(false);
 
     if was_running {
+        on("stopping", 0, 0);
         stop_service(name, config).await?;
         // Brief pause to ensure port is released
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    // Pull new JAR (old one is backed up as .bak automatically)
-    let pull_result = releases::pull_jar(name).await?;
+    // Pull new JAR (old one is backed up as .bak automatically), streaming
+    // byte progress up to the caller.
+    let pull_result =
+        releases::pull_jar_progress(name, |d, t| on("downloading", d, t)).await?;
 
     // Restart if it was running before
     if was_running {
+        on("starting", 0, 0);
         start_service(name, config).await?;
     }
 
@@ -688,6 +741,49 @@ pub async fn update_service(name: &str, config: &NucleusConfig) -> Result<releas
 }
 
 /// Rollback a service to the previous JAR (.bak file).
+/// Apply a previously staged (downloaded) update: stop → swap the staged JAR in
+/// → start. Reports phase progress via `on(phase, 0, 0)` ("stopping"/"starting").
+pub async fn apply_update_progress<F>(
+    name: &str,
+    config: &NucleusConfig,
+    on: F,
+) -> Result<releases::JarPullResult, NucleusError>
+where
+    F: Fn(&str, u64, u64) + Send + Sync,
+{
+    let staged = releases::staged_update_info(name).ok_or_else(|| {
+        NucleusError::Validation(format!(
+            "No downloaded update to apply for {}. Download it first.",
+            name
+        ))
+    })?;
+
+    let was_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
+
+    if was_running {
+        on("stopping", 0, 0);
+        stop_service(name, config).await?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    let short_sha = releases::apply_staged_jar(name).await?;
+
+    if was_running {
+        on("starting", 0, 0);
+        start_service(name, config).await?;
+    }
+
+    tracing::info!("Applied update for {} → build {}", name, short_sha);
+    Ok(releases::JarPullResult {
+        service: name.to_string(),
+        success: true,
+        local_path: jar_path(config, name).to_string_lossy().to_string(),
+        short_sha,
+        size_mb: staged.size_mb,
+        message: "Applied".to_string(),
+    })
+}
+
 pub async fn rollback_service(name: &str, config: &NucleusConfig) -> Result<(), NucleusError> {
     let jars_dir = config.jars_dir();
     let jar = jars_dir.join(format!("{}.jar", name));

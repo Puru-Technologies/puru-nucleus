@@ -49,6 +49,9 @@ mac_address = "1.1"
 # Secure random (generated MySQL root password)
 rand = "0.8"
 
+# PNG decode for the branded tray icon (composites a status badge over the mark)
+png = "0.17"
+
 # Docker
 bollard = "0.15"
 futures-util = "0.3"

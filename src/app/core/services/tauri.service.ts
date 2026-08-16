@@ -255,6 +255,8 @@ export interface NucleusConfig {
   puru_data_path?: string;
   daemon?: DaemonConfig;
   lan: LanConfig;
+  setup_completed?: boolean;
+  production_mode?: boolean;
 }
 
 export interface DaemonStatus {

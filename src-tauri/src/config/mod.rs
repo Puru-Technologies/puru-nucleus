@@ -40,6 +40,12 @@ pub struct NucleusConfig {
     pub puru_data_path: Option<String>,
     pub daemon: Option<DaemonConfig>,
     pub lan: LanConfig,
+    /// Set true when the setup wizard has completed at least once. Gates whether
+    /// the configuration screens are shown by default in the UI.
+    pub setup_completed: bool,
+    /// When true, the UI hides all configuration screens (Settings, Compose,
+    /// Setup, Master Data, Shell). Flipped by ops in nucleus.toml at handover.
+    pub production_mode: bool,
 }
 
 /// Daemon mode configuration
@@ -128,6 +134,8 @@ impl Default for NucleusConfig {
             puru_data_path: None,
             daemon: None,
             lan: LanConfig::default(),
+            setup_completed: false,
+            production_mode: false,
         }
     }
 }

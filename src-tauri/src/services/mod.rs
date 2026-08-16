@@ -556,11 +556,41 @@ pub async fn get_container_logs(
 /// Update a native service (stop → pull new JAR → start).
 /// Only available in native mode.
 pub async fn update_native_service(name: &str) -> Result<crate::releases::JarPullResult, crate::error::NucleusError> {
+    update_native_service_progress(name, |_, _, _| {}).await
+}
+
+/// Like [`update_native_service`], but reports progress via `on(phase,
+/// downloaded, total)` for the UI progress bar.
+pub async fn update_native_service_progress<F>(
+    name: &str,
+    on: F,
+) -> Result<crate::releases::JarPullResult, crate::error::NucleusError>
+where
+    F: Fn(&str, u64, u64) + Send + Sync,
+{
     let config = crate::config::load_config()?;
     match config.deployment_mode {
-        DeploymentMode::Native => native::update_service(name, &config).await,
+        DeploymentMode::Native => native::update_service_progress(name, &config, on).await,
         DeploymentMode::Docker => Err(crate::error::NucleusError::Validation(
             "update_native_service is only available in native deployment mode".into(),
+        )),
+    }
+}
+
+/// Apply a previously-staged (downloaded) update for a native service:
+/// stop → swap the staged JAR in → restart. Reports phase progress via `on`.
+pub async fn apply_native_update_progress<F>(
+    name: &str,
+    on: F,
+) -> Result<crate::releases::JarPullResult, crate::error::NucleusError>
+where
+    F: Fn(&str, u64, u64) + Send + Sync,
+{
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Native => native::apply_update_progress(name, &config, on).await,
+        DeploymentMode::Docker => Err(crate::error::NucleusError::Validation(
+            "Staged updates are only available in native deployment mode".into(),
         )),
     }
 }

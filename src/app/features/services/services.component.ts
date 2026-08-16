@@ -1,14 +1,63 @@
-import { Component, OnInit, HostListener, inject } from '@angular/core';
+import { Component, OnInit, OnDestroy, HostListener, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { TauriService, ServiceInfo, ProcessInfo } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
+import { PuruProgressComponent } from '../../core/components/puru-progress.component';
+
+/** Live JAR update/download progress emitted by the backend (`jar-update-progress`). */
+interface JarUpdateProgress {
+  service: string;
+  phase: 'downloading' | 'staged' | 'stopping' | 'starting' | 'done' | 'error';
+  message: string;
+  downloaded: number;
+  total: number;
+  percent: number;
+  index: number;
+  count: number;
+}
+
+type ProgressBarState = 'active' | 'complete' | 'hold' | 'fail' | 'indeterminate';
+
+interface JarUpdateCheck {
+  service: string;
+  current_sha: string;
+  latest_sha: string;
+  latest_built_at: string;
+  update_available: boolean;
+}
+
+interface StagedUpdate {
+  service: string;
+  short_sha: string;
+  built_at: string;
+  size_mb: number;
+  staged_path: string;
+}
+
+/** Per-service state for the split update flow: identify → download → apply. */
+type UpdatePhase =
+  | 'checking' | 'up-to-date' | 'available'
+  | 'downloading' | 'staged'
+  | 'applying' | 'done' | 'error';
+
+interface UpdateFlow {
+  phase: UpdatePhase;
+  message: string;
+  currentSha?: string;
+  latestSha?: string;
+  percent?: number;
+  progressState?: ProgressBarState;
+  downloaded?: number;
+  total?: number;
+}
 
 @Component({
   selector: 'app-services',
   standalone: true,
-  imports: [CommonModule, RouterLink, FormsModule],
+  imports: [CommonModule, RouterLink, FormsModule, PuruProgressComponent],
   template: `
     <div class="page">
       <div class="page-header">
@@ -28,6 +77,24 @@ import { NotificationService } from '../../core/services/notification.service';
             <span class="material-icons">refresh</span>
             Refresh
           </button>
+          @if (isNative && updatableServices.length > 0) {
+            <button class="btn btn-stroked" (click)="checkAllUpdates()" [disabled]="batchBusy" title="Check every service for a newer build">
+              <span class="material-icons">system_update</span>
+              Check updates
+            </button>
+            @if (availableCount > 0) {
+              <button class="btn btn-stroked" (click)="downloadAllUpdates()" [disabled]="batchBusy" title="Download all available updates (services keep running)">
+                <span class="material-icons">cloud_download</span>
+                Download all ({{ availableCount }})
+              </button>
+            }
+            @if (stagedCount > 0) {
+              <button class="btn btn-primary" (click)="applyAllUpdates()" [disabled]="batchBusy" title="Apply all downloaded updates (stops, swaps, restarts each)">
+                <span class="material-icons">restart_alt</span>
+                Apply all ({{ stagedCount }})
+              </button>
+            }
+          }
           <button class="btn btn-primary" (click)="startAll()" [disabled]="services.length === 0">
             <span class="material-icons">play_arrow</span>
             Start All
@@ -206,6 +273,18 @@ import { NotificationService } from '../../core/services/notification.service';
                       <div class="name-info">
                         <span class="name-primary">{{ service.name }}</span>
                         <span class="name-secondary">{{ service.container_name }}</span>
+                        @if (actionMsg[service.name]; as m) {
+                          <span class="action-msg" [class]="'am-' + m.kind">
+                            @if (m.kind === 'busy') {
+                              <span class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+                            } @else if (m.kind === 'ok') {
+                              <span class="material-icons">check</span>
+                            } @else {
+                              <span class="material-icons">error_outline</span>
+                            }
+                            {{ m.text }}
+                          </span>
+                        }
                       </div>
                     </div>
                   </td>
@@ -256,10 +335,12 @@ import { NotificationService } from '../../core/services/notification.service';
                           <button class="menu-item" (click)="viewLogs(service); openMenu = null">
                             <span class="material-icons">article</span> View Logs
                           </button>
-                          @if (isNative) {
-                            <button class="menu-item" (click)="updateService(service); openMenu = null">
-                              <span class="material-icons menu-green">system_update</span> Update
+                          @if (isNative && service.name !== 'puru-hydrogen' && service.status !== 'notinstalled') {
+                            <button class="menu-item" (click)="checkUpdate(service); openMenu = null">
+                              <span class="material-icons menu-green">system_update</span> Check for update
                             </button>
+                          }
+                          @if (isNative) {
                             <button class="menu-item" (click)="rollbackService(service); openMenu = null">
                               <span class="material-icons menu-orange">undo</span> Rollback
                             </button>
@@ -269,6 +350,54 @@ import { NotificationService } from '../../core/services/notification.service';
                     </div>
                   </td>
                 </tr>
+                @if (updateFlow[service.name]; as up) {
+                  <tr class="update-progress-row" [class.uf-error]="up.phase === 'error'">
+                    <td colspan="7">
+                      <div class="update-progress">
+                        <div class="up-head">
+                          <span class="up-msg">
+                            <span class="material-icons uf-icon">
+                              @switch (up.phase) {
+                                @case ('checking') { hourglass_top }
+                                @case ('up-to-date') { check_circle }
+                                @case ('available') { new_releases }
+                                @case ('downloading') { cloud_download }
+                                @case ('staged') { inventory_2 }
+                                @case ('applying') { sync }
+                                @case ('done') { check_circle }
+                                @case ('error') { error }
+                              }
+                            </span>
+                            {{ up.message }}
+                          </span>
+                          <span class="up-actions">
+                            @if (up.phase === 'downloading' && (up.total || 0) > 0) {
+                              <span class="up-bytes">{{ fmtMB(up.downloaded || 0) }} / {{ fmtMB(up.total || 0) }} MB</span>
+                            }
+                            @if (up.phase === 'available') {
+                              <button class="uf-btn primary" (click)="downloadUpdate(service)" [disabled]="batchBusy">
+                                <span class="material-icons">cloud_download</span> Download
+                              </button>
+                              <button class="uf-btn ghost" (click)="dismissFlow(service)">Later</button>
+                            }
+                            @if (up.phase === 'staged') {
+                              <button class="uf-btn primary" (click)="applyUpdate(service)" [disabled]="batchBusy">
+                                <span class="material-icons">restart_alt</span> Apply &amp; restart
+                              </button>
+                              <button class="uf-btn ghost" (click)="discardUpdate(service)" [disabled]="batchBusy">Discard</button>
+                            }
+                            @if (up.phase === 'up-to-date' || up.phase === 'done' || up.phase === 'error') {
+                              <button class="uf-btn ghost" (click)="dismissFlow(service)">Dismiss</button>
+                            }
+                          </span>
+                        </div>
+                        @if (up.phase === 'downloading' || up.phase === 'applying' || up.phase === 'done' || up.phase === 'staged') {
+                          <puru-progress [value]="up.percent || 0" [state]="up.progressState || 'active'" [height]="6"></puru-progress>
+                        }
+                      </div>
+                    </td>
+                  </tr>
+                }
               }
             </tbody>
           </table>
@@ -277,6 +406,37 @@ import { NotificationService } from '../../core/services/notification.service';
     </div>
   `,
   styles: [`
+    .update-progress-row td {
+      padding: 10px 16px 14px;
+      background: var(--bg-subtle, rgba(0,158,251,0.04));
+      border-top: none;
+    }
+    .update-progress { display: flex; flex-direction: column; gap: 7px; }
+    .up-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.82rem;
+    }
+    .up-msg { color: var(--text-secondary, #5a6472); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+    .up-msg .uf-icon { font-size: 17px; color: var(--brand-blue, #009efb); }
+    .update-progress-row.uf-error .uf-icon { color: var(--brand-red, #e83a3a); }
+    .up-actions { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+    .up-bytes { color: var(--text-muted, #8a94a3); font-variant-numeric: tabular-nums; }
+    .uf-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; font-size: 0.78rem; font-weight: 600;
+      border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .uf-btn .material-icons { font-size: 15px; }
+    .uf-btn.primary { color: #fff; background: var(--brand-blue, #009efb); }
+    .uf-btn.primary:hover:not(:disabled) { filter: brightness(0.94); }
+    .uf-btn.ghost { color: var(--text-secondary, #5a6472); background: transparent; border-color: var(--border, #d5dbe3); }
+    .uf-btn.ghost:hover:not(:disabled) { background: var(--bg-hover, rgba(0,0,0,0.04)); }
+    .uf-btn:disabled { opacity: 0.5; cursor: default; }
+
     .page {
       max-width: 1200px;
       margin: 0 auto;
@@ -416,6 +576,19 @@ import { NotificationService } from '../../core/services/notification.service';
       color: var(--text-muted);
       font-family: 'SF Mono', 'Fira Code', monospace;
     }
+    /* Transient inline status just below the service name. */
+    .action-msg {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 3px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .action-msg .material-icons { font-size: 13px; }
+    .action-msg.am-busy { color: var(--text-muted, #8a94a3); }
+    .action-msg.am-ok { color: var(--brand-green, #2e9e5b); }
+    .action-msg.am-error { color: var(--brand-red, #e83a3a); }
 
     .image-text {
       font-size: 0.75rem;
@@ -656,9 +829,18 @@ import { NotificationService } from '../../core/services/notification.service';
     }
   `]
 })
-export class ServicesComponent implements OnInit {
+export class ServicesComponent implements OnInit, OnDestroy {
   private tauri = inject(TauriService);
   private notification = inject(NotificationService);
+
+  /** Per-service update flow state (identify → download → apply), keyed by name. */
+  updateFlow: Record<string, UpdateFlow> = {};
+  private unlistenProgress?: UnlistenFn;
+  /** True while a batch (Check/Download/Apply All) is running. */
+  batchBusy = false;
+
+  /** Transient inline status shown under a service (e.g. "Restarted"), keyed by name. */
+  actionMsg: Record<string, { text: string; kind: 'busy' | 'ok' | 'error' }> = {};
 
   services: ServiceInfo[] = [];
   loading = true;
@@ -682,12 +864,25 @@ export class ServicesComponent implements OnInit {
     return this.services.filter(s => s.status === 'running').length;
   }
 
+  private _sortedCache: ServiceInfo[] = [];
+  private _sortSig = '';
+  /**
+   * Sorted view of the services, memoized. Returns the SAME array reference
+   * until the data or sort actually changes, so change detection (which runs on
+   * every app poll tick) doesn't re-sort or churn the `@for` on every cycle.
+   */
   get sortedServices(): ServiceInfo[] {
-    const dir = this.sortDir;
-    const key = this.sortKey;
-    return [...this.services].sort((a, b) =>
-      this.sortValue(a, key).localeCompare(this.sortValue(b, key)) * dir
-    );
+    const sig = `${this.sortKey}|${this.sortDir}|` +
+      this.services.map(s => `${s.name}:${s.status}:${s.health || ''}`).join(',');
+    if (sig !== this._sortSig) {
+      this._sortSig = sig;
+      const dir = this.sortDir;
+      const key = this.sortKey;
+      this._sortedCache = [...this.services].sort((a, b) =>
+        this.sortValue(a, key).localeCompare(this.sortValue(b, key)) * dir
+      );
+    }
+    return this._sortedCache;
   }
 
   private sortValue(s: ServiceInfo, key: string): string {
@@ -725,7 +920,164 @@ export class ServicesComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadDeploymentMode();
-    this.loadServices();
+    this.loadServices().then(() => this.loadStagedUpdates());
+
+    // Live progress for the download + apply phases of the update flow.
+    listen<JarUpdateProgress>('jar-update-progress', (ev) => {
+      const p = ev.payload;
+      if (!p.service) return; // batch-wide events (e.g. setup) have no single service
+      const cur = this.updateFlow[p.service] ?? { phase: 'downloading', message: '' };
+      const indeterminate = p.phase === 'downloading' && p.total === 0;
+
+      if (p.phase === 'downloading') {
+        this.updateFlow[p.service] = {
+          ...cur, phase: 'downloading', message: p.message,
+          downloaded: p.downloaded, total: p.total, percent: p.percent,
+          progressState: indeterminate ? 'indeterminate' : 'active',
+        };
+      } else if (p.phase === 'staged') {
+        this.updateFlow[p.service] = {
+          ...cur, phase: 'staged', message: p.message, percent: 100, progressState: 'complete',
+        };
+      } else if (p.phase === 'stopping' || p.phase === 'starting') {
+        this.updateFlow[p.service] = {
+          ...cur, phase: 'applying', message: p.message, percent: p.percent, progressState: 'active',
+        };
+      } else if (p.phase === 'done') {
+        this.updateFlow[p.service] = { ...cur, phase: 'done', message: p.message, percent: 100, progressState: 'complete' };
+        const svc = p.service;
+        setTimeout(() => { if (this.updateFlow[svc]?.phase === 'done') delete this.updateFlow[svc]; }, 2500);
+      } else if (p.phase === 'error') {
+        this.updateFlow[p.service] = { ...cur, phase: 'error', message: p.message, progressState: 'fail' };
+      }
+    }).then((un) => (this.unlistenProgress = un));
+  }
+
+  ngOnDestroy(): void {
+    this.unlistenProgress?.();
+  }
+
+  /** Bytes → MB, one decimal, for the progress caption. */
+  fmtMB(bytes: number): string {
+    return (bytes / 1_048_576).toFixed(1);
+  }
+
+  // ── Split update flow: identify → download (stage) → apply ─────────────────
+
+  /** Services eligible for JAR updates (native, installed, not the hydrogen bundle). */
+  get updatableServices(): ServiceInfo[] {
+    return this.sortedServices.filter(s =>
+      this.isNative && s.name !== 'puru-hydrogen' && s.status !== 'notinstalled');
+  }
+  get availableCount(): number {
+    return Object.values(this.updateFlow).filter(f => f.phase === 'available').length;
+  }
+  get stagedCount(): number {
+    return Object.values(this.updateFlow).filter(f => f.phase === 'staged').length;
+  }
+
+  /** On load, surface any updates that were downloaded but never applied. */
+  private async loadStagedUpdates(): Promise<void> {
+    for (const s of this.updatableServices) {
+      try {
+        const staged = await this.tauri.invoke<StagedUpdate | null>('get_staged_update', { serviceName: s.name });
+        if (staged && !this.updateFlow[s.name]) {
+          this.updateFlow[s.name] = {
+            phase: 'staged', percent: 100, progressState: 'complete',
+            latestSha: staged.short_sha,
+            message: `Downloaded build ${staged.short_sha} (${staged.size_mb.toFixed(1)} MB) — ready to apply`,
+          };
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  /** Step 1: identify. */
+  async checkUpdate(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    this.updateFlow[name] = { phase: 'checking', message: 'Checking for updates…' };
+    try {
+      const c = await this.tauri.invoke<JarUpdateCheck>('check_service_update', { serviceName: name });
+      this.updateFlow[name] = c.update_available
+        ? { phase: 'available', message: `Update available: ${c.current_sha || 'none'} → ${c.latest_sha}`,
+            currentSha: c.current_sha, latestSha: c.latest_sha }
+        : { phase: 'up-to-date', message: `Up to date (${c.current_sha || c.latest_sha})`, currentSha: c.current_sha };
+    } catch (e) {
+      this.updateFlow[name] = { phase: 'error', message: String(e), progressState: 'fail' };
+    }
+  }
+
+  /** Step 2: download (stage) — running service untouched. */
+  async downloadUpdate(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    const prev = this.updateFlow[name];
+    this.updateFlow[name] = { phase: 'downloading', message: 'Starting download…', percent: 0,
+      progressState: 'active', latestSha: prev?.latestSha };
+    try {
+      const s = await this.tauri.invoke<StagedUpdate>('download_service_update', { serviceName: name });
+      this.updateFlow[name] = { phase: 'staged', percent: 100, progressState: 'complete',
+        latestSha: s.short_sha,
+        message: `Downloaded build ${s.short_sha} (${s.size_mb.toFixed(1)} MB) — ready to apply` };
+    } catch (e) {
+      if (this.updateFlow[name]?.phase !== 'error') {
+        this.updateFlow[name] = { phase: 'error', message: String(e), progressState: 'fail' };
+      }
+    }
+  }
+
+  /** Step 3: apply — stop → swap → restart. */
+  async applyUpdate(service: ServiceInfo, skipConfirm = false): Promise<void> {
+    const name = service.name;
+    if (!skipConfirm && !confirm(`Apply the downloaded update for ${name}? This stops the service, swaps the JAR, and restarts it.`)) return;
+    this.updateFlow[name] = { phase: 'applying', message: 'Applying update…', percent: 10, progressState: 'active' };
+    try {
+      const r = await this.tauri.invoke<any>('apply_service_update', { serviceName: name });
+      this.updateFlow[name] = { phase: 'done', message: `Applied build ${r.short_sha}`, percent: 100, progressState: 'complete' };
+      await this.loadServicesSilent();
+      const svc = name;
+      setTimeout(() => { if (this.updateFlow[svc]?.phase === 'done') delete this.updateFlow[svc]; }, 2500);
+    } catch (e) {
+      if (this.updateFlow[name]?.phase !== 'error') {
+        this.updateFlow[name] = { phase: 'error', message: String(e), progressState: 'fail' };
+      }
+    }
+  }
+
+  /** Discard a downloaded-but-unapplied update. */
+  async discardUpdate(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    try { await this.tauri.invoke('discard_service_update', { serviceName: name }); } catch { /* ignore */ }
+    delete this.updateFlow[name];
+  }
+
+  dismissFlow(service: ServiceInfo): void {
+    delete this.updateFlow[service.name];
+  }
+
+  // ── Update All (same 3-step flow, fanned out) ──────────────────────────────
+
+  async checkAllUpdates(): Promise<void> {
+    this.batchBusy = true;
+    try { await Promise.all(this.updatableServices.map(s => this.checkUpdate(s))); }
+    finally { this.batchBusy = false; }
+    const n = this.availableCount;
+    this.notification.success(n > 0 ? `${n} update(s) available` : 'All services up to date');
+  }
+
+  async downloadAllUpdates(): Promise<void> {
+    const targets = this.updatableServices.filter(s => this.updateFlow[s.name]?.phase === 'available');
+    this.batchBusy = true;
+    try { for (const s of targets) await this.downloadUpdate(s); } // sequential — kinder on bandwidth
+    finally { this.batchBusy = false; }
+  }
+
+  async applyAllUpdates(): Promise<void> {
+    const targets = this.updatableServices.filter(s => this.updateFlow[s.name]?.phase === 'staged');
+    if (targets.length === 0) return;
+    if (!confirm(`Apply ${targets.length} downloaded update(s)? Each service is stopped, swapped, and restarted one at a time.`)) return;
+    this.batchBusy = true;
+    try { for (const s of targets) await this.applyUpdate(s, true); } // sequential — one restart at a time
+    finally { this.batchBusy = false; }
   }
 
   private async loadDeploymentMode(): Promise<void> {
@@ -746,9 +1098,29 @@ export class ServicesComponent implements OnInit {
     }
   }
 
+  /**
+   * Refresh the list WITHOUT flipping the full-page loading spinner — the table
+   * stays put and only the changed rows update. Used after actions so the UI
+   * doesn't flash the spinner on every start/stop/restart.
+   */
+  private async loadServicesSilent(): Promise<void> {
+    try {
+      this.services = await this.tauri.invoke<ServiceInfo[]>('get_services');
+    } catch { /* keep the current list on a transient failure */ }
+  }
+
+  /** Set a transient inline status under a service. Non-busy states auto-clear. */
+  private setMsg(name: string, text: string, kind: 'busy' | 'ok' | 'error'): void {
+    this.actionMsg[name] = { text, kind };
+    if (kind !== 'busy') {
+      setTimeout(() => {
+        if (this.actionMsg[name]?.text === text) delete this.actionMsg[name];
+      }, kind === 'error' ? 6000 : 3000);
+    }
+  }
+
   async refreshServices(): Promise<void> {
-    await this.loadServices();
-    this.notification.success('Services refreshed');
+    await this.loadServicesSilent();
   }
 
   shortenImage(image: string): string {
@@ -764,32 +1136,38 @@ export class ServicesComponent implements OnInit {
   }
 
   async startService(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    this.setMsg(name, 'Starting…', 'busy');
     try {
       await this.tauri.invoke('start_service', { name: this.svcId(service) });
-      this.notification.success(`Started ${service.name}`);
-      await this.loadServices();
-    } catch (error) {
-      // Error handled by TauriService
+      this.setMsg(name, 'Started', 'ok');
+      await this.loadServicesSilent();
+    } catch {
+      this.setMsg(name, 'Failed to start', 'error');
     }
   }
 
   async stopService(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    this.setMsg(name, 'Stopping…', 'busy');
     try {
       await this.tauri.invoke('stop_service', { name: this.svcId(service) });
-      this.notification.success(`Stopped ${service.name}`);
-      await this.loadServices();
-    } catch (error) {
-      // Error handled by TauriService
+      this.setMsg(name, 'Stopped', 'ok');
+      await this.loadServicesSilent();
+    } catch {
+      this.setMsg(name, 'Failed to stop', 'error');
     }
   }
 
   async restartService(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    this.setMsg(name, 'Restarting…', 'busy');
     try {
       await this.tauri.invoke('restart_service', { name: this.svcId(service) });
-      this.notification.success(`Restarted ${service.name}`);
-      await this.loadServices();
-    } catch (error) {
-      // Error handled by TauriService
+      this.setMsg(name, 'Restarted', 'ok');
+      await this.loadServicesSilent();
+    } catch {
+      this.setMsg(name, 'Failed to restart', 'error');
     }
   }
 
@@ -800,14 +1178,15 @@ export class ServicesComponent implements OnInit {
       s => s.status === 'stopped' || s.status === 'error'
     );
     for (const service of stoppedServices) {
+      this.setMsg(service.name, 'Starting…', 'busy');
       try {
         await this.tauri.invoke('start_service', { name: this.svcId(service) });
-      } catch (error) {
-        // Continue with other services
+        this.setMsg(service.name, 'Started', 'ok');
+      } catch {
+        this.setMsg(service.name, 'Failed to start', 'error');
       }
     }
-    this.notification.success(`Started ${stoppedServices.length} services`);
-    await this.loadServices();
+    await this.loadServicesSilent();
   }
 
   async viewLogs(service: ServiceInfo): Promise<void> {
@@ -864,25 +1243,17 @@ export class ServicesComponent implements OnInit {
     this.logOutput = '';
   }
 
-  async updateService(service: ServiceInfo): Promise<void> {
-    if (!confirm(`Update ${service.name}? This will stop the service, pull a new JAR, and restart.`)) return;
-    try {
-      const result = await this.tauri.invoke<any>('update_native_service', { serviceName: service.name });
-      this.notification.success(`Updated ${service.name} to build ${result.short_sha}`);
-      await this.loadServices();
-    } catch (error) {
-      // Error handled by TauriService
-    }
-  }
 
   async rollbackService(service: ServiceInfo): Promise<void> {
     if (!confirm(`Rollback ${service.name} to previous JAR?`)) return;
+    const name = service.name;
+    this.setMsg(name, 'Rolling back…', 'busy');
     try {
-      await this.tauri.invoke('rollback_native_service', { serviceName: service.name });
-      this.notification.success(`Rolled back ${service.name}`);
-      await this.loadServices();
-    } catch (error) {
-      // Error handled by TauriService
+      await this.tauri.invoke('rollback_native_service', { serviceName: name });
+      this.setMsg(name, 'Rolled back', 'ok');
+      await this.loadServicesSilent();
+    } catch {
+      this.setMsg(name, 'Rollback failed', 'error');
     }
   }
 

@@ -205,7 +205,7 @@ interface SystemClockStatus {
 
         <div class="help-text">
           <p>Don't have credentials?</p>
-          <a href="mailto:support{{'@'}}purutechnologies.com">Contact Support</a>
+          <a href="mailto:support{{'@'}}purulabs.com">Contact Support</a>
         </div>
       </div>
     </div>

@@ -7,11 +7,15 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { NotificationService } from '../../core/services/notification.service';
 import { ConnectionService } from '../../core/services/connection.service';
 import { open } from '@tauri-apps/plugin-dialog';
+import { PuruProgressComponent } from '../../core/components/puru-progress.component';
 
 interface SetupStep {
   label: string;
   status: 'pending' | 'in_progress' | 'completed' | 'error';
   message?: string;
+  /** Live download progress (0–100) for the JAR-pull step; undefined otherwise. */
+  percent?: number;
+  progressState?: 'active' | 'complete' | 'hold' | 'fail' | 'indeterminate';
 }
 
 @Component({
@@ -19,7 +23,8 @@ interface SetupStep {
   standalone: true,
   imports: [
     CommonModule,
-    FormsModule
+    FormsModule,
+    PuruProgressComponent
   ],
   template: `
     <div class="setup-page">
@@ -348,7 +353,24 @@ interface SetupStep {
                       @if (step.message) {
                         <div class="step-message">{{ step.message }}</div>
                       }
+                      @if (step.percent != null && step.status === 'in_progress') {
+                        <div class="step-progress">
+                          <puru-progress [value]="step.percent" [state]="step.progressState || 'active'" [height]="6"></puru-progress>
+                        </div>
+                      }
                     </div>
+                    @if (!setupInProgress) {
+                      <button class="step-run" (click)="runSingleStep(i)"
+                              [disabled]="singleStepIndex !== null"
+                              title="Run only this step (re-run individually if it failed)">
+                        @if (singleStepIndex === i) {
+                          <span class="spinner" style="width:14px;height:14px"></span>
+                        } @else {
+                          <span class="material-icons">play_arrow</span>
+                        }
+                        Run
+                      </button>
+                    }
                   </div>
                 }
               </div>
@@ -1022,7 +1044,38 @@ interface SetupStep {
       font-size: 0.875rem;
       color: #666;
       margin-top: 0.25rem;
+      white-space: pre-line;   /* preserve line breaks in multi-line error detail */
+      word-break: break-word;
     }
+    /* Failed steps: make the reason stand out and stay readable. */
+    .step-error .step-message {
+      color: var(--brand-red, #e83a3a);
+    }
+    .step-progress {
+      margin-top: 0.5rem;
+      max-width: 420px;
+    }
+    /* Per-step "Run" button (targeted re-run) — sits at the right of each step. */
+    .step { align-items: center; }
+    .step-run {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--brand-blue, #009efb);
+      background: transparent;
+      border: 1px solid var(--brand-blue, #009efb);
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .step-run .material-icons { font-size: 16px; }
+    .step-run:hover:not(:disabled) { background: var(--brand-blue, #009efb); color: #fff; }
+    .step-run:disabled { opacity: 0.45; cursor: default; }
 
     .progress-section {
       margin-top: 1.5rem;
@@ -1227,6 +1280,8 @@ export class SetupComponent implements OnInit {
   detectionResult: DetectionResult | null = null;
   setupInProgress = false;
   setupComplete = false;
+  /** Index of the step currently running via the per-step "Run" button, or null. */
+  singleStepIndex: number | null = null;
   tlsStatus: any = null;
   adopting = false;
   mismatchError: string | null = null;
@@ -1655,14 +1710,15 @@ export class SetupComponent implements OnInit {
     this.notification.warning('Starting fresh install - existing containers will be removed');
   }
 
-  async startSetup(): Promise<void> {
-    this.setupInProgress = true;
-
-    // Live per-service progress for the native start/sync step.
-    this.nativeActions = [];
-    let unlistenNative: UnlistenFn | null = null;
+  /**
+   * Attach the live progress listeners used during setup (per-service native
+   * start/sync + JAR download progress) and return a single detach function.
+   * Shared by the full run and single-step re-runs so both behave identically.
+   */
+  private async attachSetupListeners(): Promise<() => void> {
+    const unlisteners: UnlistenFn[] = [];
     try {
-      unlistenNative = await listen<{ service: string; action: string; success: boolean; message: string }>(
+      unlisteners.push(await listen<{ service: string; action: string; success: boolean; message: string }>(
         'native-service-progress',
         (event) => {
           const incoming = event.payload;
@@ -1673,10 +1729,36 @@ export class SetupComponent implements OnInit {
             this.nativeActions = [...this.nativeActions, incoming];
           }
         }
-      );
+      ));
     } catch {
       // Events unavailable (e.g. remote) — non-fatal.
     }
+    try {
+      unlisteners.push(await listen<{ service: string; phase: string; message: string; downloaded: number; total: number; percent: number; index: number; count: number }>(
+        'jar-update-progress',
+        (event) => {
+          const p = event.payload;
+          const step = this.steps.find(s => s.label.includes('Pull JARs'));
+          if (!step) return;
+          const indeterminate = p.phase === 'downloading' && p.total === 0;
+          step.progressState = p.phase === 'done' ? 'complete'
+            : p.phase === 'error' ? 'fail'
+            : indeterminate ? 'indeterminate'
+            : 'active';
+          step.percent = p.percent;
+          step.message = p.message;
+        }
+      ));
+    } catch {
+      // Non-fatal.
+    }
+    return () => unlisteners.forEach(u => u());
+  }
+
+  async startSetup(): Promise<void> {
+    this.setupInProgress = true;
+    this.nativeActions = [];
+    const detach = await this.attachSetupListeners();
 
     try {
       for (let i = 0; i < this.steps.length; i++) {
@@ -1695,11 +1777,17 @@ export class SetupComponent implements OnInit {
         }
       }
     } finally {
-      if (unlistenNative) unlistenNative();
+      detach();
     }
 
     this.setupComplete = true;
     this.setupInProgress = false;
+
+    // Record that setup has completed so the shell can hide config screens by
+    // default from now on (revealed again via the Configuration unlock button).
+    try {
+      await this.tauri.invokeSilent('mark_setup_completed');
+    } catch { /* non-critical */ }
 
     // Load TLS status after setup
     try {
@@ -1707,6 +1795,38 @@ export class SetupComponent implements OnInit {
     } catch { /* non-critical */ }
 
     this.notification.success('Setup completed successfully!');
+  }
+
+  /**
+   * Run a single setup step on demand — for re-running an individual step that
+   * failed, without re-executing the whole sequence. Steps can depend on earlier
+   * ones, so this is a targeted recovery tool, not a substitute for a full run.
+   */
+  async runSingleStep(index: number): Promise<void> {
+    if (this.setupInProgress || this.singleStepIndex !== null) return;
+    const step = this.steps[index];
+    if (!step) return;
+
+    this.singleStepIndex = index;
+    this.nativeActions = [];
+    step.status = 'in_progress';
+    step.message = undefined;
+    step.percent = undefined;
+    step.progressState = undefined;
+
+    const detach = await this.attachSetupListeners();
+    try {
+      await this.executeStep(index);
+      step.status = 'completed';
+      this.notification.success(`${step.label} — done`);
+    } catch (error) {
+      step.status = 'error';
+      step.message = String(error);
+      this.notification.error(`${step.label} failed`);
+    } finally {
+      detach();
+      this.singleStepIndex = null;
+    }
   }
 
   private async executeStep(index: number): Promise<void> {

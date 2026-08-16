@@ -1,5 +1,6 @@
 import { Routes } from '@angular/router';
 import { initGuard } from './core/guards/init.guard';
+import { configGuard } from './core/guards/config.guard';
 
 export const routes: Routes = [
   {
@@ -52,27 +53,27 @@ export const routes: Routes = [
   },
   {
     path: 'remote-shell',
-    canActivate: [initGuard],
+    canActivate: [initGuard, configGuard],
     loadComponent: () => import('./features/remote-shell/remote-shell.component').then(m => m.RemoteShellComponent)
   },
   {
     path: 'settings',
-    canActivate: [initGuard],
+    canActivate: [initGuard, configGuard],
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
   },
   {
     path: 'setup',
-    canActivate: [initGuard],
+    canActivate: [initGuard, configGuard],
     loadComponent: () => import('./features/setup/setup.component').then(m => m.SetupComponent)
   },
   {
     path: 'compose',
-    canActivate: [initGuard],
+    canActivate: [initGuard, configGuard],
     loadComponent: () => import('./features/compose/compose.component').then(m => m.ComposeComponent)
   },
   {
     path: 'master-data',
-    canActivate: [initGuard],
+    canActivate: [initGuard, configGuard],
     loadComponent: () => import('./features/master-data/master-data.component').then(m => m.MasterDataComponent)
   }
 ];

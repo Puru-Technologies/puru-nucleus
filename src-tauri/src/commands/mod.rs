@@ -13,7 +13,7 @@ use crate::messaging::types::{
 };
 use crate::releases::{
     DownloadResult, JarPullResult, JarUpdateCheck, NucleusUpdateInfo, PullAllResult,
-    ServiceManifest, ServiceUpdateInfo,
+    ServiceManifest, ServiceUpdateInfo, StagedUpdate,
 };
 use crate::remote_shell::{ShellAuditEntry, ShellResult};
 use crate::services::{DetectionResult, PrerequisiteStatus, ServiceInfo};
@@ -446,6 +446,18 @@ pub async fn get_config() -> Result<NucleusConfig, String> {
 #[tauri::command]
 pub async fn save_config(config: NucleusConfig) -> Result<(), String> {
     crate::config::save_config(&config).map_err(|e| e.to_string())
+}
+
+/// Mark the setup wizard as completed (so the UI can hide config screens by
+/// default afterwards). Idempotent.
+#[tauri::command]
+pub async fn mark_setup_completed() -> Result<(), String> {
+    let mut config = crate::config::load_config().map_err(|e| e.to_string())?;
+    if !config.setup_completed {
+        config.setup_completed = true;
+        crate::config::save_config(&config).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Sync config to cloud
@@ -1015,9 +1027,10 @@ pub async fn read_daemon_log(lines: Option<u32>) -> Result<String, String> {
     if !log_path.exists() {
         return Ok("No daemon log found. Start the daemon service to generate logs.".to_string());
     }
-    let content = tokio::fs::read_to_string(&log_path)
+    let bytes = tokio::fs::read(&log_path)
         .await
         .map_err(|e| e.to_string())?;
+    let content = String::from_utf8_lossy(&bytes).into_owned();
     let max_lines = lines.unwrap_or(100) as usize;
     let all_lines: Vec<&str> = content.lines().collect();
     let start = if all_lines.len() > max_lines {
@@ -1509,55 +1522,17 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         .await;
     let use_docker = matches!(&docker_probe, Ok(out) if out.status.success());
 
-    // Configuration verbs, applied against the default "/" vhost. "already
-    // exists" is swallowed so re-running setup is idempotent.
-    let configure = |ctl_args: &[&str]| -> Vec<Vec<String>> {
-        let base: Vec<String> = ctl_args.iter().map(|s| s.to_string()).collect();
-        let mut cmds = Vec::new();
-        for verb in [
-            vec!["add_user", "puru", "puru123"],
-            vec!["set_permissions", "-p", "/", "puru", ".*", ".*", ".*"],
-            vec!["set_user_tags", "puru", "administrator"],
-        ] {
-            let mut c = base.clone();
-            c.extend(verb.iter().map(|s| s.to_string()));
-            cmds.push(c);
-        }
-        cmds
-    };
-
     // Explains a host-path auth failure (Erlang cookie) precisely in the error.
     #[allow(unused_mut)]
     let mut cookie_note = String::new();
 
-    if use_docker {
-        let cmds = configure(&["exec", "rabbitmq", "rabbitmqctl"]);
-        for args in &cmds {
-            let output = crate::process::silent_cmd("docker")
-                .args(args)
-                .output()
-                .await
-                .map_err(|e| format!("Failed to configure RabbitMQ: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.contains("already exists") && !stderr.contains("already_exists") {
-                    tracing::warn!("RabbitMQ command warning: {}", stderr.trim());
-                }
-            }
-        }
+    // Resolve the rabbitmqctl entrypoint. For the host node we also prepare it
+    // first (cookie → offline plugin fix → start) because those must happen
+    // before the node accepts commands. `ctl` is the host binary path; for
+    // Docker it is unused (verbs run via `docker exec`).
+    let ctl: String = if use_docker {
         enable_rabbitmq_plugins_docker().await;
-
-        // Verify the user actually exists — the loop above swallows per-command
-        // failures, so a node that's up but unreachable would otherwise look green.
-        let ok = crate::process::silent_cmd("docker")
-            .args(["exec", "rabbitmq", "rabbitmqctl", "authenticate_user", "puru", "puru123"])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !ok {
-            return Err("RabbitMQ user 'puru' could not be created/verified. Is the rabbitmq container running and healthy?".to_string());
-        }
+        "rabbitmqctl".to_string()
     } else {
         // Host-installed RabbitMQ. Order is critical:
         //  1. share the Erlang cookie (node runs as SYSTEM, rabbitmqctl as user),
@@ -1565,15 +1540,15 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         //     missing aborts the node on boot, so management is enabled and
         //     delayed-exchange is enabled ONLY when its .ez is actually present
         //     (otherwise explicitly disabled to clear any stale entry),
-        //  3. start the node,
-        //  4. create + verify the user.
+        //  3. start the node.
         #[cfg(target_os = "windows")]
         if let Err(e) = ensure_erlang_cookie() {
             cookie_note = format!(" (Erlang cookie: {} — run as administrator)", e);
         }
 
-        let rabbitmqctl = find_rabbitmqctl().await
-            .ok_or_else(|| "Cannot reach RabbitMQ. rabbitmqctl not found on PATH or in default install directory.".to_string())?;
+        let rabbitmqctl = find_rabbitmqctl().await.ok_or_else(|| {
+            "Cannot reach RabbitMQ: rabbitmqctl was not found on PATH or in the default install directory. Is RabbitMQ installed?".to_string()
+        })?;
         let plugins_bin = rabbitmq_plugins_from_ctl(&rabbitmqctl);
 
         // (2) Fix plugins offline, before the node starts.
@@ -1614,40 +1589,97 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
             cookie_note = format!("{} ({})", cookie_note, e);
         }
 
-        // (4) Create the user + permissions on the default "/" vhost.
-        let cmds = configure(&[]);
-        for args in &cmds {
-            let output = crate::process::silent_cmd(&rabbitmqctl)
-                .args(args)
-                .output()
-                .await
-                .map_err(|e| format!("Failed to configure RabbitMQ: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.contains("already exists") && !stderr.contains("already_exists") {
-                    tracing::warn!("RabbitMQ command warning: {}", stderr.trim());
-                }
-            }
-        }
+        rabbitmqctl
+    };
 
-        // Verify the user exists — surfaces a cookie/auth failure at *this* step
-        // rather than as a confusing failure during queue seeding.
-        let ok = crate::process::silent_cmd(&rabbitmqctl)
-            .args(["authenticate_user", "puru", "puru123"])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !ok {
-            return Err(format!(
-                "RabbitMQ user 'puru' could not be created/verified — rabbitmqctl cannot authenticate to the node.{}",
-                cookie_note
-            ));
-        }
+    // ── Create + converge the `puru` user on the default "/" vhost ──────────────
+    // Idempotent by design: on a setup RE-RUN the user already exists, which is
+    // NOT an error — instead of failing we reset its password to the expected
+    // value and re-apply permissions, so a second run finishes cleanly.
+    let (add_ok, add_diag) =
+        rabbitmq_ctl(use_docker, &ctl, &["add_user", "puru", "puru123"]).await;
+    let user_existed =
+        !add_ok && (add_diag.contains("already_exists") || add_diag.contains("already exists"));
+    if user_existed {
+        // Existing user is fine — make sure the password still matches puru123.
+        let _ = rabbitmq_ctl(use_docker, &ctl, &["change_password", "puru", "puru123"]).await;
+        tracing::info!(
+            "Setup: RabbitMQ user 'puru' already existed — password reset so the re-run stays idempotent"
+        );
+    }
+    let _ = rabbitmq_ctl(
+        use_docker,
+        &ctl,
+        &["set_permissions", "-p", "/", "puru", ".*", ".*", ".*"],
+    )
+    .await;
+    let _ = rabbitmq_ctl(use_docker, &ctl, &["set_user_tags", "puru", "administrator"]).await;
+
+    // ── Verify, and on failure explain *precisely* why ─────────────────────────
+    let (auth_ok, auth_diag) =
+        rabbitmq_ctl(use_docker, &ctl, &["authenticate_user", "puru", "puru123"]).await;
+    if auth_ok {
+        tracing::info!("Setup: RabbitMQ configured (vhost=\"/\", user=puru)");
+        return Ok(());
     }
 
-    tracing::info!("Setup: RabbitMQ configured (vhost=\"/\", user=puru)");
-    Ok(())
+    // Distinguish "node unreachable" from "user/password problem": `list_users`
+    // fails with a connection/cookie error when the node is down, but succeeds
+    // when it's up — so it tells the two cases apart.
+    let (node_ok, node_diag) = rabbitmq_ctl(use_docker, &ctl, &["list_users"]).await;
+    if !node_ok {
+        let detail = if !node_diag.is_empty() { node_diag } else { add_diag };
+        let detail = if detail.is_empty() { "(no output)".to_string() } else { detail };
+        return Err(if use_docker {
+            format!(
+                "RabbitMQ configuration failed: the node inside the 'rabbitmq' container is not reachable \
+                 (it may be stopped or still starting up).\n\nrabbitmqctl said: {}",
+                detail
+            )
+        } else {
+            format!(
+                "RabbitMQ configuration failed: rabbitmqctl could not connect to the RabbitMQ node. \
+                 The RabbitMQ Windows service is most likely stopped, or the Erlang cookie doesn't match \
+                 between the service (runs as SYSTEM) and your user account — so commands can't \
+                 authenticate to the node.{}\n\nrabbitmqctl said: {}",
+                cookie_note, detail
+            )
+        });
+    }
+
+    // Node is up, but 'puru' still can't authenticate with puru123.
+    Err(format!(
+        "RabbitMQ is running, but the 'puru' user could not be verified with the expected password. \
+         It may already exist with a different password; setup tried to reset it but authentication still failed. \
+         You can fix it manually with:  rabbitmqctl change_password puru puru123\n\n\
+         add_user said: {}\nauthenticate_user said: {}",
+        if add_diag.is_empty() { "(user created)".to_string() } else { add_diag },
+        if auth_diag.is_empty() { "(no output)".to_string() } else { auth_diag },
+    ))
+}
+
+/// Run a single `rabbitmqctl` verb against either the Docker container
+/// (`docker exec rabbitmq rabbitmqctl …`) or the host node (`<ctl_path> …`).
+/// Returns `(succeeded, diagnostic)`, where `diagnostic` is the trimmed stderr
+/// (falling back to stdout) — used to build precise, user-facing error messages.
+async fn rabbitmq_ctl(use_docker: bool, ctl_path: &str, verb: &[&str]) -> (bool, String) {
+    let output = if use_docker {
+        let mut args: Vec<&str> = vec!["exec", "rabbitmq", "rabbitmqctl"];
+        args.extend_from_slice(verb);
+        crate::process::silent_cmd("docker").args(&args).output().await
+    } else {
+        crate::process::silent_cmd(ctl_path).args(verb).output().await
+    };
+    match output {
+        Ok(o) => {
+            let mut diag = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if diag.is_empty() {
+                diag = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            }
+            (o.status.success(), diag)
+        }
+        Err(e) => (false, format!("could not run rabbitmqctl ({})", e)),
+    }
 }
 
 /// Enable RabbitMQ plugins inside the `rabbitmq` Docker container. Both are
@@ -2321,9 +2353,16 @@ pub async fn setup_generate_env_files() -> Result<(), String> {
     Ok(())
 }
 
-/// Native Step 4: Pull JARs + JRE from GCS
+/// Native Step 4: Pull JARs + JRE from GCS (GUI command — emits progress events).
 #[tauri::command]
-pub async fn setup_pull_jars() -> Result<(), String> {
+pub async fn setup_pull_jars(app: tauri::AppHandle) -> Result<(), String> {
+    setup_pull_jars_run(Some(app)).await
+}
+
+/// Core of the JAR-pull step, shared by the GUI command (which passes an
+/// `AppHandle` to emit `jar-update-progress`) and the daemon route (which passes
+/// `None`).
+pub async fn setup_pull_jars_run(app: Option<tauri::AppHandle>) -> Result<(), String> {
     let config = crate::config::load_config().map_err(|e| e.user_message())?;
 
     // Ensure directories exist
@@ -2386,9 +2425,50 @@ pub async fn setup_pull_jars() -> Result<(), String> {
     } else {
         tracing::info!("Setup (native): pulling {} new service(s): {:?}", to_pull.len(), to_pull);
 
-        let result = crate::releases::pull_all_with_jres(&to_pull)
+        use tauri::Emitter;
+        let app_p = app.clone();
+        let on = move |svc: &str, idx: u32, count: u32, d: u64, t: u64| {
+            let Some(app_p) = app_p.as_ref() else { return };
+            let pct = if t > 0 {
+                (d as f64 / t as f64) * 100.0
+            } else {
+                0.0
+            };
+            let _ = app_p.emit(
+                "jar-update-progress",
+                JarUpdateProgress {
+                    service: svc.to_string(),
+                    phase: "downloading".into(),
+                    message: format!("Downloading {} ({}/{})…", svc, idx, count),
+                    downloaded: d,
+                    total: t,
+                    percent: pct,
+                    index: idx,
+                    count,
+                },
+            );
+        };
+
+        let result = crate::releases::pull_all_with_jres_progress(&to_pull, on)
             .await
             .map_err(|e| e.user_message())?;
+
+        // Signal completion of the JAR download phase to the UI bar.
+        if let Some(app) = app.as_ref() {
+            let _ = app.emit(
+                "jar-update-progress",
+                JarUpdateProgress {
+                    service: String::new(),
+                    phase: "done".into(),
+                    message: format!("Downloaded {} service(s)", to_pull.len()),
+                    downloaded: 0,
+                    total: 0,
+                    percent: 100.0,
+                    index: to_pull.len() as u32,
+                    count: to_pull.len() as u32,
+                },
+            );
+        }
 
         let succeeded: Vec<&str> = result.results.iter()
             .filter(|r| r.success)
@@ -3253,12 +3333,81 @@ pub async fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-/// Update a native service (stop → pull new JAR → start)
+/// Progress event payload for JAR downloads/updates. Emitted as
+/// `jar-update-progress` so the UI can render a real progress bar with a
+/// phase label and byte counts. `percent` is a 0..100 overall estimate for the
+/// current service; when `total` is 0 during a download the UI should show an
+/// indeterminate bar.
+#[derive(Clone, Serialize)]
+pub struct JarUpdateProgress {
+    pub service: String,
+    pub phase: String, // "stopping" | "downloading" | "starting" | "done" | "error"
+    pub message: String,
+    pub downloaded: u64,
+    pub total: u64,
+    pub percent: f64,
+    pub index: u32, // 1-based position within a batch
+    pub count: u32, // batch size (1 for a single-service update)
+}
+
+/// Update a native service (stop → pull new JAR → start), emitting
+/// `jar-update-progress` events throughout so the UI shows a proper progress bar.
 #[tauri::command]
-pub async fn update_native_service(service_name: String) -> Result<JarPullResult, String> {
-    crate::services::update_native_service(&service_name)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn update_native_service(
+    app: tauri::AppHandle,
+    service_name: String,
+) -> Result<JarPullResult, String> {
+    use tauri::Emitter;
+
+    let emit = |phase: &str, message: String, downloaded: u64, total: u64, percent: f64| {
+        let _ = app.emit(
+            "jar-update-progress",
+            JarUpdateProgress {
+                service: service_name.clone(),
+                phase: phase.to_string(),
+                message,
+                downloaded,
+                total,
+                percent,
+                index: 1,
+                count: 1,
+            },
+        );
+    };
+
+    // Map backend phases → a smooth overall percentage. The download is the long
+    // part, so it owns most of the bar (8→90%).
+    let on = |phase: &str, d: u64, t: u64| match phase {
+        "stopping" => emit("stopping", "Stopping service…".into(), 0, 0, 5.0),
+        "downloading" => {
+            let pct = if t > 0 {
+                8.0 + (d as f64 / t as f64) * 82.0
+            } else {
+                0.0
+            };
+            emit("downloading", "Downloading update…".into(), d, t, pct);
+        }
+        "starting" => emit("starting", "Starting service…".into(), 0, 0, 94.0),
+        _ => {}
+    };
+
+    match crate::services::update_native_service_progress(&service_name, on).await {
+        Ok(r) => {
+            emit(
+                "done",
+                format!("Updated to build {} ({:.1} MB)", r.short_sha, r.size_mb),
+                0,
+                0,
+                100.0,
+            );
+            Ok(r)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            emit("error", msg.clone(), 0, 0, 100.0);
+            Err(msg)
+        }
+    }
 }
 
 /// Rollback a native service to its previous JAR (.bak)
@@ -3267,6 +3416,128 @@ pub async fn rollback_native_service(service_name: String) -> Result<serde_json:
     crate::services::rollback_native_service(&service_name)
         .await
         .map(|_| serde_json::json!({"ok": true}))
+        .map_err(|e| e.to_string())
+}
+
+// ── Split native update: identify → download (stage) → apply ─────────────────
+
+/// Step 1 (identify): check whether a newer build exists for a single service.
+#[tauri::command]
+pub async fn check_service_update(service_name: String) -> Result<JarUpdateCheck, String> {
+    let checks = crate::releases::check_jar_updates_available(&[service_name.clone()])
+        .await
+        .map_err(|e| e.to_string())?;
+    checks
+        .into_iter()
+        .find(|c| c.service == service_name)
+        .ok_or_else(|| format!("Could not check for updates for '{}'.", service_name))
+}
+
+/// Whether a downloaded-but-not-yet-applied update is staged for a service.
+#[tauri::command]
+pub async fn get_staged_update(service_name: String) -> Result<Option<StagedUpdate>, String> {
+    Ok(crate::releases::staged_update_info(&service_name))
+}
+
+/// Step 2 (download): stage the latest JAR next to the live one WITHOUT touching
+/// the running service. Emits `jar-update-progress` (phase `downloading` →
+/// `staged`).
+#[tauri::command]
+pub async fn download_service_update(
+    app: tauri::AppHandle,
+    service_name: String,
+) -> Result<StagedUpdate, String> {
+    use tauri::Emitter;
+
+    let emit = |phase: &str, message: String, downloaded: u64, total: u64, percent: f64| {
+        let _ = app.emit(
+            "jar-update-progress",
+            JarUpdateProgress {
+                service: service_name.clone(),
+                phase: phase.to_string(),
+                message,
+                downloaded,
+                total,
+                percent,
+                index: 1,
+                count: 1,
+            },
+        );
+    };
+
+    let on = |d: u64, t: u64| {
+        let pct = if t > 0 { (d as f64 / t as f64) * 100.0 } else { 0.0 };
+        emit("downloading", "Downloading update…".into(), d, t, pct);
+    };
+
+    match crate::releases::stage_jar_progress(&service_name, on).await {
+        Ok(s) => {
+            emit(
+                "staged",
+                format!("Downloaded build {} ({:.1} MB) — ready to apply", s.short_sha, s.size_mb),
+                0,
+                0,
+                100.0,
+            );
+            Ok(s)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            emit("error", msg.clone(), 0, 0, 100.0);
+            Err(msg)
+        }
+    }
+}
+
+/// Step 3 (apply): stop → swap the staged JAR in → restart. Emits
+/// `jar-update-progress` (phase `stopping` → `starting` → `done`).
+#[tauri::command]
+pub async fn apply_service_update(
+    app: tauri::AppHandle,
+    service_name: String,
+) -> Result<JarPullResult, String> {
+    use tauri::Emitter;
+
+    let emit = |phase: &str, message: String, percent: f64| {
+        let _ = app.emit(
+            "jar-update-progress",
+            JarUpdateProgress {
+                service: service_name.clone(),
+                phase: phase.to_string(),
+                message,
+                downloaded: 0,
+                total: 0,
+                percent,
+                index: 1,
+                count: 1,
+            },
+        );
+    };
+
+    let on = |phase: &str, _d: u64, _t: u64| match phase {
+        "stopping" => emit("stopping", "Stopping service…".into(), 25.0),
+        "starting" => emit("starting", "Starting service…".into(), 80.0),
+        _ => {}
+    };
+
+    match crate::services::apply_native_update_progress(&service_name, on).await {
+        Ok(r) => {
+            emit("done", format!("Applied build {}", r.short_sha), 100.0);
+            Ok(r)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            emit("error", msg.clone(), 100.0);
+            Err(msg)
+        }
+    }
+}
+
+/// Discard a staged (downloaded, not-applied) update.
+#[tauri::command]
+pub async fn discard_service_update(service_name: String) -> Result<(), String> {
+    crate::releases::discard_staged_jar(&service_name)
+        .await
         .map_err(|e| e.to_string())
 }
 

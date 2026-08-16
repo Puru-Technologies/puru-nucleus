@@ -16,13 +16,29 @@ import { open } from '@tauri-apps/plugin-dialog';
   ],
   template: `
     <div class="settings-page p-4">
-      <h1>Settings</h1>
+      <div class="settings-header">
+        <h1>Settings</h1>
+        <div class="settings-header-actions">
+          @if (editing) {
+            <span class="edit-hint"><span class="material-icons">lock_open</span> Editing</span>
+            <button class="btn btn-primary" (click)="saveEdits()">
+              <span class="material-icons">save</span> Save
+            </button>
+            <button class="btn btn-stroked" (click)="cancelEdit()">Cancel</button>
+          } @else if (config && !productionMode) {
+            <button class="btn btn-stroked" (click)="startEdit()">
+              <span class="material-icons">edit</span> Edit
+            </button>
+          }
+        </div>
+      </div>
 
       @if (loading) {
         <div class="loading-container">
           <span class="spinner spinner-lg"></span>
         </div>
       } @else if (config) {
+        <fieldset class="settings-fieldset" [class.view-mode]="!editing" [disabled]="!editing">
         <div class="settings-grid">
           <!-- General Settings -->
           <div class="card card-pad settings-card">
@@ -607,17 +623,7 @@ import { open } from '@tauri-apps/plugin-dialog';
             </div>
           </div>
         </div>
-
-        <div class="actions">
-          <button class="btn btn-primary" (click)="saveConfig()">
-            <span class="material-icons">save</span>
-            Save Changes
-          </button>
-          <button class="btn btn-stroked" (click)="loadConfig()">
-            <span class="material-icons">refresh</span>
-            Reset
-          </button>
-        </div>
+        </fieldset>
 
         <!-- Danger Zone -->
         <div class="card card-pad settings-card danger-zone-card">
@@ -658,6 +664,38 @@ import { open } from '@tauri-apps/plugin-dialog';
       max-width: 1200px;
       margin: 0 auto;
     }
+
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 1.5rem;
+    }
+    .settings-header h1 { margin: 0; }
+    .settings-header-actions { display: inline-flex; align-items: center; gap: 8px; }
+    .edit-hint {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.8rem; font-weight: 600; color: var(--brand-blue, #009efb);
+    }
+    .edit-hint .material-icons { font-size: 16px; }
+
+    /* Read-only "view" mode: render fields as plain values, not editable inputs. */
+    .settings-fieldset { border: 0; margin: 0; padding: 0; min-inline-size: auto; }
+    .view-mode .input:disabled,
+    .view-mode input:disabled,
+    .view-mode select:disabled,
+    .view-mode textarea:disabled {
+      border-color: transparent !important;
+      background: transparent !important;
+      color: var(--text-primary, #1f2733) !important;
+      -webkit-text-fill-color: var(--text-primary, #1f2733);
+      opacity: 1 !important;
+      box-shadow: none !important;
+      padding-left: 0 !important;
+      cursor: default;
+    }
+    .view-mode input[type="checkbox"]:disabled { opacity: 0.9; cursor: default; }
 
     h1 {
       margin-bottom: 1.5rem;
@@ -1281,6 +1319,10 @@ export class SettingsComponent implements OnInit {
 
   config: NucleusConfig | null = null;
   loading = true;
+  /** Settings are read-only until the user clicks Edit. */
+  editing = false;
+  /** In production the Edit button is hidden entirely (view-only). */
+  productionMode = false;
   syncing = false;
   daemonRunning = false;
   credsExists = false;
@@ -1374,6 +1416,7 @@ export class SettingsComponent implements OnInit {
     this.loading = true;
     try {
       this.config = await this.tauri.invoke<NucleusConfig>('get_config');
+      this.productionMode = !!this.config.production_mode;
       // Populate daemon config fields from loaded config
       if (this.config.daemon) {
         this.daemonPort = this.config.daemon.port;
@@ -1387,6 +1430,19 @@ export class SettingsComponent implements OnInit {
     } finally {
       this.loading = false;
     }
+  }
+
+  // ── View / Edit mode ───────────────────────────────────────────────────────
+  startEdit(): void { this.editing = true; }
+
+  async saveEdits(): Promise<void> {
+    await this.saveConfig();
+    this.editing = false;
+  }
+
+  async cancelEdit(): Promise<void> {
+    this.editing = false;
+    await this.loadConfig(); // discard unsaved changes
   }
 
   async saveConfig(): Promise<void> {

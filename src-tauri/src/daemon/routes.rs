@@ -633,7 +633,7 @@ pub async fn setup_generate_env_files() -> Result<Json<serde_json::Value>, (Stat
     ok_json(crate::commands::setup_generate_env_files().await)
 }
 pub async fn setup_pull_jars() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    ok_json(crate::commands::setup_pull_jars().await)
+    ok_json(crate::commands::setup_pull_jars_run(None).await)
 }
 pub async fn setup_start_native_services() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     to_value_json(crate::commands::sync_native_services(None).await)
