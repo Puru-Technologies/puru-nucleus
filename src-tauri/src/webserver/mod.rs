@@ -83,6 +83,17 @@ pub fn conf_dir(config: &NucleusConfig) -> PathBuf {
     nginx_dir(config).join("conf")
 }
 
+/// Path to nginx's error log (under the managed install's relative `logs/`),
+/// if it exists. Used to surface the File Server (:81) diagnostics.
+pub fn error_log_path(config: &NucleusConfig) -> Option<PathBuf> {
+    let p = nginx_dir(config).join("logs").join("error.log");
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
+}
+
 fn config_path(config: &NucleusConfig) -> PathBuf {
     // Live alongside the install so nginx's relative prefix (logs/, temp/) resolves.
     conf_dir(config).join("puru.conf")
@@ -144,7 +155,10 @@ pub fn generate_config(config: &NucleusConfig) -> String {
 
         location / {{
             root  "{data}";
-            autoindex off;
+            # Browse the data tree (documents, uploads, PACS, …). Without this a
+            # request for a directory — including the bare root — 403s with
+            # "directory index is forbidden".
+            autoindex on;
             add_header Access-Control-Allow-Origin *;
         }}
     }}

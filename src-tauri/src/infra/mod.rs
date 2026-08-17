@@ -11,6 +11,7 @@ use crate::services::{ServiceInfo, ServiceStatus};
 
 const RMQ_AMQP: u16 = 5672;
 const RMQ_MGMT: u16 = 15672;
+const FILE_SERVER_PORT: u16 = 81;
 
 /// TCP-reachable on localhost within a short timeout.
 fn port_open(port: u16) -> bool {
@@ -70,9 +71,56 @@ async fn rmq_api_get(path: &str) -> Option<serde_json::Value> {
     resp.json::<serde_json::Value>().await.ok()
 }
 
-/// Build the two infra rows (Database, Message Broker) for the Services list.
+/// Build the infra rows (Database, Message Broker, and the File Server when a
+/// data tree is being served) for the Services list.
 pub async fn infra_rows(config: &NucleusConfig) -> Vec<ServiceInfo> {
-    vec![mysql_row(config), rabbitmq_row().await]
+    let mut rows = vec![mysql_row(config), rabbitmq_row().await];
+    if let Some(fs) = file_server_row(config) {
+        rows.push(fs);
+    }
+    rows
+}
+
+/// The static File Server (nginx serving the `puru_data` tree on :81). It shares
+/// the managed nginx process with the web app, so its status is simply "is :81
+/// answering", and control routes to the web server. Shown when a data path is
+/// configured or the port is already up.
+fn file_server_row(config: &NucleusConfig) -> Option<ServiceInfo> {
+    let configured = config
+        .puru_data_path
+        .as_deref()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false);
+    let up = port_open(FILE_SERVER_PORT);
+    if !configured && !up {
+        return None;
+    }
+    let (status, detail) = if up {
+        (
+            ServiceStatus::Running,
+            Some("Serving the data tree on port 81 (via the managed web server).".to_string()),
+        )
+    } else {
+        (
+            ServiceStatus::Stopped,
+            Some(
+                "Not answering on port 81 — start the web server (it shares the same nginx as the web app)."
+                    .to_string(),
+            ),
+        )
+    };
+    Some(ServiceInfo {
+        name: "File Server".into(),
+        container_name: String::new(),
+        image: String::new(),
+        status,
+        health: None,
+        ports: vec![FILE_SERVER_PORT.to_string()],
+        uptime: None,
+        health_response_ms: None,
+        detail,
+        infra: true,
+    })
 }
 
 /// RabbitMQ row via the Management API (real health + user presence). Falls back
@@ -337,6 +385,26 @@ fn infra_service_name(display: &str) -> Option<String> {
 /// Managing a Windows service needs admin, so this runs `sc` elevated (one UAC
 /// prompt). Returns a short status message.
 pub async fn control(display: &str, action: &str) -> Result<String, String> {
+    // The File Server is the managed nginx serving :81 — not a Windows service.
+    // Route its control to the web server (this also affects the web app on :80,
+    // since they are one nginx process).
+    if display == "File Server" {
+        let config = crate::config::load_config().map_err(|e| e.to_string())?;
+        match action {
+            "start" => crate::webserver::start(&config).await.map_err(|e| e.to_string())?,
+            "stop" => crate::webserver::stop(&config).await.map_err(|e| e.to_string())?,
+            "restart" => {
+                let _ = crate::webserver::stop(&config).await;
+                crate::webserver::start(&config).await.map_err(|e| e.to_string())?;
+            }
+            other => return Err(format!("Unknown action '{}'.", other)),
+        }
+        return Ok(format!(
+            "Web server {} requested (File Server on port 81).",
+            action
+        ));
+    }
+
     let svc = infra_service_name(display)
         .ok_or_else(|| format!("{} is not installed (no Windows service found).", display))?;
 
@@ -378,6 +446,11 @@ pub fn read_log(display: &str, lines: usize) -> Result<String, String> {
             .ok_or_else(|| "No message broker log found (checked service + user profiles).".to_string())?,
         "Database" => mysql_error_log()
             .ok_or_else(|| "Database error log location could not be determined.".to_string())?,
+        "File Server" => {
+            let config = crate::config::load_config().map_err(|e| e.to_string())?;
+            crate::webserver::error_log_path(&config)
+                .ok_or_else(|| "No web server (nginx) log found yet.".to_string())?
+        }
         _ => return Err(format!("Unknown infra component '{}'.", display)),
     };
     let bytes = std::fs::read(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;
