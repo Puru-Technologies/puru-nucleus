@@ -206,12 +206,12 @@ pub fn config_dir() -> PathBuf {
 
     #[cfg(target_os = "linux")]
     {
-        PathBuf::from("/etc/puru-nucleus")
+        PathBuf::from("/etc/puru-dc")
     }
 
     #[cfg(target_os = "macos")]
     {
-        PathBuf::from("/usr/local/etc/puru-nucleus")
+        PathBuf::from("/usr/local/etc/puru-dc")
     }
 }
 

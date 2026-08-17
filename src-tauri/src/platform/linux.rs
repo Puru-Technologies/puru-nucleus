@@ -2,13 +2,13 @@
 
 use super::{ServiceResult, ServiceStatus, get_exe_path};
 
-const SERVICE_NAME: &str = "puru-nucleus";
-const UNIT_PATH: &str = "/etc/systemd/system/puru-nucleus.service";
+const SERVICE_NAME: &str = "puru-dc";
+const UNIT_PATH: &str = "/etc/systemd/system/puru-dc.service";
 
 fn unit_file_content(exe_path: &str) -> String {
     format!(
         r#"[Unit]
-Description=Puru Nucleus - Hospital Deployment Manager
+Description=Puru DC - Hospital Deployment Manager
 After=network.target docker.service
 Requires=docker.service
 
@@ -18,7 +18,7 @@ ExecStart={exe_path} daemon
 Restart=on-failure
 RestartSec=10
 Environment=RUST_LOG=puru_nucleus=info
-WorkingDirectory=/etc/puru-nucleus
+WorkingDirectory=/etc/puru-dc
 
 [Install]
 WantedBy=multi-user.target

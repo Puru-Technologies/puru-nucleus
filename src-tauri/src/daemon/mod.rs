@@ -16,7 +16,7 @@ use tower_http::cors::CorsLayer;
 
 use scheduler::AppState;
 
-/// Run puru-nucleus in daemon mode (headless REST API server).
+/// Run puru-dc in daemon mode (headless REST API server).
 pub async fn run_daemon() {
     // 1. Load config
     let config = crate::config::load_config().unwrap_or_default();

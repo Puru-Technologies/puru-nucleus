@@ -739,7 +739,7 @@ export class LogsComponent implements OnInit, OnDestroy {
 
   private groupSources(sources: LogSource[]): SourceGroup[] {
     const labels: Record<string, string> = {
-      nucleus: 'Nucleus',
+      nucleus: 'Puru DC',
       system: 'System',
       docker: 'Docker Compose',
       container: 'Containers'

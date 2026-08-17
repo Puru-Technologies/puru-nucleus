@@ -1,4 +1,4 @@
-//! Custom error types for puru-nucleus
+//! Custom error types for puru-dc
 
 use thiserror::Error;
 

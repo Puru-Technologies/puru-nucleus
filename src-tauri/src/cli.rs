@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand, Args};
 #[command(
     name = "puru",
     version,
-    about = "Puru Nucleus — Hospital Deployment Control Center",
+    about = "Puru DC — Hospital Deployment Control Center",
     long_about = "Control center for managing Puru hospital Docker deployments.\n\
                   Run without arguments to launch the GUI, or use subcommands for CLI mode."
 )]
@@ -92,7 +92,7 @@ pub enum Commands {
     /// Show version
     Version,
 
-    /// Manage the puru-nucleus system service (install/uninstall/start/stop/status)
+    /// Manage the puru-dc system service (install/uninstall/start/stop/status)
     Service(ServiceArgs),
 
     /// Read host log files (not Docker container logs)
@@ -199,16 +199,16 @@ pub struct ServiceArgs {
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
-    /// Install puru-nucleus as a system service
+    /// Install puru-dc as a system service
     Install,
 
-    /// Uninstall the puru-nucleus system service
+    /// Uninstall the puru-dc system service
     Uninstall,
 
-    /// Start the puru-nucleus system service
+    /// Start the puru-dc system service
     Start,
 
-    /// Stop the puru-nucleus system service
+    /// Stop the puru-dc system service
     Stop,
 
     /// Show system service status

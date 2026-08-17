@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Puru Nucleus — Field Engineer Guide</title>
+<title>Puru DC — Field Engineer Guide</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <style>
@@ -343,7 +343,7 @@ td .platform-badge.windows{background:rgba(96,165,250,.08);color:#60a5fa;border:
     <div class="logo-mark">PN</div>
     <div class="logo-text">
       <h1>Field Engineer Guide</h1>
-      <span>Puru Nucleus</span>
+      <span>Puru DC</span>
     </div>
   </div>
   <div class="header-actions">
@@ -493,7 +493,7 @@ td .platform-badge.windows{background:rgba(96,165,250,.08);color:#60a5fa;border:
       </li>
       <li class="checklist-item" data-key="new-pre-4" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Pack your gear: laptop with puru-nucleus installer, USB drive with offline installer (backup), hospital's network details (IP range, gateway)</span>
+        <span class="check-text">Pack your gear: laptop with puru-dc installer, USB drive with offline installer (backup), hospital's network details (IP range, gateway)</span>
       </li>
     </ul>
 
@@ -620,39 +620,39 @@ ipconfig getifaddr en0</pre><button class="copy-btn" onclick="copyCode(this)">&#
   </div></div>
 </div>
 
-<!-- Step 2: Install puru-nucleus -->
+<!-- Step 2: Install puru-dc -->
 <div class="step-card" id="new-s2" data-group="new">
   <div class="step-header">
     <div class="step-badge cyan"><span>2</span></div>
     <div class="step-info">
-      <h3>Install puru-nucleus <span class="step-time">~5 min</span></h3>
+      <h3>Install puru-dc <span class="step-time">~5 min</span></h3>
       <p>Copy the binary and verify it runs</p>
     </div>
 
   </div>
   <div class="step-body"><div class="step-body-inner">
-    <p class="step-description">Transfer the puru-nucleus binary to the hospital server. Use USB if internet is unreliable. The install location differs by platform.</p>
+    <p class="step-description">Transfer the puru-dc binary to the hospital server. Use USB if internet is unreliable. The install location differs by platform.</p>
 
     <ul class="checklist" data-group="new">
       <li class="checklist-item" data-key="new-s2-1" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Copy puru-nucleus binary to the server (via USB or download)</span>
+        <span class="check-text">Copy puru-dc binary to the server (via USB or download)</span>
       </li>
     </ul>
 
     <div class="subsection">
       <h4><span class="sub-dot" style="background:var(--amber-bright)"></span> Linux</h4>
-      <div class="code-block"><pre>sudo cp puru-nucleus /usr/local/bin/puru-nucleus
-sudo chmod +x /usr/local/bin/puru-nucleus</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+      <div class="code-block"><pre>sudo cp puru-dc /usr/local/bin/puru-dc
+sudo chmod +x /usr/local/bin/puru-dc</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
     </div>
     <div class="subsection">
       <h4><span class="sub-dot" style="background:#60a5fa"></span> Windows</h4>
-      <div class="code-block"><pre>copy puru-nucleus.exe C:\PuruNucleus\puru-nucleus.exe</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+      <div class="code-block"><pre>copy puru-dc.exe C:\PuruNucleus\puru-dc.exe</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
     </div>
     <div class="subsection">
       <h4><span class="sub-dot" style="background:var(--text-secondary)"></span> macOS</h4>
-      <div class="code-block"><pre>sudo cp puru-nucleus /usr/local/bin/puru-nucleus
-sudo chmod +x /usr/local/bin/puru-nucleus</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+      <div class="code-block"><pre>sudo cp puru-dc /usr/local/bin/puru-dc
+sudo chmod +x /usr/local/bin/puru-dc</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
     </div>
 
     <ul class="checklist" data-group="new">
@@ -661,7 +661,7 @@ sudo chmod +x /usr/local/bin/puru-nucleus</pre><button class="copy-btn" onclick=
         <span class="check-text">Verify the installation</span>
       </li>
     </ul>
-    <div class="code-block"><pre>puru-nucleus --version</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+    <div class="code-block"><pre>puru-dc --version</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
   </div></div>
 </div>
 
@@ -676,16 +676,16 @@ sudo chmod +x /usr/local/bin/puru-nucleus</pre><button class="copy-btn" onclick=
 
   </div>
   <div class="step-body"><div class="step-body-inner">
-    <p class="step-description">This step connects the hospital to the Puru cloud. The credentials file and hospital email are required. puru-nucleus will query the cloud to retrieve the hospital code, name, and license.</p>
+    <p class="step-description">This step connects the hospital to the Puru cloud. The credentials file and hospital email are required. puru-dc will query the cloud to retrieve the hospital code, name, and license.</p>
 
     <ul class="checklist" data-group="new">
       <li class="checklist-item" data-key="new-s3-1" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Open puru-nucleus GUI in browser at <code>http://localhost:9090</code></span>
+        <span class="check-text">Open puru-dc GUI in browser at <code>http://localhost:9090</code></span>
       </li>
     </ul>
     <div class="code-block"><pre># Or use CLI mode:
-puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
 
     <ul class="checklist" data-group="new">
       <li class="checklist-item" data-key="new-s3-2" onclick="toggleCheck(this)">
@@ -704,7 +704,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
 
     <div class="callout info">
       <span class="callout-icon">&#8505;</span>
-      <span>On success, puru-nucleus saves configuration and license files to the local config directory.</span>
+      <span>On success, puru-dc saves configuration and license files to the local config directory.</span>
     </div>
 
     <div class="callout tip">
@@ -715,7 +715,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
     <div class="mockup">
       <div class="mockup-bar">
         <div class="dots"><span></span><span></span><span></span></div>
-        <span class="bar-title">puru-nucleus &mdash; Activation</span>
+        <span class="bar-title">puru-dc &mdash; Activation</span>
       </div>
       <div class="mockup-body col" style="align-items:center;padding:28px 16px">
         <div class="m-activation">
@@ -833,7 +833,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
       </li>
       <li class="checklist-item" data-key="new-s5-9" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>9. Install Daemon Service</strong> &mdash; registers puru-nucleus as a system service (systemd / launchd / Windows Service)</span>
+        <span class="check-text"><strong>9. Install Daemon Service</strong> &mdash; registers puru-dc as a system service (systemd / launchd / Windows Service)</span>
       </li>
     </ul>
 
@@ -845,7 +845,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
     <div class="mockup">
       <div class="mockup-bar">
         <div class="dots"><span></span><span></span><span></span></div>
-        <span class="bar-title">puru-nucleus &mdash; Setup Wizard</span>
+        <span class="bar-title">puru-dc &mdash; Setup Wizard</span>
       </div>
       <div class="mockup-body col">
         <div class="m-setup-steps">
@@ -922,7 +922,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
       </li>
       <li class="checklist-item" data-key="new-s6-3" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Check puru-nucleus dashboard at <code>http://localhost:9090</code> &mdash; all services should show green</span>
+        <span class="check-text">Check puru-dc dashboard at <code>http://localhost:9090</code> &mdash; all services should show green</span>
       </li>
       <li class="checklist-item" data-key="new-s6-4" onclick="toggleCheck(this)">
         <div class="check-box"></div>
@@ -938,7 +938,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
     <div class="mockup">
       <div class="mockup-bar">
         <div class="dots"><span></span><span></span><span></span></div>
-        <span class="bar-title">puru-nucleus &mdash; Dashboard (localhost:9090)</span>
+        <span class="bar-title">puru-dc &mdash; Dashboard (localhost:9090)</span>
       </div>
       <div class="mockup-body col" style="padding:12px">
         <table class="m-table">
@@ -981,7 +981,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
     <ul class="checklist" data-group="new">
       <li class="checklist-item" data-key="new-s7-1" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Show hospital IT staff the puru-nucleus dashboard at <code>http://localhost:9090</code></span>
+        <span class="check-text">Show hospital IT staff the puru-dc dashboard at <code>http://localhost:9090</code></span>
       </li>
       <li class="checklist-item" data-key="new-s7-2" onclick="toggleCheck(this)">
         <div class="check-box"></div>
@@ -1019,7 +1019,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
 <div id="existing-setup" class="section-hero">
   <div class="section-tag amber">Section 2</div>
   <h2><em class="amber">Existing Hospital</em> Maintenance</h2>
-  <p>Troubleshooting, maintenance visits, and adopting pre-existing installations into the puru-nucleus management framework.</p>
+  <p>Troubleshooting, maintenance visits, and adopting pre-existing installations into the puru-dc management framework.</p>
   <div class="total-time">&#9201; Variable &mdash; depends on issue complexity</div>
 </div>
 
@@ -1051,7 +1051,7 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
       </li>
       <li class="checklist-item" data-key="ex-pre-4" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Bring: laptop, USB with latest puru-nucleus binary, latest Docker image tarballs (if updating offline)</span>
+        <span class="check-text">Bring: laptop, USB with latest puru-dc binary, latest Docker image tarballs (if updating offline)</span>
       </li>
     </ul>
   </div></div>
@@ -1077,11 +1077,11 @@ puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112
       </li>
       <li class="checklist-item" data-key="ex-s1-2" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Check puru-nucleus daemon status</span>
+        <span class="check-text">Check puru-dc daemon status</span>
       </li>
     </ul>
     <div class="code-block"><pre># Linux
-systemctl status puru-nucleus
+systemctl status puru-dc
 
 # Windows — check Services panel or:
 sc query PuruNucleus</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
@@ -1116,7 +1116,7 @@ sc query PuruNucleus</pre><button class="copy-btn" onclick="copyCode(this)">&#91
         <span class="check-text">Check recent nucleus logs</span>
       </li>
     </ul>
-    <div class="code-block"><pre>journalctl -u puru-nucleus --since "1 hour ago" --no-pager | tail -50</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+    <div class="code-block"><pre>journalctl -u puru-dc --since "1 hour ago" --no-pager | tail -50</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
   </div></div>
 </div>
 
@@ -1173,15 +1173,15 @@ docker compose -f &lt;compose-path&gt; restart &lt;service-name&gt;</pre><button
         </li>
       </ul>
       <div class="code-block"><pre># Check credentials file exists at the configured path
-ls -la /etc/puru-nucleus/gcs-credentials.json</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+ls -la /etc/puru-dc/gcs-credentials.json</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
       <ul class="checklist" data-group="existing">
         <li class="checklist-item" data-key="ex-s2-off-3" onclick="toggleCheck(this)">
           <div class="check-box"></div>
           <span class="check-text">Check and restart daemon</span>
         </li>
       </ul>
-      <div class="code-block"><pre>systemctl is-active puru-nucleus
-systemctl restart puru-nucleus</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+      <div class="code-block"><pre>systemctl is-active puru-dc
+systemctl restart puru-dc</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
     </div>
 
     <!-- Sub: Backup Failures -->
@@ -1193,7 +1193,7 @@ systemctl restart puru-nucleus</pre><button class="copy-btn" onclick="copyCode(t
           <span class="check-text">Check backup-specific logs</span>
         </li>
       </ul>
-      <div class="code-block"><pre>journalctl -u puru-nucleus --grep "backup" --since "24 hours ago"</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+      <div class="code-block"><pre>journalctl -u puru-dc --grep "backup" --since "24 hours ago"</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
       <ul class="checklist" data-group="existing">
         <li class="checklist-item" data-key="ex-s2-bk-2" onclick="toggleCheck(this)">
           <div class="check-box"></div>
@@ -1246,8 +1246,8 @@ docker compose -f &lt;compose-path&gt; up -d</pre><button class="copy-btn" oncli
           <span class="check-text">Receive the new credentials file and replace the existing one on-site</span>
         </li>
       </ul>
-      <div class="code-block"><pre>sudo cp &lt;new-credentials-file&gt; /etc/puru-nucleus/gcs-credentials.json
-sudo systemctl restart puru-nucleus</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+      <div class="code-block"><pre>sudo cp &lt;new-credentials-file&gt; /etc/puru-dc/gcs-credentials.json
+sudo systemctl restart puru-dc</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
     </div>
 
   </div></div>
@@ -1264,19 +1264,19 @@ sudo systemctl restart puru-nucleus</pre><button class="copy-btn" onclick="copyC
 
   </div>
   <div class="step-body"><div class="step-body-inner">
-    <p class="step-description">If the hospital already has running Puru containers but no puru-nucleus daemon, you can adopt the existing setup instead of reinstalling from scratch. The wizard detects existing containers and extracts their configuration.</p>
+    <p class="step-description">If the hospital already has running Puru containers but no puru-dc daemon, you can adopt the existing setup instead of reinstalling from scratch. The wizard detects existing containers and extracts their configuration.</p>
 
     <ul class="checklist" data-group="existing">
       <li class="checklist-item" data-key="ex-s3-1" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Install puru-nucleus binary (same as New Setup &rarr; Step 2)</span>
+        <span class="check-text">Install puru-dc binary (same as New Setup &rarr; Step 2)</span>
       </li>
       <li class="checklist-item" data-key="ex-s3-2" onclick="toggleCheck(this)">
         <div class="check-box"></div>
         <span class="check-text">Run the setup wizard</span>
       </li>
     </ul>
-    <div class="code-block"><pre>puru-nucleus setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
+    <div class="code-block"><pre>puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
 
     <ul class="checklist" data-group="existing">
       <li class="checklist-item" data-key="ex-s3-3" onclick="toggleCheck(this)">
@@ -1377,9 +1377,9 @@ sudo systemctl restart puru-nucleus</pre><button class="copy-btn" onclick="copyC
     <table>
       <thead><tr><th>Path</th><th>Content</th><th>Platform</th></tr></thead>
       <tbody>
-        <tr><td><code>/etc/puru-nucleus/nucleus.toml</code></td><td>Main configuration</td><td><span class="platform-badge linux">Linux</span></td></tr>
-        <tr><td><code>/etc/puru-nucleus/gcs-credentials.json</code></td><td>Cloud service account key</td><td><span class="platform-badge linux">Linux</span></td></tr>
-        <tr><td><code>/etc/puru-nucleus/license.toml</code></td><td>License &amp; features</td><td><span class="platform-badge linux">Linux</span></td></tr>
+        <tr><td><code>/etc/puru-dc/nucleus.toml</code></td><td>Main configuration</td><td><span class="platform-badge linux">Linux</span></td></tr>
+        <tr><td><code>/etc/puru-dc/gcs-credentials.json</code></td><td>Cloud service account key</td><td><span class="platform-badge linux">Linux</span></td></tr>
+        <tr><td><code>/etc/puru-dc/license.toml</code></td><td>License &amp; features</td><td><span class="platform-badge linux">Linux</span></td></tr>
         <tr><td><code>(configured path)/docker-compose.yml</code></td><td>Docker Compose config</td><td><span class="platform-badge linux">Linux</span></td></tr>
         <tr><td><code>C:\PuruNucleus\nucleus.toml</code></td><td>Main configuration</td><td><span class="platform-badge windows">Windows</span></td></tr>
         <tr><td><code>C:\PuruNucleus\gcs-credentials.json</code></td><td>Cloud service account key</td><td><span class="platform-badge windows">Windows</span></td></tr>
@@ -1411,15 +1411,15 @@ sudo systemctl restart puru-nucleus</pre><button class="copy-btn" onclick="copyC
     </div>
     <div class="qc-card">
       <div class="qc-label">Check nucleus daemon</div>
-      <div class="qc-cmd" onclick="copyQuick(this)"><span>systemctl status puru-nucleus</span><span class="qc-copy">copy</span></div>
+      <div class="qc-cmd" onclick="copyQuick(this)"><span>systemctl status puru-dc</span><span class="qc-copy">copy</span></div>
     </div>
     <div class="qc-card">
       <div class="qc-label">Restart nucleus daemon</div>
-      <div class="qc-cmd" onclick="copyQuick(this)"><span>sudo systemctl restart puru-nucleus</span><span class="qc-copy">copy</span></div>
+      <div class="qc-cmd" onclick="copyQuick(this)"><span>sudo systemctl restart puru-dc</span><span class="qc-copy">copy</span></div>
     </div>
     <div class="qc-card">
       <div class="qc-label">View nucleus logs</div>
-      <div class="qc-cmd" onclick="copyQuick(this)"><span>journalctl -u puru-nucleus -f --no-pager</span><span class="qc-copy">copy</span></div>
+      <div class="qc-cmd" onclick="copyQuick(this)"><span>journalctl -u puru-dc -f --no-pager</span><span class="qc-copy">copy</span></div>
     </div>
     <div class="qc-card">
       <div class="qc-label">Check disk space</div>

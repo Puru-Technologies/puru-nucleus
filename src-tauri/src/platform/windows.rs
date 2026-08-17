@@ -8,8 +8,8 @@
 
 use super::{ServiceResult, ServiceStatus, get_exe_path};
 
-const TASK_NAME: &str = "PuruNucleus";
-const DISPLAY_NAME: &str = "Puru Nucleus";
+const TASK_NAME: &str = "PuruDC";
+const DISPLAY_NAME: &str = "Puru DC";
 
 /// XML-escape a string for embedding in the task definition.
 fn xml_escape(s: &str) -> String {
@@ -19,7 +19,7 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Register puru-nucleus as a scheduled task that runs the daemon "always":
+/// Register puru-dc as a scheduled task that runs the daemon "always":
 /// at every boot (no login required), as LocalSystem with highest privileges,
 /// auto-restarting on failure, with NO execution time limit (a plain
 /// `schtasks /SC ONSTART` task inherits the default 72h limit and would be killed)
@@ -32,7 +32,7 @@ pub async fn install() -> Result<ServiceResult, String> {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Puru Nucleus background daemon (heartbeat, commands, backups).</Description>
+    <Description>Puru DC background daemon (heartbeat, commands, backups).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger><Enabled>true</Enabled></BootTrigger>
@@ -75,7 +75,7 @@ pub async fn install() -> Result<ServiceResult, String> {
         exe = xml_escape(&exe_path),
     );
 
-    let xml_path = std::env::temp_dir().join("puru-nucleus-daemon.xml");
+    let xml_path = std::env::temp_dir().join("puru-dc-daemon.xml");
     // `schtasks /Create /XML` requires the file to be UTF-16LE (with BOM);
     // a UTF-8 file fails with "unable to switch the encoding". Encode explicitly.
     let mut utf16: Vec<u8> = vec![0xFF, 0xFE]; // UTF-16LE BOM
@@ -167,7 +167,7 @@ pub async fn start() -> Result<ServiceResult, String> {
 }
 
 /// Stop the daemon by ending its scheduled task and killing only the daemon
-/// process. The GUI and the daemon share the same `puru-nucleus.exe` image, so we
+/// process. The GUI and the daemon share the same `puru-dc.exe` image, so we
 /// must NEVER kill by image name / window — we target the process whose command
 /// line contains the `daemon` argument. (The previous `WINDOWTITLE eq *` filter
 /// matched the windowed GUI and missed the headless daemon — exactly backwards.)
@@ -178,13 +178,13 @@ pub async fn stop() -> Result<ServiceResult, String> {
         .output()
         .await;
 
-    // Kill any puru-nucleus *daemon* process specifically, matched by command
+    // Kill any puru-dc *daemon* process specifically, matched by command
     // line — the GUI's command line does not contain "daemon", so it is safe.
     let _ = crate::process::silent_cmd("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'puru-nucleus.exe' -and $_.CommandLine -like '*daemon*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'puru-dc.exe' -and $_.CommandLine -like '*daemon*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
         ])
         .output()
         .await;
@@ -220,13 +220,13 @@ pub async fn status() -> Result<ServiceStatus, String> {
     }
 
     // Check if the DAEMON process is actually running. The daemon and the GUI
-    // share the puru-nucleus.exe image, so match by command line ("daemon") — a
+    // share the puru-dc.exe image, so match by command line ("daemon") — a
     // plain image-name check would count a running GUI as the daemon.
     let ps_output = crate::process::silent_cmd("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'puru-nucleus.exe' -and $_.CommandLine -like '*daemon*' } | Select-Object -First 1 -ExpandProperty ProcessId",
+            "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'puru-dc.exe' -and $_.CommandLine -like '*daemon*' } | Select-Object -First 1 -ExpandProperty ProcessId",
         ])
         .output()
         .await

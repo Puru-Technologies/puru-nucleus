@@ -28,7 +28,7 @@ import { NotificationService } from '../../core/services/notification.service';
         <div class="card-header">
           <span class="material-icons card-avatar">hub</span>
           <div class="card-titles">
-            <div class="card-title">Nucleus</div>
+            <div class="card-title">Puru DC</div>
             <div class="card-subtitle">Desktop application</div>
           </div>
         </div>

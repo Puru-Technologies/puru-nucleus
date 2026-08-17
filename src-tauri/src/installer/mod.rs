@@ -1037,7 +1037,7 @@ where
 
     let response = match client
         .get(&api_url)
-        .header("User-Agent", "puru-nucleus")
+        .header("User-Agent", "puru-dc")
         .send()
         .await
     {

@@ -960,7 +960,7 @@ async fn cmd_service(args: ServiceArgs) {
     match args.command {
         ServiceCommands::Install => {
             println!(
-                "  Installing puru-nucleus as a system service ({})...",
+                "  Installing puru-dc as a system service ({})...",
                 platform::platform_name()
             );
             match platform::install_service().await {
@@ -974,7 +974,7 @@ async fn cmd_service(args: ServiceArgs) {
             }
         }
         ServiceCommands::Uninstall => {
-            println!("  Uninstalling puru-nucleus system service...");
+            println!("  Uninstalling puru-dc system service...");
             match platform::uninstall_service().await {
                 Ok(result) => {
                     println!("  {} {}", "✓".green().bold(), result.message);
@@ -986,7 +986,7 @@ async fn cmd_service(args: ServiceArgs) {
             }
         }
         ServiceCommands::Start => {
-            print!("  Starting puru-nucleus service... ");
+            print!("  Starting puru-dc service... ");
             match platform::start_service().await {
                 Ok(_) => println!("{}", "OK".green()),
                 Err(e) => {
@@ -997,7 +997,7 @@ async fn cmd_service(args: ServiceArgs) {
             }
         }
         ServiceCommands::Stop => {
-            print!("  Stopping puru-nucleus service... ");
+            print!("  Stopping puru-dc service... ");
             match platform::stop_service().await {
                 Ok(_) => println!("{}", "OK".green()),
                 Err(e) => {
@@ -1751,7 +1751,7 @@ async fn cmd_network(speed: bool, json: bool) {
 
 fn cmd_version() {
     println!(
-        "puru-nucleus {}",
+        "puru-dc {}",
         env!("CARGO_PKG_VERSION")
     );
 }

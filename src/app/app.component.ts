@@ -47,7 +47,7 @@ interface CommandActivity {
           <!-- Brand -->
           <div class="brand">
             <puru-logo variant="normal" theme="dark" [size]="28"></puru-logo>
-            <span class="brand-sub">{{ hospitalCode ? ('Nucleus · ' + hospitalCode) : 'Nucleus' }}</span>
+            <span class="brand-sub">{{ hospitalCode ? ('Puru DC · ' + hospitalCode) : 'Puru DC' }}</span>
           </div>
 
           <!-- Navigation -->
@@ -486,7 +486,7 @@ interface CommandActivity {
   `]
 })
 export class AppComponent implements OnInit, OnDestroy {
-  title = 'puru-nucleus';
+  title = 'puru-dc';
   version = packageJson.version;
   hospitalCode = '';
   showShell = true;
@@ -750,7 +750,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.hospitalCode = config.hospital_code;
         // Update window title (the GUI is still a local Tauri window)
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().setTitle(`Puru Nucleus — ${config.hospital_code}`);
+        await getCurrentWindow().setTitle(`Puru DC — ${config.hospital_code}`);
       }
     } catch {
       // Non-fatal

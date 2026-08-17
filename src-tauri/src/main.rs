@@ -1,10 +1,10 @@
-//! puru-nucleus - Control center for Puru hospital deployments
+//! puru-dc - Control center for Puru hospital deployments
 //!
 //! A Tauri desktop application that manages Docker-based hospital
 //! software deployments, backups, and telemetry.
 //!
 //! Three operating modes:
-//! - **GUI** (default): `puru` or `puru-nucleus` — launches Tauri window
+//! - **GUI** (default): `puru` or `puru-dc` — launches Tauri window
 //! - **CLI**: `puru status`, `puru backup`, etc. — terminal commands
 //! - **Daemon**: `puru daemon` — headless background service
 
@@ -27,6 +27,7 @@ mod telemetry;
 mod docker_update;
 mod messaging;
 mod network;
+mod file_lock;
 mod logs;
 mod platform;
 mod process;
@@ -51,7 +52,7 @@ fn main() {
         Some(cli::Commands::Daemon) => {
             // Daemon mode — headless background service, log to file
             init_daemon_logging();
-            tracing::info!("Starting puru-nucleus in daemon mode");
+            tracing::info!("Starting puru-dc in daemon mode");
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(daemon::run_daemon());
         }
@@ -64,7 +65,7 @@ fn main() {
         None => {
             // GUI mode — launch Tauri window (default when no subcommand)
             init_logging();
-            tracing::info!("Starting puru-nucleus");
+            tracing::info!("Starting puru-dc");
             run_gui(cli_args.minimized);
         }
     }
@@ -185,7 +186,7 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let tray = TrayIconBuilder::with_id("health")
         .icon(dot_icon(0x9e, 0x9e, 0x9e)) // grey = unknown until first poll
-        .tooltip("Puru Nucleus — checking…")
+        .tooltip("Puru DC — checking…")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -228,12 +229,12 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     let ver = body.get("version").and_then(|v| v.as_str()).unwrap_or("?");
                     (
                         dot_icon(0x4c, 0xaf, 0x50),
-                        format!("Puru Nucleus — daemon up · v{}", ver),
+                        format!("Puru DC — daemon up · v{}", ver),
                     )
                 }
                 _ => (
                     dot_icon(0xf4, 0x43, 0x36),
-                    "Puru Nucleus — daemon DOWN".to_string(),
+                    "Puru DC — daemon DOWN".to_string(),
                 ),
             };
             let _ = tray.set_icon(Some(icon));
@@ -262,7 +263,7 @@ fn ensure_login_autostart() {
             "add",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "PuruNucleus",
+            "PuruDC",
             "/t",
             "REG_SZ",
             "/d",

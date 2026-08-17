@@ -1,5 +1,5 @@
 //! Platform service management — install, uninstall, start, stop, and check
-//! the puru-nucleus daemon as a system service.
+//! the puru-dc daemon as a system service.
 //!
 //! - **Linux**: systemd unit file
 //! - **macOS**: launchd plist
@@ -18,7 +18,7 @@ pub struct ServiceResult {
     pub message: String,
 }
 
-/// Status of the puru-nucleus system service
+/// Status of the puru-dc system service
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub installed: bool,
@@ -28,14 +28,14 @@ pub struct ServiceStatus {
     pub detail: String,
 }
 
-/// Get the `puru-nucleus` binary path, resolving the current executable.
+/// Get the `puru-dc` binary path, resolving the current executable.
 fn get_exe_path() -> Result<String, String> {
     std::env::current_exe()
         .map(|p| p.display().to_string())
         .map_err(|e| format!("Cannot determine executable path: {}", e))
 }
 
-/// Install puru-nucleus as a system service (platform-specific).
+/// Install puru-dc as a system service (platform-specific).
 pub async fn install_service() -> Result<ServiceResult, String> {
     #[cfg(target_os = "linux")]
     return linux::install().await;
@@ -50,7 +50,7 @@ pub async fn install_service() -> Result<ServiceResult, String> {
     Err("Unsupported platform".to_string())
 }
 
-/// Uninstall the puru-nucleus system service.
+/// Uninstall the puru-dc system service.
 pub async fn uninstall_service() -> Result<ServiceResult, String> {
     #[cfg(target_os = "linux")]
     return linux::uninstall().await;
@@ -65,7 +65,7 @@ pub async fn uninstall_service() -> Result<ServiceResult, String> {
     Err("Unsupported platform".to_string())
 }
 
-/// Start the puru-nucleus system service.
+/// Start the puru-dc system service.
 pub async fn start_service() -> Result<ServiceResult, String> {
     #[cfg(target_os = "linux")]
     return linux::start().await;
@@ -80,7 +80,7 @@ pub async fn start_service() -> Result<ServiceResult, String> {
     Err("Unsupported platform".to_string())
 }
 
-/// Stop the puru-nucleus system service.
+/// Stop the puru-dc system service.
 pub async fn stop_service() -> Result<ServiceResult, String> {
     #[cfg(target_os = "linux")]
     return linux::stop().await;

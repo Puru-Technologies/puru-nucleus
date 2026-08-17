@@ -3742,7 +3742,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "puru-nucleus"
+name = "puru-dc"
 version = "0.8.1"
 dependencies = [
  "anyhow",
@@ -3779,6 +3779,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

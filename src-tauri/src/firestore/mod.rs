@@ -1,4 +1,4 @@
-//! Firestore client facade for puru-nucleus.
+//! Firestore client facade for puru-dc.
 //!
 //! Provides a high-level API for hospital document operations
 //! against the `puru-255206` Firestore project.
@@ -149,7 +149,7 @@ impl FirestoreClient {
         let now = chrono::Utc::now().to_rfc3339();
         let mut cred = serde_json::Map::new();
         cred.insert("mysql_root_password".to_string(), string_value(password));
-        cred.insert("mysql_set_by".to_string(), string_value("puru-nucleus"));
+        cred.insert("mysql_set_by".to_string(), string_value("puru-dc"));
         cred.insert("mysql_updated_at".to_string(), timestamp_value(&now));
         let fields = serde_json::json!({ "credentials": map_value(cred) });
         queries::patch_document(

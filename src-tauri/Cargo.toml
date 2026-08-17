@@ -1,5 +1,5 @@
 [package]
-name = "puru-nucleus"
+name = "puru-dc"
 version = "0.8.1"
 description = "Control center for Puru hospital deployments"
 authors = ["Puru Labs Private Limited"]
@@ -72,6 +72,14 @@ tower-http = { version = "0.5", features = ["cors"] }
 # Process management (native mode — unix only)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Windows Restart Manager — enumerate the exact processes locking a file
+# (used to reliably free a service JAR before an update swap).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_RestartManager",
+] }
 
 
 [dev-dependencies]

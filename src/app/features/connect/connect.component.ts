@@ -18,7 +18,7 @@ import { resetLicenseCache } from '../../core/guards/init.guard';
         <div class="card-head">
           <span class="material-icons avatar">lan</span>
           <div class="card-titles">
-            <div class="card-title">Connect to a Nucleus server</div>
+            <div class="card-title">Connect to a Puru DC server</div>
             <div class="card-subtitle">Manage a remote daemon over the LAN, or stay on this machine</div>
           </div>
         </div>
