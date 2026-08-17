@@ -1522,6 +1522,7 @@ export class SetupComponent implements OnInit {
         auth: 'Auth', xenon: 'Xenon', has: 'HAS', pacs: 'PACS', argon: 'Argon (Pathology)',
         comm: 'Comm', realtime: 'Realtime', neon: 'Neon (Medical)', mercury: 'Mercury (HRMS)',
         counter: 'Counter', bridge: 'Bridge', integration: 'Integration', hydrogen: 'Hydrogen (Frontend)',
+        dviewer: 'DICOM Viewer (dviewer)',
       };
       this.enabledServices = Object.entries(modules)
         .filter(([_, enabled]) => enabled)
@@ -1539,7 +1540,7 @@ export class SetupComponent implements OnInit {
       }
     } catch {
       // Firestore not reachable or hospital code not set — use defaults
-      this.enabledServices = ['Auth', 'Xenon', 'HAS', 'PACS', 'Argon', 'Comm', 'Realtime', 'Neon', 'Mercury', 'Counter', 'Bridge', 'Integration', 'Hydrogen'];
+      this.enabledServices = ['Auth', 'Xenon', 'HAS', 'PACS', 'Argon', 'Comm', 'Realtime', 'Neon', 'Mercury', 'Counter', 'Bridge', 'Integration', 'Hydrogen', 'DICOM Viewer (dviewer)'];
     }
   }
 

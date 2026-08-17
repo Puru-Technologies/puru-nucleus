@@ -355,7 +355,7 @@ interface UpdateFlow {
                             <button class="menu-item" (click)="viewLogs(service); openMenu = null">
                               <span class="material-icons">article</span> View Logs
                             </button>
-                            @if (isNative && service.name !== 'puru-hydrogen' && service.status !== 'notinstalled') {
+                            @if (isNative && service.name !== 'puru-hydrogen' && service.name !== 'dviewer' && service.status !== 'notinstalled') {
                               <button class="menu-item" (click)="checkUpdate(service); openMenu = null">
                                 <span class="material-icons menu-green">system_update</span> Check for update
                               </button>
@@ -987,10 +987,10 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
   // ── Split update flow: identify → download (stage) → apply ─────────────────
 
-  /** Services eligible for JAR updates (native, installed, not the hydrogen bundle). */
+  /** Services eligible for JAR updates (native, installed, not the hydrogen or dviewer bundle). */
   get updatableServices(): ServiceInfo[] {
     return this.sortedServices.filter(s =>
-      this.isNative && !s.infra && s.name !== 'puru-hydrogen' && s.status !== 'notinstalled');
+      this.isNative && !s.infra && s.name !== 'puru-hydrogen' && s.name !== 'dviewer' && s.status !== 'notinstalled');
   }
 
   /** Start / stop / restart the MySQL or RabbitMQ Windows service (elevated). */
