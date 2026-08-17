@@ -1153,20 +1153,16 @@ pub async fn import_credentials_file(source_path: String) -> Result<(), String> 
     validate_credentials_json(&content)?;
 
     let dest = credentials_path();
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create config directory: {}", e))?;
-    }
-
-    std::fs::copy(source, &dest)
-        .map_err(|e| format!("Failed to copy credentials file: {}", e))?;
+    // Store encrypted (at-rest): the file holds AES ciphertext, not plaintext.
+    crate::secret::write_encrypted(&dest.to_string_lossy(), content.as_bytes())
+        .map_err(|e| format!("Failed to store credentials: {}", e))?;
 
     // Update config to point to the designated path
     let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
     config.gcs_credentials_path = Some(dest.display().to_string());
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
-    tracing::info!("Credentials file imported from {}", source_path);
+    tracing::info!("Credentials file imported (encrypted) from {}", source_path);
     Ok(())
 }
 
@@ -1177,20 +1173,16 @@ pub async fn save_credentials_content(content: String) -> Result<(), String> {
     validate_credentials_json(&content)?;
 
     let dest = credentials_path();
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create config directory: {}", e))?;
-    }
-
-    std::fs::write(&dest, &content)
-        .map_err(|e| format!("Failed to write credentials file: {}", e))?;
+    // Store encrypted (at-rest): the file holds AES ciphertext, not plaintext.
+    crate::secret::write_encrypted(&dest.to_string_lossy(), content.as_bytes())
+        .map_err(|e| format!("Failed to store credentials: {}", e))?;
 
     // Update config to point to the designated path
     let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
     config.gcs_credentials_path = Some(dest.display().to_string());
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
-    tracing::info!("Credentials file saved from pasted content");
+    tracing::info!("Credentials saved (encrypted) from pasted content");
     Ok(())
 }
 
@@ -2187,7 +2179,7 @@ pub async fn setup_pull_images() -> Result<(), String> {
         let cred = std::path::Path::new(cred_path);
         if cred.exists() {
             tracing::info!("Authenticating Docker with {} using {}", registry_host, cred_path);
-            let key_content = std::fs::read_to_string(cred)
+            let key_content = crate::secret::read_decrypted(cred_path)
                 .map_err(|e| format!("Failed to read credentials: {}", e))?;
 
             let mut child = crate::process::silent_cmd("docker")

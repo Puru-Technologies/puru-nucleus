@@ -46,6 +46,9 @@ sysinfo = "0.29"
 sha2 = "0.10"
 mac_address = "1.1"
 
+# At-rest encryption of the GCP service-account key (AES-256-GCM)
+aes-gcm = "0.10"
+
 # Secure random (generated MySQL root password)
 rand = "0.8"
 

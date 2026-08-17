@@ -255,12 +255,11 @@ const STORAGE_SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/devstorage.r
 pub(crate) async fn create_gcs_client(
     credentials_path: &str,
 ) -> Result<google_cloud_storage::client::Client, NucleusError> {
-    let cred_file =
-        google_cloud_auth::credentials::CredentialsFile::new_from_file(credentials_path.to_string())
-            .await
-            .map_err(|e| {
-                NucleusError::GcsConnection(format!("Failed to load credentials: {}", e))
-            })?;
+    let json = crate::secret::read_decrypted(credentials_path)
+        .map_err(|e| NucleusError::GcsConnection(format!("Failed to load credentials: {}", e)))?;
+    let cred_file = google_cloud_auth::credentials::CredentialsFile::new_from_str(&json)
+        .await
+        .map_err(|e| NucleusError::GcsConnection(format!("Failed to load credentials: {}", e)))?;
     let project_id = cred_file.project_id.clone();
 
     // Build the token source ourselves with an explicit, narrow scope instead of

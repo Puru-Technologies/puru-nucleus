@@ -118,6 +118,8 @@ pub async fn run_daemon() {
         .route("/api/jars/rollback/:service", post(routes::rollback_native_service))
         // LAN binlog
         .route("/api/lan/binlog/ship", post(routes::ship_binlogs_lan))
+        // GCP token broker for local service JVMs (loopback-only, enforced in handler)
+        .route("/api/gcp/token", post(routes::gcp_token))
         // Middleware
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -145,9 +147,12 @@ pub async fn run_daemon() {
     #[cfg(windows)]
     disable_listener_inheritance(&listener);
 
-    if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
     {
         tracing::error!("Daemon server error: {}", e);
     }

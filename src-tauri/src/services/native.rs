@@ -307,33 +307,25 @@ fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::Ha
         }
     }
 
-    // Point every service at the single nucleus-managed GCP service account.
-    // PACS resolves creds two ways — ADC (GOOGLE_APPLICATION_CREDENTIALS, for
-    // Healthcare API + raw GCS SDK) and Spring Cloud GCP
-    // (spring.cloud.gcp.credentials.location, for the auto-configured Storage
-    // bean). Setting both env vars overrides the file:puru_gcp_cred.json
-    // default baked into puru-pacs's application.properties without touching
-    // that file, and future GCP-using services get the same wiring for free.
-    //
-    // GOOGLE_APPLICATION_CREDENTIALS wants a raw filesystem path (Google's SDK
-    // opens it via FileInputStream), so we pass it through unchanged.
-    // SPRING_CLOUD_GCP_CREDENTIALS_LOCATION wants a Spring Resource URI. On
-    // Windows the canonical form is `file:///C:/…` with forward slashes and a
-    // triple slash for the drive-letter root — Spring's cleanPath() would
-    // normally rescue backslashes, but the triple-slash form avoids relying on
-    // that and stays parser-safe across Spring versions.
-    if let Some(cred_path) = config.gcs_credentials_path.as_deref() {
-        if !cred_path.is_empty() && std::path::Path::new(cred_path).exists() {
-            vars.insert("GOOGLE_APPLICATION_CREDENTIALS".to_string(), cred_path.to_string());
-            let uri_body = cred_path.replace('\\', "/");
-            let spring_uri = if uri_body.chars().nth(1) == Some(':') {
-                format!("file:///{}", uri_body)
-            } else {
-                format!("file:{}", uri_body)
-            };
-            vars.insert("SPRING_CLOUD_GCP_CREDENTIALS_LOCATION".to_string(), spring_uri);
-        }
-    }
+    // GCP auth approach 2 (broker): service JVMs fetch short-lived, scoped
+    // access tokens from the local daemon's loopback token endpoint instead of
+    // reading the service-account key file. We deliberately do NOT set
+    // GOOGLE_APPLICATION_CREDENTIALS or SPRING_CLOUD_GCP_CREDENTIALS_LOCATION —
+    // the SA key (encrypted at rest) never leaves nucleus. `GCP_AUTH_APPROACH`
+    // maps to the Spring property `gcp.auth.approach` (2 = broker; 1 = legacy
+    // ADC/key-file default when unset).
+    let (daemon_port, daemon_key) = config
+        .daemon
+        .as_ref()
+        .map(|d| (d.port, d.api_key.clone()))
+        .unwrap_or((9090, String::new()));
+    vars.insert("GCP_AUTH_APPROACH".to_string(), "2".to_string());
+    vars.insert(
+        "PURU_TOKEN_ENDPOINT".to_string(),
+        format!("http://127.0.0.1:{}/api/gcp/token", daemon_port),
+    );
+    vars.insert("PURU_TOKEN_KEY".to_string(), daemon_key);
+    vars.insert("PURU_SERVICE".to_string(), service.to_string());
 
     vars
 }

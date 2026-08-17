@@ -755,3 +755,63 @@ pub async fn ship_binlogs_lan() -> Result<Json<crate::backup::binlog::BinlogShip
         .map(Json)
         .map_err(|e| internal_err(e.user_message()))
 }
+
+// ── GCP token broker (local, for service JVMs) ───────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct GcpTokenRequest {
+    /// Requesting service, mapped to an allow-listed OAuth scope set.
+    pub service: String,
+}
+
+/// OAuth scopes a given service is permitted to mint. Healthcare (PACS) and
+/// Firebase-Admin (realtime) both need `cloud-platform`; GCS resource scoping
+/// is handled separately by signed URLs / downscoped tokens.
+fn scope_for_service(service: &str) -> Option<&'static str> {
+    match service {
+        "puru-pacs" | "puru-realtime" => "https://www.googleapis.com/auth/cloud-platform".into(),
+        _ => None,
+    }
+}
+
+/// POST /api/gcp/token — mint a short-lived, scoped GCP access token for a
+/// local service JVM. Loopback-only (in addition to the X-API-Key middleware)
+/// so it can never be reached across the LAN. The service never sees the SA key.
+pub async fn gcp_token(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Json(req): Json<GcpTokenRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !peer.ip().is_loopback() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "token endpoint is loopback-only".to_string(),
+        ));
+    }
+    let scope = scope_for_service(&req.service).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("unknown service '{}'", req.service),
+    ))?;
+
+    let config = crate::config::load_config().map_err(|e| internal_err(e.user_message()))?;
+    let cred_path = config.gcs_credentials_path.ok_or((
+        StatusCode::PRECONDITION_FAILED,
+        "No cloud credentials configured.".to_string(),
+    ))?;
+
+    let ts = crate::firestore::auth::create_scoped_token_source(&cred_path, scope)
+        .await
+        .map_err(|e| internal_err(e.user_message()))?;
+
+    use google_cloud_auth::token_source::TokenSource;
+    let token = ts
+        .token()
+        .await
+        .map_err(|e| internal_err(format!("Failed to mint token: {}", e)))?;
+
+    let expires_at = token.expiry.map(|e| e.unix_timestamp()).unwrap_or(0);
+    Ok(Json(serde_json::json!({
+        "access_token": token.access_token,
+        "token_type": token.token_type,
+        "expires_at": expires_at,
+    })))
+}

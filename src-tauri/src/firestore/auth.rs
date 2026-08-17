@@ -27,11 +27,12 @@ pub async fn create_storage_token_source(
 }
 
 /// Create a token source for the given OAuth scope from a service account key.
-async fn create_scoped_token_source(
+pub async fn create_scoped_token_source(
     credentials_path: &str,
     scope: &str,
 ) -> Result<Box<dyn TokenSource>, NucleusError> {
-    let credentials = CredentialsFile::new_from_file(credentials_path.to_string())
+    let json = crate::secret::read_decrypted(credentials_path)?;
+    let credentials = CredentialsFile::new_from_str(&json)
         .await
         .map_err(|e| NucleusError::FirestoreAuth(format!("Failed to load credentials: {}", e)))?;
 

@@ -33,6 +33,7 @@ mod platform;
 mod process;
 mod process_explorer;
 mod remote_shell;
+mod secret;
 mod seed;
 mod templates;
 mod webserver;
