@@ -354,6 +354,14 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
         let _ = std::fs::remove_file(pid_path(config, name));
     }
 
+    // Self-heal the RabbitMQ app user before launching. A broker reset (the
+    // Khepri virgin-node behaviour on a 4.x upgrade) silently drops `puru`,
+    // which makes every service abort on boot with ACCESS_REFUSED. Best-effort:
+    // if the management API is off we just log and proceed.
+    if let Err(e) = crate::infra::ensure_rabbitmq_user().await {
+        tracing::warn!("RabbitMQ user self-heal skipped for {}: {}", name, e);
+    }
+
     // Resolve java binary path
     let java_version = releases::java_version_for_service(name).ok_or_else(|| {
         NucleusError::Validation(format!("Unknown service: {}", name))
@@ -583,6 +591,7 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             uptime: None, // Could be computed from PID start time
             health_response_ms: None,
             detail: None,
+            infra: false,
         });
     }
 
@@ -663,7 +672,12 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
         }
     }
 
-    Ok(services)
+    // Prepend infra status rows (Database + Message Broker) so operators see
+    // MySQL / RabbitMQ health alongside the app services.
+    let mut all = crate::infra::infra_rows(config).await;
+    all.append(&mut services);
+
+    Ok(all)
 }
 
 /// Read log file tail for a service.

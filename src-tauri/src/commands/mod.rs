@@ -1795,7 +1795,7 @@ fn rabbitmq_delayed_ez_present() -> bool {
 /// Name of the registered RabbitMQ Windows service (via `sc query`), or None.
 /// Version-agnostic — matches `RabbitMQ`, `RabbitMQ Server`, etc.
 #[cfg(target_os = "windows")]
-fn rabbitmq_service_name() -> Option<String> {
+pub(crate) fn rabbitmq_service_name() -> Option<String> {
     let out = std::process::Command::new("sc")
         .args(["query", "state=", "all"])
         .output()
@@ -3539,6 +3539,21 @@ pub async fn discard_service_update(service_name: String) -> Result<(), String> 
     crate::releases::discard_staged_jar(&service_name)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ── Infra (MySQL / RabbitMQ) control + logs ──────────────────────────────────
+
+/// Start / stop / restart the Windows service backing an infra component
+/// (name = "MySQL" | "RabbitMQ"; action = "start" | "stop" | "restart").
+#[tauri::command]
+pub async fn control_infra_service(name: String, action: String) -> Result<String, String> {
+    crate::infra::control(&name, &action).await
+}
+
+/// Tail the MySQL or RabbitMQ log (the crash reason for a boot failure).
+#[tauri::command]
+pub async fn get_infra_log(name: String, lines: Option<usize>) -> Result<String, String> {
+    crate::infra::read_log(&name, lines.unwrap_or(200))
 }
 
 // ── Docker update management ─────────────────────────────────────────────────

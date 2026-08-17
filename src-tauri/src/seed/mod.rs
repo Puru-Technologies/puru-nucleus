@@ -490,6 +490,19 @@ fn hospital_identity_config(
             .unwrap_or("")
             .to_string()
     };
+    // Firestore booleanValue → "1"/"0"; empty string when the field is absent
+    // (so the pair is skipped rather than forcing a value).
+    let b = |k: &str| -> String {
+        match fields
+            .get(k)
+            .and_then(|v| v.get("booleanValue"))
+            .and_then(|x| x.as_bool())
+        {
+            Some(true) => "1".to_string(),
+            Some(false) => "0".to_string(),
+            None => String::new(),
+        }
+    };
     let short = {
         let sn = s("shortName");
         if sn.is_empty() { config.hospital_code.clone() } else { sn }
@@ -505,6 +518,13 @@ fn hospital_identity_config(
         ("hospital.line2.en", line2),
         ("hospital.line3.en", s("line3")),
         ("hospital.logo.url", s("logoUrl")),
+        // PACS online mode + its coupled cluster. `pacs.online.mode=1` REQUIRES a
+        // non-blank `pacs.cluster.name` or auth aborts at boot (ClusterResolver
+        // validateOnBoot), so both are sourced from Firebase together:
+        //   onlineAllowed (bool)  → pacs.online.mode (1/0)
+        //   propertyCluster (str) → pacs.cluster.name (resolver fills cloud.puru.*)
+        ("pacs.online.mode", b("onlineAllowed")),
+        ("pacs.cluster.name", s("propertyCluster")),
     ]
 }
 

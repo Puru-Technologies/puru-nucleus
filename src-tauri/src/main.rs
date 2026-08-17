@@ -37,6 +37,7 @@ mod templates;
 mod webserver;
 mod tls;
 mod installer;
+mod infra;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -64,7 +65,7 @@ fn main() {
             // GUI mode — launch Tauri window (default when no subcommand)
             init_logging();
             tracing::info!("Starting puru-nucleus");
-            run_gui();
+            run_gui(cli_args.minimized);
         }
     }
 }
@@ -245,12 +246,49 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_gui() {
+/// Register (idempotently) a per-user login autostart so the GUI — and thus the
+/// tray health indicator — comes back after a reboot, started minimized to the
+/// tray. Runs in the operator's user context (HKCU), which is where the tray
+/// must live; the daemon's boot task (SYSTEM) is separate and headless.
+#[cfg(target_os = "windows")]
+fn ensure_login_autostart() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let value = format!("\"{}\" --minimized", exe.display());
+    let _ = crate::process::silent_std_cmd("reg")
+        .args([
+            "add",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "PuruNucleus",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &value,
+            "/f",
+        ])
+        .output();
+}
+#[cfg(not(target_os = "windows"))]
+fn ensure_login_autostart() {}
+
+fn run_gui(minimized: bool) {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             setup_tray(app.handle().clone())?;
+
+            // Make sure we relaunch to the tray on the next login.
+            ensure_login_autostart();
+
+            // The window is created hidden (visible:false in tauri.conf). Show it
+            // for a normal launch; keep it in the tray when autostarted.
+            if !minimized {
+                show_main(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -352,6 +390,8 @@ fn run_gui() {
             commands::download_service_update,
             commands::apply_service_update,
             commands::discard_service_update,
+            commands::control_infra_service,
+            commands::get_infra_log,
             // Native Setup Steps
             commands::setup_generate_env_files,
             commands::setup_pull_jars,

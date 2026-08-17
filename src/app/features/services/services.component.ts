@@ -314,36 +314,55 @@ interface UpdateFlow {
                       </button>
                       @if (openMenu === service.name) {
                         <div class="menu" (click)="$event.stopPropagation()">
-                          @if (service.status === 'stopped' || service.status === 'error') {
-                            <button class="menu-item" (click)="startService(service); openMenu = null">
-                              <span class="material-icons menu-green">play_arrow</span> Start
+                          @if (service.infra) {
+                            @if (service.status !== 'running') {
+                              <button class="menu-item" (click)="controlInfra(service, 'start'); openMenu = null">
+                                <span class="material-icons menu-green">play_arrow</span> Start
+                              </button>
+                            }
+                            @if (service.status === 'running') {
+                              <button class="menu-item" (click)="controlInfra(service, 'stop'); openMenu = null">
+                                <span class="material-icons menu-red">stop</span> Stop
+                              </button>
+                            }
+                            <button class="menu-item" (click)="controlInfra(service, 'restart'); openMenu = null">
+                              <span class="material-icons menu-orange">refresh</span> Restart
                             </button>
-                          }
-                          @if (service.status === 'notinstalled') {
-                            <button class="menu-item" routerLink="/setup" (click)="openMenu = null">
-                              <span class="material-icons menu-green">build</span> Install (Run Setup)
+                            <button class="menu-item" (click)="viewInfraLog(service); openMenu = null">
+                              <span class="material-icons">article</span> View log
                             </button>
-                          }
-                          @if (service.status === 'running') {
-                            <button class="menu-item" (click)="stopService(service); openMenu = null">
-                              <span class="material-icons menu-red">stop</span> Stop
+                          } @else {
+                            @if (service.status === 'stopped' || service.status === 'error') {
+                              <button class="menu-item" (click)="startService(service); openMenu = null">
+                                <span class="material-icons menu-green">play_arrow</span> Start
+                              </button>
+                            }
+                            @if (service.status === 'notinstalled') {
+                              <button class="menu-item" routerLink="/setup" (click)="openMenu = null">
+                                <span class="material-icons menu-green">build</span> Install (Run Setup)
+                              </button>
+                            }
+                            @if (service.status === 'running') {
+                              <button class="menu-item" (click)="stopService(service); openMenu = null">
+                                <span class="material-icons menu-red">stop</span> Stop
+                              </button>
+                            }
+                            <button class="menu-item" (click)="restartService(service); openMenu = null">
+                              <span class="material-icons menu-orange">refresh</span> Restart
                             </button>
-                          }
-                          <button class="menu-item" (click)="restartService(service); openMenu = null">
-                            <span class="material-icons menu-orange">refresh</span> Restart
-                          </button>
-                          <button class="menu-item" (click)="viewLogs(service); openMenu = null">
-                            <span class="material-icons">article</span> View Logs
-                          </button>
-                          @if (isNative && service.name !== 'puru-hydrogen' && service.status !== 'notinstalled') {
-                            <button class="menu-item" (click)="checkUpdate(service); openMenu = null">
-                              <span class="material-icons menu-green">system_update</span> Check for update
+                            <button class="menu-item" (click)="viewLogs(service); openMenu = null">
+                              <span class="material-icons">article</span> View Logs
                             </button>
-                          }
-                          @if (isNative) {
-                            <button class="menu-item" (click)="rollbackService(service); openMenu = null">
-                              <span class="material-icons menu-orange">undo</span> Rollback
-                            </button>
+                            @if (isNative && service.name !== 'puru-hydrogen' && service.status !== 'notinstalled') {
+                              <button class="menu-item" (click)="checkUpdate(service); openMenu = null">
+                                <span class="material-icons menu-green">system_update</span> Check for update
+                              </button>
+                            }
+                            @if (isNative) {
+                              <button class="menu-item" (click)="rollbackService(service); openMenu = null">
+                                <span class="material-icons menu-orange">undo</span> Rollback
+                              </button>
+                            }
                           }
                         </div>
                       }
@@ -616,9 +635,11 @@ interface UpdateFlow {
     .svc-detail {
       margin-top: 4px;
       font-size: 11px;
-      line-height: 1.3;
+      line-height: 1.35;
       color: var(--status-red);
-      max-width: 320px;
+      max-width: 360px;
+      white-space: pre-line;   /* multi-line diagnosis (e.g. RabbitMQ + last log error) */
+      word-break: break-word;
     }
 
     .menu-green { color: var(--status-green) !important; }
@@ -967,7 +988,36 @@ export class ServicesComponent implements OnInit, OnDestroy {
   /** Services eligible for JAR updates (native, installed, not the hydrogen bundle). */
   get updatableServices(): ServiceInfo[] {
     return this.sortedServices.filter(s =>
-      this.isNative && s.name !== 'puru-hydrogen' && s.status !== 'notinstalled');
+      this.isNative && !s.infra && s.name !== 'puru-hydrogen' && s.status !== 'notinstalled');
+  }
+
+  /** Start / stop / restart the MySQL or RabbitMQ Windows service (elevated). */
+  async controlInfra(service: ServiceInfo, action: 'start' | 'stop' | 'restart'): Promise<void> {
+    const name = service.name;
+    const busy = action === 'start' ? 'Starting…' : action === 'stop' ? 'Stopping…' : 'Restarting…';
+    this.setMsg(name, busy, 'busy');
+    try {
+      await this.tauri.invoke<string>('control_infra_service', { name, action });
+      this.setMsg(name, action === 'stop' ? 'Stopped' : action === 'start' ? 'Started' : 'Restarted', 'ok');
+      await this.loadServicesSilent();
+    } catch (e) {
+      this.setMsg(name, `${action} failed`, 'error');
+    }
+  }
+
+  /** Show the MySQL/RabbitMQ log in the log panel (the crash reason). */
+  async viewInfraLog(service: ServiceInfo): Promise<void> {
+    this.logContainer = service.name;
+    this.logTimeFilter = 'tail';
+    this.logsLoading = true;
+    this.logOutput = '';
+    try {
+      this.logOutput = await this.tauri.invoke<string>('get_infra_log', { name: service.name, lines: 300 });
+    } catch (e) {
+      this.logOutput = `Failed to fetch ${service.name} log: ${e}`;
+    } finally {
+      this.logsLoading = false;
+    }
   }
   get availableCount(): number {
     return Object.values(this.updateFlow).filter(f => f.phase === 'available').length;

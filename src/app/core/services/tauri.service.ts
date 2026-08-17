@@ -199,6 +199,8 @@ export interface ServiceInfo {
   uptime?: string;
   health_response_ms?: number;
   detail?: string;
+  /** True for infra rows (MySQL / RabbitMQ) — read-only with infra controls. */
+  infra?: boolean;
 }
 
 export interface ProcessInfo {

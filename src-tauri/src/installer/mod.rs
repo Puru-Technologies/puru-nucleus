@@ -1198,7 +1198,7 @@ fn wait_tcp(port: u16, max_secs: u64) -> bool {
 /// Name of an existing Windows service managing MySQL (`MySQL80`, `MySQL`, …),
 /// via `sc query`. None if there is no MySQL service registered.
 #[cfg(target_os = "windows")]
-fn mysql_service_name() -> Option<String> {
+pub(crate) fn mysql_service_name() -> Option<String> {
     let out = std::process::Command::new("sc")
         .args(["query", "state=", "all"])
         .output()

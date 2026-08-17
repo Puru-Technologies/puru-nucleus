@@ -9,7 +9,10 @@ use crate::error::NucleusError;
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const TEMPLATE_BUCKET: &str = "puru-releases";
-const BACKUP_BUCKET: &str = "puru-automated-backup";
+/// Default Firebase bucket — the single home for per-hospital config artifacts
+/// under `{code}/setup-files/…` (compose, env, templates, and the SA key that
+/// oxygen writes there). Replaces the old `puru-automated-backup/{code}/config/`.
+const CONFIG_BUCKET: &str = "puru-255206.appspot.com";
 
 const ENV_FILES: &[&str] = &[
     "general.env",
@@ -451,7 +454,7 @@ pub async fn save_compose_file(content: &str) -> Result<String, NucleusError> {
 }
 
 /// Upload the finalized compose file to GCS.
-/// Target: `puru-automated-backup/{hospital_code}/config/docker-compose.yml`
+/// Target: `puru-255206.appspot.com/{hospital_code}/setup-files/docker/docker-compose.yml`
 pub async fn upload_compose_to_gcs(hospital_code: &str) -> Result<ComposeUploadResult, NucleusError> {
     let local_path = compose_file_path();
     if !local_path.exists() {
@@ -465,14 +468,14 @@ pub async fn upload_compose_to_gcs(hospital_code: &str) -> Result<ComposeUploadR
     let cred_path = get_credentials_path()?;
     let client = create_gcs_client(&cred_path).await?;
 
-    let gcs_path = format!("{}/config/docker-compose.yml", hospital_code);
-    upload_gcs_bytes(&client, BACKUP_BUCKET, &gcs_path, data).await?;
+    let gcs_path = format!("{}/setup-files/docker/docker-compose.yml", hospital_code);
+    upload_gcs_bytes(&client, CONFIG_BUCKET, &gcs_path, data).await?;
 
-    tracing::info!("Uploaded compose file to gs://{}/{}", BACKUP_BUCKET, gcs_path);
+    tracing::info!("Uploaded compose file to gs://{}/{}", CONFIG_BUCKET, gcs_path);
 
     Ok(ComposeUploadResult {
         success: true,
-        gcs_path: format!("gs://{}/{}", BACKUP_BUCKET, gcs_path),
+        gcs_path: format!("gs://{}/{}", CONFIG_BUCKET, gcs_path),
     })
 }
 
@@ -560,7 +563,7 @@ pub async fn save_env_file(name: &str, content: &str) -> Result<String, NucleusE
 }
 
 /// Upload all local env files to GCS.
-/// Target: `puru-automated-backup/{hospital_code}/config/env/{file}`
+/// Target: `puru-255206.appspot.com/{hospital_code}/setup-files/env/{file}`
 pub async fn upload_env_files_to_gcs(hospital_code: &str) -> Result<EnvUploadResult, NucleusError> {
     let env_dir = env_dir_path();
     if !env_dir.exists() {
@@ -580,8 +583,8 @@ pub async fn upload_env_files_to_gcs(hospital_code: &str) -> Result<EnvUploadRes
             continue;
         }
         let data = tokio::fs::read(&path).await?;
-        let gcs_path = format!("{}/config/env/{}", hospital_code, name);
-        upload_gcs_bytes(&client, BACKUP_BUCKET, &gcs_path, data).await?;
+        let gcs_path = format!("{}/setup-files/env/{}", hospital_code, name);
+        upload_gcs_bytes(&client, CONFIG_BUCKET, &gcs_path, data).await?;
         uploaded.push(name.to_string());
     }
 

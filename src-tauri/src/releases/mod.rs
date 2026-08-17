@@ -1203,6 +1203,34 @@ pub fn staged_update_info(service_name: &str) -> Option<StagedUpdate> {
     })
 }
 
+/// Rename with retry. On Windows the JVM keeps the JAR memory-mapped, and the
+/// lock lingers for a moment after `taskkill /F`, so `rename` can briefly fail
+/// with ACCESS_DENIED (os error 5) or SHARING_VIOLATION (32). Retry with a short
+/// backoff (~8s total) so the swap succeeds as soon as the OS releases the file.
+async fn rename_with_retry(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> Result<(), NucleusError> {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..20 {
+        match tokio::fs::rename(from, to).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let code = e.raw_os_error().unwrap_or(0);
+                if code == 5 || code == 32 {
+                    last = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    continue;
+                }
+                return Err(NucleusError::Io(e));
+            }
+        }
+    }
+    Err(NucleusError::Io(last.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "rename failed")
+    })))
+}
+
 /// Promote a staged JAR into place (backing up the current one as `.bak`) and
 /// promote its meta. The caller MUST have stopped the service first. Returns the
 /// newly-applied short sha.
@@ -1221,12 +1249,20 @@ pub async fn apply_staged_jar(service_name: &str) -> Result<String, NucleusError
     let live_jar = jars_dir.join(format!("{}.jar", service_name));
     let live_meta = jars_dir.join(format!("{}.meta.json", service_name));
 
-    // Back up the current JAR, then swap the staged one in.
+    // Move the (now-stopped) live JAR aside, then swap the staged one in. The
+    // rename is retried because Windows may still hold the just-killed JVM's
+    // file lock for a second or two — otherwise this fails with os error 5.
     if live_jar.exists() {
         let bak = jars_dir.join(format!("{}.jar.bak", service_name));
-        let _ = tokio::fs::rename(&live_jar, &bak).await;
+        let _ = tokio::fs::remove_file(&bak).await; // clear any previous backup
+        rename_with_retry(&live_jar, &bak).await.map_err(|e| {
+            NucleusError::Internal(format!(
+                "Could not replace {}.jar — it's still locked (the service may not have fully stopped): {}",
+                service_name, e
+            ))
+        })?;
     }
-    tokio::fs::rename(&staged, &live_jar).await?;
+    rename_with_retry(&staged, &live_jar).await?;
 
     let short_sha = if staged_meta.exists() {
         let meta_bytes = tokio::fs::read(&staged_meta).await.unwrap_or_default();

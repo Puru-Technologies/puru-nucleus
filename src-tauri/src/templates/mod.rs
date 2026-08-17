@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 const TEMPLATES_LOCAL_SUBDIR: &[&str] = &["config-data", "templates"];
 
 /// Bucket holding finalized per-hospital artifacts. Same convention as the
-/// docker-compose upload (`{code}/config/docker-compose.yml`), so all per-
+/// docker-compose upload (`{code}/setup-files/docker/docker-compose.yml`), so all per-
 /// hospital outputs live together.
-const HOSPITAL_BUCKET: &str = "puru-automated-backup";
+const HOSPITAL_BUCKET: &str = "puru-255206.appspot.com";
 
 /// Manifest of the last-pulled hospital-folder state, stored alongside the
 /// templates. Never uploaded (skipped during finalise).
@@ -74,11 +74,11 @@ struct TemplateManifest {
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 
-/// `{CODE}/config/templates/` in the backup bucket — the per-hospital prefix
-/// (source of truth once finalized), alongside `{code}/config/docker-compose.yml`.
+/// `{CODE}/setup-files/template/` in the default Firebase bucket — the per-hospital prefix
+/// (source of truth once finalized), alongside `{code}/setup-files/docker/docker-compose.yml`.
 /// Distinct from the generic `jrxml-templates/` master in the releases bucket.
 fn hospital_prefix(code: &str) -> String {
-    format!("{}/config/templates/", code)
+    format!("{}/setup-files/template/", code)
 }
 
 fn templates_local_dir(config: &NucleusConfig) -> Result<PathBuf, NucleusError> {

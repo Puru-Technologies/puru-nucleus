@@ -16,6 +16,11 @@ use clap::{Parser, Subcommand, Args};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
+
+    /// Launch the GUI minimized to the system tray (used by the login autostart
+    /// entry so the tray health indicator appears at boot without a window).
+    #[arg(long, global = true)]
+    pub minimized: bool,
 }
 
 #[derive(Subcommand)]

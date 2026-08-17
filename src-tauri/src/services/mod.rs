@@ -28,6 +28,10 @@ pub struct ServiceInfo {
     /// UI so an operator sees *why* a service isn't green.
     #[serde(default)]
     pub detail: Option<String>,
+    /// True for infrastructure rows (MySQL / RabbitMQ) — the UI shows these as
+    /// read-only status with infra-specific controls, not JAR update actions.
+    #[serde(default)]
+    pub infra: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -693,6 +697,7 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
             uptime: extract_uptime(status_str, state),
             health_response_ms: None,
             detail: None,
+            infra: false,
         });
     }
 
