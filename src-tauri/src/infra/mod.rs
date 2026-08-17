@@ -79,9 +79,9 @@ pub async fn infra_rows(config: &NucleusConfig) -> Vec<ServiceInfo> {
 /// to TCP + Windows-service + log diagnosis when the management API is off.
 async fn rabbitmq_row() -> ServiceInfo {
     let row = |status: ServiceStatus, detail: Option<String>| ServiceInfo {
-        name: "RabbitMQ".into(),
-        container_name: "Message Broker".into(),
-        image: "RabbitMQ".into(),
+        name: "Message Broker".into(),
+        container_name: String::new(),
+        image: String::new(),
         status,
         health: None,
         ports: vec!["5672".into(), "15672".into()],
@@ -146,7 +146,7 @@ pub async fn ensure_rabbitmq_user() -> Result<(), String> {
     let client = reqwest::Client::new();
     // Probe the API first so we don't spam errors when the plugin is off.
     if rmq_api_get("overview").await.is_none() {
-        return Err("RabbitMQ management API not reachable (plugin off?).".into());
+        return Err("Message broker management API not reachable (plugin off?).".into());
     }
     let user_body = serde_json::json!({ "password": RMQ_APP_PASS, "tags": "administrator" });
     let put = |path: String, body: serde_json::Value| {
@@ -186,18 +186,18 @@ fn mysql_row(config: &NucleusConfig) -> ServiceInfo {
     } else {
         let detail = match crate::installer::mysql_service_name() {
             Some(name) => match service_state(&name).as_str() {
-                "STOPPED" => format!("MySQL service '{}' is stopped.", name),
-                "START_PENDING" => format!("MySQL service '{}' is starting…", name),
-                _ => format!("MySQL service '{}' is not answering on port {}.", name, port),
+                "STOPPED" => format!("Database service '{}' is stopped.", name),
+                "START_PENDING" => format!("Database service '{}' is starting…", name),
+                _ => format!("Database service '{}' is not answering on port {}.", name, port),
             },
-            None => "MySQL is not installed (no Windows service found).".to_string(),
+            None => "Database is not installed (no Windows service found).".to_string(),
         };
         (ServiceStatus::Stopped, Some(detail))
     };
     ServiceInfo {
-        name: "MySQL".into(),
-        container_name: "Database".into(),
-        image: "MySQL".into(),
+        name: "Database".into(),
+        container_name: String::new(),
+        image: String::new(),
         status,
         health: None,
         ports: vec![format!("{}:{}", port, port)],
@@ -222,12 +222,12 @@ fn rabbitmq_row_fallback() -> ServiceInfo {
     } else {
         let svc = rabbitmq_service_name();
         let base = match svc.as_deref() {
-            None => "RabbitMQ is not installed (no Windows service found).".to_string(),
+            None => "Message broker is not installed (no Windows service found).".to_string(),
             Some(name) => match service_state(name).as_str() {
-                "STOPPED" => format!("RabbitMQ service '{}' is stopped — start it.", name),
-                "START_PENDING" => format!("RabbitMQ service '{}' is starting…", name),
+                "STOPPED" => format!("Message broker service '{}' is stopped — start it.", name),
+                "START_PENDING" => format!("Message broker service '{}' is starting…", name),
                 _ => format!(
-                    "RabbitMQ service '{}' is running but the node isn't accepting AMQP on {} — it likely crashed on boot (Erlang cookie mismatch, or a missing/enabled .ez plugin).",
+                    "Message broker service '{}' is running but the node isn't accepting connections on {} — it likely crashed on boot (Erlang cookie mismatch, or a missing/enabled .ez plugin).",
                     name, RMQ_AMQP
                 ),
             },
@@ -239,9 +239,9 @@ fn rabbitmq_row_fallback() -> ServiceInfo {
         (ServiceStatus::Stopped, Some(detail))
     };
     ServiceInfo {
-        name: "RabbitMQ".into(),
-        container_name: "Message Broker".into(),
-        image: "RabbitMQ".into(),
+        name: "Message Broker".into(),
+        container_name: String::new(),
+        image: String::new(),
         status,
         health: None,
         ports: vec!["5672".into(), "15672".into()],
@@ -327,8 +327,8 @@ fn rabbitmq_last_error() -> Option<String> {
 
 fn infra_service_name(display: &str) -> Option<String> {
     match display {
-        "MySQL" => crate::installer::mysql_service_name(),
-        "RabbitMQ" => rabbitmq_service_name(),
+        "Database" => crate::installer::mysql_service_name(),
+        "Message Broker" => rabbitmq_service_name(),
         _ => None,
     }
 }
@@ -374,10 +374,10 @@ pub async fn control(display: &str, action: &str) -> Result<String, String> {
 /// Return the last `lines` of the infra component's log (lossy-decoded).
 pub fn read_log(display: &str, lines: usize) -> Result<String, String> {
     let path = match display {
-        "RabbitMQ" => newest_rabbitmq_log()
-            .ok_or_else(|| "No RabbitMQ log found (checked service + user profiles).".to_string())?,
-        "MySQL" => mysql_error_log()
-            .ok_or_else(|| "MySQL error log location could not be determined.".to_string())?,
+        "Message Broker" => newest_rabbitmq_log()
+            .ok_or_else(|| "No message broker log found (checked service + user profiles).".to_string())?,
+        "Database" => mysql_error_log()
+            .ok_or_else(|| "Database error log location could not be determined.".to_string())?,
         _ => return Err(format!("Unknown infra component '{}'.", display)),
     };
     let bytes = std::fs::read(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;

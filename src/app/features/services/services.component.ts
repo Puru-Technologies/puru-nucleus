@@ -272,7 +272,9 @@ interface UpdateFlow {
                       <div class="status-dot" [class]="'dot-' + service.status"></div>
                       <div class="name-info">
                         <span class="name-primary">{{ service.name }}</span>
-                        <span class="name-secondary">{{ service.container_name }}</span>
+                        @if (service.container_name) {
+                          <span class="name-secondary">{{ service.container_name }}</span>
+                        }
                         @if (actionMsg[service.name]; as m) {
                           <span class="action-msg" [class]="'am-' + m.kind">
                             @if (m.kind === 'busy') {
