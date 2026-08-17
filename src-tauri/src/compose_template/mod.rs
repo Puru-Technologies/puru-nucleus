@@ -100,6 +100,8 @@ pub struct ServiceModules {
     pub bridge: bool,
     pub integration: bool,
     pub hydrogen: bool,
+    #[serde(default)]
+    pub dviewer: bool,
 }
 
 impl Default for ServiceModules {
@@ -118,6 +120,7 @@ impl Default for ServiceModules {
             bridge: false,
             integration: false,
             hydrogen: false,
+            dviewer: false,
         }
     }
 }
@@ -139,6 +142,7 @@ impl ServiceModules {
             bridge: true,
             integration: true,
             hydrogen: true,
+            dviewer: true,
         }
     }
 
@@ -158,6 +162,7 @@ impl ServiceModules {
         if self.bridge { names.push("puru-bridge".into()); }
         if self.integration { names.push("puru-integration".into()); }
         if self.hydrogen { names.push("puru-hydrogen".into()); }
+        if self.dviewer { names.push("dviewer".into()); }
         names
     }
 }
@@ -959,6 +964,7 @@ services:
             bridge: false,
             integration: false,
             hydrogen: false,
+            dviewer: false,
         };
 
         let result = assemble_compose_from_dir(&frag_dir, &modules).unwrap();

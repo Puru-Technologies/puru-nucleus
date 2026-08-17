@@ -207,6 +207,7 @@ import { NotificationService } from '../../core/services/notification.service';
                 <label class="check"><input type="checkbox" [ngModel]="modules.bridge" disabled> <span>Bridge</span></label>
                 <label class="check"><input type="checkbox" [ngModel]="modules.integration" disabled> <span>Integration</span></label>
                 <label class="check"><input type="checkbox" [ngModel]="modules.hydrogen" disabled> <span>Hydrogen (Frontend)</span></label>
+                <label class="check"><input type="checkbox" [ngModel]="modules.dviewer" disabled> <span>DICOM Viewer (dviewer)</span></label>
               </div>
             </div>
 
@@ -566,6 +567,7 @@ export class ComposeComponent implements OnInit {
     bridge: true,
     integration: true,
     hydrogen: true,
+    dviewer: true,
   };
 
   variables: TemplateVariables = {

@@ -19,6 +19,8 @@ const HTTP_PORT: u16 = 80;
 /// Static file server for the puru_data tree (documents, uploads, PACS, …),
 /// mirroring the Docker "file-server" container on :81.
 const FILE_SERVER_PORT: u16 = 81;
+/// OHIF-Viewer (Puru fork) — external HIS URL generators bake this port in.
+pub const DVIEWER_PORT: u16 = 3000;
 
 /// Reverse-proxy map: URL location prefix -> backend port. Mirrors the Docker
 /// nginx config and the tls module's HTTPS config so both tiers route alike.
@@ -142,6 +144,36 @@ pub fn generate_config(config: &NucleusConfig) -> String {
         ));
     }
 
+    // dviewer (:3000) — OHIF-Viewer Puru fork, static bundle. Always emitted
+    // (block is harmless when the dir is empty; nginx returns 404 until a
+    // `puru pull-jars dviewer` populates it). Ships pre-compressed .gz files
+    // so gzip_static serves them without runtime CPU cost.
+    let dviewer_root = fwd(&config.dviewer_dir());
+    let dviewer_server = format!(
+        r#"
+    # OHIF-Viewer (Puru fork) — external HIS URL generators bake in :3000
+    server {{
+        listen {dport} default_server;
+        listen [::]:{dport} default_server;
+        server_name {server_name};
+
+        gzip_static  on;
+        gzip_proxied expired no-cache no-store private auth;
+
+        root  "{dviewer_root}";
+        index index.html;
+
+        location / {{
+            try_files $uri $uri/ /index.html;
+            add_header Cross-Origin-Resource-Policy same-origin;
+        }}
+    }}
+"#,
+        dport = DVIEWER_PORT,
+        server_name = server_name,
+        dviewer_root = dviewer_root,
+    );
+
     // File server (:81) — serves the whole puru_data directory, like the Docker
     // file-server container. Only emitted when puru_data_path is configured.
     let file_server = match config.puru_data_path.as_deref().filter(|p| !p.is_empty()) {
@@ -210,13 +242,14 @@ http {{
 
         # Backend services
 {locations}    }}
-{file_server}}}
+{dviewer_server}{file_server}}}
 "#,
         mime = mime,
         port = HTTP_PORT,
         server_name = server_name,
         html = html,
         locations = locations,
+        dviewer_server = dviewer_server,
         file_server = file_server,
     )
 }

@@ -37,6 +37,7 @@ pub struct NucleusConfig {
     pub jars_dir: Option<String>,
     pub jres_dir: Option<String>,
     pub native_logs_dir: Option<String>,
+    pub dviewer_dir: Option<String>,
     pub puru_data_path: Option<String>,
     pub daemon: Option<DaemonConfig>,
     pub lan: LanConfig,
@@ -131,6 +132,7 @@ impl Default for NucleusConfig {
             jars_dir: None,
             jres_dir: None,
             native_logs_dir: None,
+            dviewer_dir: None,
             puru_data_path: None,
             daemon: None,
             lan: LanConfig::default(),
@@ -194,6 +196,20 @@ impl NucleusConfig {
         { PathBuf::from(r"C:\PuruNucleus\nginx\html") }
         #[cfg(not(target_os = "windows"))]
         { PathBuf::from("/opt/puru/nginx/html") }
+    }
+
+    /// Resolved dviewer static bundle directory (OHIF-Viewer Puru fork,
+    /// served by the bundled nginx on port 3000 in native mode).
+    pub fn dviewer_dir(&self) -> PathBuf {
+        self.dviewer_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                #[cfg(target_os = "windows")]
+                { PathBuf::from(r"C:\PuruNucleus\dviewer") }
+                #[cfg(not(target_os = "windows"))]
+                { PathBuf::from("/opt/puru/dviewer") }
+            })
     }
 }
 

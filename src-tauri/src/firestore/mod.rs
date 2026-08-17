@@ -639,6 +639,7 @@ impl FirestoreClient {
             bridge: read_bool("bridge", false),
             integration: read_bool("integration", false),
             hydrogen: read_bool("hydrogen", false),
+            dviewer: read_bool("dviewer", false),
         })
     }
 

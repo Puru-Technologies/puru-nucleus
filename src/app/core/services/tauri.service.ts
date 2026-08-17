@@ -254,6 +254,7 @@ export interface NucleusConfig {
   jars_dir?: string;
   jres_dir?: string;
   native_logs_dir?: string;
+  dviewer_dir?: string;
   puru_data_path?: string;
   daemon?: DaemonConfig;
   lan: LanConfig;
@@ -483,6 +484,7 @@ export interface ServiceModules {
   bridge: boolean;
   integration: boolean;
   hydrogen: boolean;
+  dviewer: boolean;
 }
 
 export interface ComposeUploadResult {

@@ -65,6 +65,10 @@ const SERVICE_PORTS: &[(&str, u16)] = &[
     ("puru-mercury", 8089),
     ("puru-integration", 8088),
     ("puru-counter", 8095),
+    // dviewer is not a JAR — it's a static bundle served by the shared nginx.
+    // Listed here so the Services page shows :3000 in the port column; the
+    // start_service dispatch above short-circuits before any JAR flow reads it.
+    ("dviewer", 3000),
 ];
 
 /// Separate management/actuator port for services that run actuator on a
@@ -160,6 +164,8 @@ fn db_for_service(service: &str) -> Option<&'static str> {
 pub(crate) fn is_installed(config: &NucleusConfig, service: &str) -> bool {
     if service == "puru-hydrogen" {
         config.nginx_html_dir().join("index.html").exists()
+    } else if service == "dviewer" {
+        config.dviewer_dir().join("index.html").exists()
     } else {
         jar_path(config, service).exists()
     }
@@ -341,6 +347,11 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     if name == "puru-hydrogen" {
         return crate::webserver::start(config).await;
     }
+    // dviewer rides on the same nginx as hydrogen (extra server block on :3000).
+    // Bringing it up = ensure nginx is up; the block is emitted unconditionally.
+    if name == "dviewer" {
+        return crate::webserver::start(config).await;
+    }
 
     // Check if already running
     if let Some(pid) = read_pid(config, name) {
@@ -461,6 +472,13 @@ pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), Nucl
     if name == "puru-hydrogen" {
         return crate::webserver::stop(config).await;
     }
+    // dviewer shares nginx with hydrogen; stopping dviewer independently would
+    // require killing the shared web tier. Treat as a no-op — operators bring
+    // the web tier down by stopping puru-hydrogen.
+    if name == "dviewer" {
+        tracing::info!("dviewer is served by the shared nginx (with puru-hydrogen); stop puru-hydrogen to bring down the web tier");
+        return Ok(());
+    }
 
     let pid = read_pid(config, name).ok_or_else(|| {
         NucleusError::NotFound(format!("No PID file for {}. Is it running?", name))
@@ -561,6 +579,22 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             } else {
                 ServiceStatus::NotInstalled // enabled but not deployed
             }
+        } else if svc_name == "dviewer" {
+            // dviewer is the OHIF static bundle on :3000, served by the same
+            // bundled nginx as puru-hydrogen.
+            let deployed = config.dviewer_dir().join("index.html").exists();
+            let served = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], crate::webserver::DVIEWER_PORT)),
+                std::time::Duration::from_millis(500),
+            )
+            .is_ok();
+            if deployed && served {
+                ServiceStatus::Running
+            } else if deployed {
+                ServiceStatus::Stopped
+            } else {
+                ServiceStatus::NotInstalled
+            }
         } else if alive {
             ServiceStatus::Running
         } else if jar_path(config, svc_name).exists() {
@@ -588,6 +622,8 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             format!("{}@{}", artifact, meta.short_sha)
         } else if svc_name == "puru-hydrogen" {
             "angular".to_string()
+        } else if svc_name == "dviewer" {
+            "static".to_string()
         } else {
             "not installed".to_string()
         };
