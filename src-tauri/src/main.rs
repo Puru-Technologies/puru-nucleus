@@ -363,6 +363,7 @@ fn run_gui(minimized: bool) {
             commands::check_credentials_file,
             commands::import_credentials_file,
             commands::save_credentials_content,
+            commands::redeem_onboarding_code,
             // Environment checks
             commands::check_system_clock,
             // Logging

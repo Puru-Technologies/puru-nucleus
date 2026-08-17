@@ -1186,6 +1186,93 @@ pub async fn save_credentials_content(content: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Cloud Function that exchanges a one-time onboarding code for the hospital's
+/// service-account key + email. Region is Firebase Gen-1 default (us-central1).
+const ONBOARD_REDEEM_URL: &str =
+    "https://us-central1-puru-255206.cloudfunctions.net/redeemOnboardingCode";
+
+#[derive(serde::Serialize)]
+struct RedeemRequest<'a> {
+    code: &'a str,
+    fingerprint: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct RedeemResponse {
+    sa_key: String,
+    hospital_email: String,
+    hospital_code: String,
+    hospital_name: String,
+}
+
+/// Returned to the activation UI so the operator can confirm the hospital.
+#[derive(serde::Serialize)]
+pub struct RedeemResult {
+    pub hospital_email: String,
+    pub hospital_name: String,
+    pub hospital_code: String,
+}
+
+/// Redeem a one-time onboarding code: POST it (with this machine's hardware
+/// fingerprint) to the cloud function, receive the SA key + hospital info,
+/// store the key encrypted at rest, and return the hospital email/name for the
+/// operator to confirm before activation proceeds.
+#[tauri::command]
+pub async fn redeem_onboarding_code(code: String) -> Result<RedeemResult, String> {
+    let code = code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Enter the onboarding code.".into());
+    }
+
+    let fingerprint = crate::licensing::fingerprint::get_cached_fingerprint()
+        .map_err(|e| format!("Could not read hardware fingerprint: {}", e))?;
+
+    let resp = reqwest::Client::new()
+        .post(ONBOARD_REDEEM_URL)
+        .json(&RedeemRequest {
+            code: &code,
+            fingerprint: &fingerprint,
+        })
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach the activation server: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let msg = match status.as_u16() {
+            404 => "Invalid code — check it and try again.",
+            410 => "This code has expired or was already used. Ask for a new one.",
+            409 => "Cloud credentials aren't ready for this hospital yet.",
+            403 => "This hospital has reached its machine limit — contact your admin.",
+            _ => "Activation failed. Please try again.",
+        };
+        return Err(msg.to_string());
+    }
+
+    let data: RedeemResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Unexpected response from activation server: {}", e))?;
+
+    // Store the SA key encrypted at rest and point config at it.
+    let dest = credentials_path();
+    crate::secret::write_encrypted(&dest.to_string_lossy(), data.sa_key.as_bytes())
+        .map_err(|e| format!("Failed to store credentials: {}", e))?;
+    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+    config.gcs_credentials_path = Some(dest.display().to_string());
+    crate::config::save_config(&config).map_err(|e| e.user_message())?;
+
+    tracing::info!(
+        "Redeemed onboarding code for hospital {}",
+        data.hospital_code
+    );
+    Ok(RedeemResult {
+        hospital_email: data.hospital_email,
+        hospital_name: data.hospital_name,
+        hospital_code: data.hospital_code,
+    })
+}
+
 /// Validate that JSON content looks like a GCP service account key
 fn validate_credentials_json(content: &str) -> Result<(), String> {
     let json: serde_json::Value = serde_json::from_str(content)

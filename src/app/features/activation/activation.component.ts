@@ -61,9 +61,10 @@ interface SystemClockStatus {
 
           <!-- Step 1: GCS Credentials -->
           @if (!credentialsReady) {
-            <h2>Step 1: Service Account</h2>
+            <h2>Step 1: Enter your onboarding code</h2>
             <p class="subtitle">
-              Upload the GCS service account JSON file received from your admin.
+              Your admin generated a one-time code on the hospital's page. Enter it
+              to set up this machine — no key file to handle.
             </p>
 
             @if (checking) {
@@ -72,66 +73,84 @@ interface SystemClockStatus {
                 <span>Checking for credentials...</span>
               </div>
             } @else {
-              <!-- Action buttons -->
-              <div class="creds-actions">
-                <button class="btn btn-stroked creds-btn"
-                        (click)="browseFile()"
-                        [disabled]="importing">
-                  <span class="material-icons">folder_open</span>
-                  <div class="btn-text">
-                    <span class="btn-label">Browse File</span>
-                    <span class="btn-hint">Select from this computer</span>
-                  </div>
-                </button>
-
-                <button class="btn btn-stroked creds-btn"
-                        (click)="showPaste = !showPaste"
-                        [disabled]="importing">
-                  <span class="material-icons">content_paste</span>
-                  <div class="btn-text">
-                    <span class="btn-label">Paste JSON</span>
-                    <span class="btn-hint">From WhatsApp / email</span>
-                  </div>
-                </button>
+              <!-- Primary: onboarding code -->
+              <div class="field full-width">
+                <label>Onboarding code</label>
+                <input class="input code-input" type="text"
+                       [(ngModel)]="code"
+                       [disabled]="redeeming"
+                       maxlength="10"
+                       placeholder="e.g. 7KQ9M2XR4T"
+                       (keyup.enter)="redeemCode()">
+                <span class="field-hint">10 characters · valid for 1 hour · ask your admin</span>
               </div>
 
-              <!-- Paste area -->
-              @if (showPaste) {
-                <div class="paste-area">
-                  <div class="field full-width">
-                    <label>Paste service account JSON here</label>
-                    <textarea class="input"
-                              [(ngModel)]="pastedJson"
-                              rows="6"
-                              placeholder='{"type": "service_account", "project_id": "puru-255206", ...}'></textarea>
-                    <span class="field-hint">Paste the full JSON content from the credentials file</span>
-                  </div>
-                  <button class="btn btn-primary"
-                          (click)="savePastedJson()"
-                          [disabled]="!pastedJson.trim() || importing">
-                    @if (importing) {
-                      <span class="spinner"></span>
-                    }
-                    Save Credentials
+              <button class="btn btn-primary activate-btn"
+                      (click)="redeemCode()"
+                      [disabled]="!code.trim() || redeeming">
+                @if (redeeming) {
+                  <span class="spinner"></span>
+                  Verifying...
+                } @else {
+                  <span class="material-icons">vpn_key</span>
+                  Continue
+                }
+              </button>
+
+              <!-- Advanced fallback: use a service-account file directly -->
+              <button class="btn btn-text advanced-toggle" (click)="showAdvanced = !showAdvanced">
+                {{ showAdvanced ? 'Hide advanced' : 'Advanced: use a service-account file instead' }}
+              </button>
+
+              @if (showAdvanced) {
+                <div class="creds-actions">
+                  <button class="btn btn-stroked creds-btn"
+                          (click)="browseFile()"
+                          [disabled]="importing">
+                    <span class="material-icons">folder_open</span>
+                    <div class="btn-text">
+                      <span class="btn-label">Browse File</span>
+                      <span class="btn-hint">Select from this computer</span>
+                    </div>
+                  </button>
+
+                  <button class="btn btn-stroked creds-btn"
+                          (click)="showPaste = !showPaste"
+                          [disabled]="importing">
+                    <span class="material-icons">content_paste</span>
+                    <div class="btn-text">
+                      <span class="btn-label">Paste JSON</span>
+                      <span class="btn-hint">From WhatsApp / email</span>
+                    </div>
                   </button>
                 </div>
+
+                @if (showPaste) {
+                  <div class="paste-area">
+                    <div class="field full-width">
+                      <label>Paste service account JSON here</label>
+                      <textarea class="input"
+                                [(ngModel)]="pastedJson"
+                                rows="6"
+                                placeholder='{"type": "service_account", "project_id": "puru-255206", ...}'></textarea>
+                      <span class="field-hint">Paste the full JSON content from the credentials file</span>
+                    </div>
+                    <button class="btn btn-primary"
+                            (click)="savePastedJson()"
+                            [disabled]="!pastedJson.trim() || importing">
+                      @if (importing) {
+                        <span class="spinner"></span>
+                      }
+                      Save Credentials
+                    </button>
+                  </div>
+                }
               }
 
               @if (importing) {
                 <div class="checking-state">
                   <span class="spinner"></span>
-                  <span>Importing credentials...</span>
-                </div>
-              }
-
-              <!-- Not found hint -->
-              @if (!showPaste && !importing) {
-                <div class="hint-box">
-                  <span class="material-icons">info_outline</span>
-                  <span>
-                    Ask your admin to send the <strong>service-account.json</strong> file.
-                    They can share it via WhatsApp, email, or USB drive.
-                  </span>
+                  <span>Setting up…</span>
                 </div>
               }
             }
@@ -147,10 +166,17 @@ interface SystemClockStatus {
               </button>
             </div>
 
-            <h2>Step 2: Activate</h2>
+            <h2>Step 2: Confirm & activate</h2>
             <p class="subtitle">
-              Enter the hospital email and machine name to activate
+              Confirm the hospital email and name this machine to activate
             </p>
+
+            @if (hospitalName) {
+              <div class="hint-box">
+                <span class="material-icons">domain</span>
+                <span>Onboarding <strong>{{ hospitalName }}</strong> — make sure the hospital email below is correct before activating.</span>
+              </div>
+            }
 
             <div class="field full-width">
               <label>Hospital Email</label>
@@ -557,13 +583,20 @@ export class ActivationComponent {
   checking = true;
   importing = false;
   showPaste = false;
+  showAdvanced = false;
   pastedJson = '';
   designatedPath = '';
+
+  // Onboarding code
+  code = '';
+  redeeming = false;
 
   // Step 2 state
   email = '';
   machineName = '';
   fingerprint = '';
+  hospitalName = '';
+  hospitalCode = '';
   activating = false;
   error: string | null = null;
 
@@ -602,6 +635,35 @@ export class ActivationComponent {
       // First run — no config dir yet
     } finally {
       this.checking = false;
+    }
+  }
+
+  /** Redeem a one-time onboarding code: the backend fetches + stores the key
+   *  (encrypted) and returns the hospital email/name for the operator to
+   *  confirm before activating. */
+  async redeemCode(): Promise<void> {
+    const code = this.code.trim().toUpperCase();
+    if (!code) return;
+
+    this.error = null;
+    this.redeeming = true;
+    try {
+      const res = await this.tauri.invoke<{
+        hospital_email: string;
+        hospital_name: string;
+        hospital_code: string;
+      }>('redeem_onboarding_code', { code });
+
+      this.email = res.hospital_email;
+      this.hospitalName = res.hospital_name;
+      this.hospitalCode = res.hospital_code;
+      this.credentialsReady = true;
+      this.loadFingerprint();
+      this.notification.success('Code accepted');
+    } catch (error) {
+      this.error = String(error);
+    } finally {
+      this.redeeming = false;
     }
   }
 
@@ -655,7 +717,11 @@ export class ActivationComponent {
   resetCredentials(): void {
     this.credentialsReady = false;
     this.showPaste = false;
+    this.showAdvanced = false;
     this.pastedJson = '';
+    this.code = '';
+    this.hospitalName = '';
+    this.hospitalCode = '';
     this.error = null;
   }
 
