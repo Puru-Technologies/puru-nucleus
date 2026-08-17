@@ -195,6 +195,31 @@ async fn wait_for_port_free(port: u16, max_secs: u64) -> bool {
     }
 }
 
+/// Force-kill *every* JVM whose command line references `<name>.jar`, whether
+/// or not our PID file knows about it. `stop_service` only kills the tracked
+/// PID's tree; a stale PID file (so the stop was skipped) or a duplicate/zombie
+/// JVM that escaped a previous stop will keep `<name>.jar` memory-mapped and
+/// locked on Windows, which blocks the update swap with SHARING_VIOLATION
+/// (os error 32). This targets the actual jar holders directly. Matching is by
+/// the `puru-*.jar` command-line label, so it can never touch the message
+/// broker (erl/beam) or database node. Returns how many processes were killed.
+async fn kill_lingering_service_jvms(name: &str) -> usize {
+    let mut killed = 0;
+    for p in crate::process_explorer::list_processes().await {
+        if p.label == name {
+            tracing::warn!(
+                "apply: killing lingering JVM (PID {}) still holding {}.jar",
+                p.pid,
+                name
+            );
+            if crate::process_explorer::kill_pid(p.pid).await.is_ok() {
+                killed += 1;
+            }
+        }
+    }
+    killed
+}
+
 /// Wait until a service's actuator reports readiness `UP`, or `max_secs`
 /// elapses. Used to gate dependent services behind puru-auth at startup so the
 /// rest of the fleet doesn't come up before the token authority is accepting
@@ -777,6 +802,16 @@ where
     if was_running {
         on("stopping", 0, 0);
         stop_service(name, config).await?;
+    }
+
+    // Belt-and-suspenders before the swap: kill ANY JVM still holding
+    // <name>.jar, even one our PID file never knew about (stale PID → stop
+    // skipped, or a duplicate that escaped stop_service). Windows keeps the jar
+    // locked for as long as any such process lives, which is what fails the
+    // apply with "still locked (os error 32)".
+    let killed = kill_lingering_service_jvms(name).await;
+    if was_running || killed > 0 {
+        // Let Windows unmap the file view and release the lock before renaming.
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
