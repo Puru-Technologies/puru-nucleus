@@ -61,6 +61,55 @@ fn label_from_cmd(cmd: &str) -> String {
     String::new()
 }
 
+/// Last-resort service name from the binary name alone, so infra/frontend
+/// processes (which have no `puru-*.jar` on their command line) still resolve
+/// to a friendly name. Mirrors the "Database" / "Message Broker" labels used in
+/// the Services list.
+fn label_from_binary(name_lower: &str) -> String {
+    if name_lower.contains("mysqld") || name_lower.contains("mysql") {
+        "Database".to_string()
+    } else if name_lower.contains("rabbitmq")
+        || name_lower.contains("beam")
+        || name_lower.contains("erl")
+        || name_lower.contains("epmd")
+    {
+        "Message Broker".to_string()
+    } else if name_lower.contains("nginx") {
+        "puru-hydrogen".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// PID → service name, read from the `.pid` files Nucleus writes under the
+/// native logs dir (`<service>.pid`). This is authoritative — it matches the
+/// exact PID we launched — so it labels a tracked service even when its command
+/// line is empty or unparseable (common for SYSTEM-owned JVMs).
+fn pid_file_labels() -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    let cfg = match crate::config::load_config() {
+        Ok(c) => c,
+        Err(_) => return map,
+    };
+    if let Ok(entries) = std::fs::read_dir(cfg.native_logs_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("pid") {
+                continue;
+            }
+            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if let Ok(txt) = std::fs::read_to_string(&path) {
+                if let Ok(pid) = txt.trim().parse::<u32>() {
+                    map.insert(pid, name.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
 /// Truncate a long command line for display. Keeps the head and tail so the
 /// jar path stays visible.
 fn truncate_cmd(cmd: &str, max: usize) -> String {
@@ -156,6 +205,7 @@ pub async fn list_processes() -> Vec<ProcessInfo> {
     use sysinfo::{PidExt, ProcessExt, System, SystemExt};
 
     let ports_by_pid = collect_listening_ports().await;
+    let pid_labels = pid_file_labels();
 
     let mut sys = System::new_all();
     sys.refresh_all();
@@ -173,8 +223,21 @@ pub async fn list_processes() -> Vec<ProcessInfo> {
         }
         let cmd_joined = process.cmd().join(" ");
         let cmd = truncate_cmd(&cmd_joined, 180);
-        let label = label_from_cmd(&cmd_joined);
         let pid_u32 = pid.as_u32();
+        // Authoritative PID-file match first, then the jar on the command line,
+        // then a binary-name guess — so every Puru process shows a name.
+        let label = pid_labels
+            .get(&pid_u32)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                let from_cmd = label_from_cmd(&cmd_joined);
+                if from_cmd.is_empty() {
+                    label_from_binary(&name.to_lowercase())
+                } else {
+                    from_cmd
+                }
+            });
         let mem_mb = process.memory() / 1024 / 1024;
         let cpu_pct = (process.cpu_usage() * 10.0).round() / 10.0;
         let listening_ports = ports_by_pid.get(&pid_u32).cloned().unwrap_or_default();
