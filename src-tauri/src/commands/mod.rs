@@ -3977,3 +3977,37 @@ pub async fn kill_process_by_pid(pid: u32) -> Result<u32, String> {
         .await
         .map_err(|e| e.user_message())
 }
+
+// ── Performance (JVM memory plan) ────────────────────────────────────────────
+
+/// The current memory plan for this box, with measured RSS folded in for every
+/// service that's running so the screen can show plan against reality.
+#[tauri::command]
+pub async fn get_performance_plan() -> Result<crate::performance::MemoryPlan, String> {
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    let mut plan = crate::performance::plan(&config);
+
+    // Match processes to services by the label the explorer already derives from
+    // the PID file or the jar on the command line.
+    let processes = crate::process_explorer::list_processes().await;
+    for row in &mut plan.services {
+        row.measured_rss_mb = processes
+            .iter()
+            .find(|p| p.label == row.service)
+            .map(|p| p.mem_mb);
+    }
+
+    Ok(plan)
+}
+
+/// Persist an edited plan. Saving explicit per-service values turns auto-tuning
+/// off — otherwise the next start would recompute over the operator's edits.
+#[tauri::command]
+pub async fn save_performance_config(
+    performance: crate::performance::PerformanceConfig,
+) -> Result<crate::performance::MemoryPlan, String> {
+    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+    config.performance = performance;
+    crate::config::save_config(&config).map_err(|e| e.user_message())?;
+    Ok(crate::performance::plan(&config))
+}

@@ -47,6 +47,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/inbox/inbox.component').then(m => m.InboxComponent)
   },
   {
+    path: 'performance',
+    canActivate: [initGuard],
+    loadComponent: () => import('./features/performance/performance.component').then(m => m.PerformanceComponent)
+  },
+  {
     path: 'updates',
     canActivate: [initGuard],
     loadComponent: () => import('./features/updates/updates.component').then(m => m.UpdatesComponent)

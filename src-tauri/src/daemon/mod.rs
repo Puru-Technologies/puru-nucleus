@@ -55,6 +55,8 @@ pub async fn run_daemon() {
         .route("/api/system", get(routes::system_info))
         // Config
         .route("/api/config", get(routes::get_config))
+        .route("/api/performance", get(routes::get_performance))
+        .route("/api/performance", put(routes::update_performance))
         // Backup
         .route("/api/backup", post(routes::trigger_backup))
         .route("/api/backup/list", get(routes::backup_list))

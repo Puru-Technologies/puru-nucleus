@@ -81,6 +81,10 @@ interface CommandActivity {
                 <span class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
               }
             </a>
+            <a class="nav-item" routerLink="/performance" routerLinkActive="active">
+              <span class="material-icons">speed</span>
+              <span>Performance</span>
+            </a>
             <a class="nav-item" routerLink="/updates" routerLinkActive="active">
               <span class="material-icons">system_update</span>
               <span>Updates</span>

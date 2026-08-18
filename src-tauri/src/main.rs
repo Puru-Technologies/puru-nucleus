@@ -29,6 +29,7 @@ mod messaging;
 mod network;
 mod file_lock;
 mod logs;
+mod performance;
 mod platform;
 mod process;
 mod process_explorer;
@@ -294,6 +295,9 @@ fn run_gui(minimized: bool) {
             // Process explorer (Services tab port tools)
             commands::list_puru_processes,
             commands::kill_process_by_pid,
+            // Performance (JVM memory plan)
+            commands::get_performance_plan,
+            commands::save_performance_config,
             // Services
             commands::get_services,
             commands::start_service,

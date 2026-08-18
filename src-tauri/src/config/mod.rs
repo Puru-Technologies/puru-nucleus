@@ -1,5 +1,6 @@
 //! Configuration management
 
+use crate::performance::PerformanceConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -47,6 +48,9 @@ pub struct NucleusConfig {
     /// When true, the UI hides all configuration screens (Settings, Compose,
     /// Setup, Master Data, Shell). Flipped by ops in nucleus.toml at handover.
     pub production_mode: bool,
+    /// JVM memory budget for native-mode services. Defaults to auto-tuning from
+    /// the box's RAM; see `crate::performance`.
+    pub performance: PerformanceConfig,
 }
 
 /// Daemon mode configuration
@@ -138,6 +142,7 @@ impl Default for NucleusConfig {
             lan: LanConfig::default(),
             setup_completed: false,
             production_mode: false,
+            performance: PerformanceConfig::default(),
         }
     }
 }
