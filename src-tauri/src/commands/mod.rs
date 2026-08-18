@@ -1203,14 +1203,23 @@ struct RedeemResponse {
     hospital_email: String,
     hospital_code: String,
     hospital_name: String,
+    /// "known" (re-activation of a registered machine) or "new_allowed".
+    #[serde(default)]
+    machine_status: String,
+    /// Existing label when the machine is already registered.
+    #[serde(default)]
+    machine_name: String,
 }
 
-/// Returned to the activation UI so the operator can confirm the hospital.
+/// Returned to the activation UI so the operator can confirm the hospital and
+/// so the UI can skip the machine-name prompt for an already-registered machine.
 #[derive(serde::Serialize)]
 pub struct RedeemResult {
     pub hospital_email: String,
     pub hospital_name: String,
     pub hospital_code: String,
+    pub machine_status: String,
+    pub machine_name: String,
 }
 
 /// Redeem a one-time onboarding code: POST it (with this machine's hardware
@@ -1243,7 +1252,7 @@ pub async fn redeem_onboarding_code(code: String) -> Result<RedeemResult, String
             404 => "Invalid code — check it and try again.",
             410 => "This code has expired or was already used. Ask for a new one.",
             409 => "Cloud credentials aren't ready for this hospital yet.",
-            403 => "This hospital has reached its machine limit — contact your admin.",
+            403 => "You have a single-machine license — this machine can't be activated. Contact Puru customer care.",
             _ => "Activation failed. Please try again.",
         };
         return Err(msg.to_string());
@@ -1270,6 +1279,8 @@ pub async fn redeem_onboarding_code(code: String) -> Result<RedeemResult, String
         hospital_email: data.hospital_email,
         hospital_name: data.hospital_name,
         hospital_code: data.hospital_code,
+        machine_status: data.machine_status,
+        machine_name: data.machine_name,
     })
 }
 

@@ -61,10 +61,9 @@ interface SystemClockStatus {
 
           <!-- Step 1: GCS Credentials -->
           @if (!credentialsReady) {
-            <h2>Step 1: Enter your onboarding code</h2>
+            <h2>Activate this machine</h2>
             <p class="subtitle">
-              Your admin generated a one-time code on the hospital's page. Enter it
-              to set up this machine — no key file to handle.
+              Enter the 10-character code from your email.
             </p>
 
             @if (checking) {
@@ -75,14 +74,13 @@ interface SystemClockStatus {
             } @else {
               <!-- Primary: onboarding code -->
               <div class="field full-width">
-                <label>Onboarding code</label>
+                <label>Code</label>
                 <input class="input code-input" type="text"
                        [(ngModel)]="code"
                        [disabled]="redeeming"
                        maxlength="10"
                        placeholder="e.g. 7KQ9M2XR4T"
                        (keyup.enter)="redeemCode()">
-                <span class="field-hint">10 characters · valid for 1 hour · ask your admin</span>
               </div>
 
               <button class="btn btn-primary activate-btn"
@@ -97,9 +95,9 @@ interface SystemClockStatus {
                 }
               </button>
 
-              <!-- Advanced fallback: use a service-account file directly -->
+              <!-- Discreet fallback for edge cases; no jargon in the label -->
               <button class="btn btn-text advanced-toggle" (click)="showAdvanced = !showAdvanced">
-                {{ showAdvanced ? 'Hide advanced' : 'Advanced: use a service-account file instead' }}
+                {{ showAdvanced ? 'Hide' : 'Advanced' }}
               </button>
 
               @if (showAdvanced) {
@@ -188,15 +186,22 @@ interface SystemClockStatus {
               <span class="field-hint">This email was used during hospital onboarding</span>
             </div>
 
-            <div class="field full-width">
-              <label>Machine Name</label>
-              <input class="input" type="text"
-                     [(ngModel)]="machineName"
-                     [disabled]="activating"
-                     placeholder="Main Server"
-                     (keyup.enter)="activate()">
-              <span class="field-hint">A friendly name for this computer (e.g. "Main Server", "Reception PC")</span>
-            </div>
+            @if (machineKnown) {
+              <div class="hint-box">
+                <span class="material-icons">verified_user</span>
+                <span>This machine is already registered as <strong>{{ machineName }}</strong> — re-activating, no new name needed.</span>
+              </div>
+            } @else {
+              <div class="field full-width">
+                <label>Machine Name</label>
+                <input class="input" type="text"
+                       [(ngModel)]="machineName"
+                       [disabled]="activating"
+                       placeholder="Main Server"
+                       (keyup.enter)="activate()">
+                <span class="field-hint">A friendly name for this computer (e.g. "Main Server", "Reception PC")</span>
+              </div>
+            }
 
             @if (fingerprint) {
               <div class="fingerprint-box">
@@ -590,6 +595,7 @@ export class ActivationComponent {
   // Onboarding code
   code = '';
   redeeming = false;
+  machineKnown = false;
 
   // Step 2 state
   email = '';
@@ -652,14 +658,22 @@ export class ActivationComponent {
         hospital_email: string;
         hospital_name: string;
         hospital_code: string;
+        machine_status: string;
+        machine_name: string;
       }>('redeem_onboarding_code', { code });
 
       this.email = res.hospital_email;
       this.hospitalName = res.hospital_name;
       this.hospitalCode = res.hospital_code;
+      // "known" = this machine is already registered → re-activation, no need to
+      // name it again. Otherwise it's a new (allowed) machine → ask for a name.
+      this.machineKnown = res.machine_status === 'known';
+      if (this.machineKnown) {
+        this.machineName = res.machine_name || 'This machine';
+      }
       this.credentialsReady = true;
       this.loadFingerprint();
-      this.notification.success('Code accepted');
+      this.notification.success(this.machineKnown ? 'Welcome back — machine recognised' : 'Code accepted');
     } catch (error) {
       this.error = String(error);
     } finally {
@@ -722,6 +736,7 @@ export class ActivationComponent {
     this.code = '';
     this.hospitalName = '';
     this.hospitalCode = '';
+    this.machineKnown = false;
     this.error = null;
   }
 
