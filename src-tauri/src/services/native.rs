@@ -327,6 +327,21 @@ fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::Ha
     vars.insert("PURU_TOKEN_KEY".to_string(), daemon_key);
     vars.insert("PURU_SERVICE".to_string(), service.to_string());
 
+    // Schema bootstrap. The services' bundled application.properties ship with
+    // `spring.jpa.hibernate.ddl-auto` COMMENTED OUT, so on a database with the
+    // MySQL dialect Spring Boot defaults to `none` — Hibernate never creates the
+    // schema. A fresh install therefore starts every service against an empty
+    // database and it crashes at boot (e.g. auth's SecurityAuditorAware queries
+    // `puru_user` before any table exists). We inject `ddl-auto=update` here so
+    // each service creates/upgrades its own schema on boot; the seed step then
+    // fills in config/ref_data rows. `update` only adds tables/columns, never
+    // drops, so it is safe to leave on for the lifetime of the deployment.
+    // (SPRING_JPA_HIBERNATE_DDL_AUTO → spring.jpa.hibernate.ddl-auto via Spring
+    // relaxed binding; a value already present in an env file still wins because
+    // env-file vars are inserted above and we only set it when absent.)
+    vars.entry("SPRING_JPA_HIBERNATE_DDL_AUTO".to_string())
+        .or_insert_with(|| "update".to_string());
+
     vars
 }
 
