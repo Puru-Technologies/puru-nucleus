@@ -72,6 +72,7 @@ messaging/                  Hospital inbox messaging
   types.rs                  InboxMessage, MessageAttachment types
   files.rs                  GCS file download (parse gs:// URLs)
   file_actions.rs           Apply config files, install certificates
+performance/mod.rs          JVM memory planning for native services (budget, tiers, flags)
 platform/                   System service management
   mod.rs                    Platform-agnostic facade (install/uninstall/start/stop/status)
   linux.rs                  systemd unit file management
@@ -114,6 +115,7 @@ features/
   alerts/                   Alert display + acknowledgment
   inbox/                    Hospital inbox (messages from admin)
   updates/                  Nucleus + service version updates
+  performance/              JVM memory budget (per-service heap, GC, reserves)
   settings/                 Configuration (daemon, backup schedule, MySQL, GCS)
   setup/                    9-step installation wizard
   remote-shell/             Remote command execution with audit log
@@ -131,6 +133,8 @@ features/
 | GET | `/api/services/:name/logs` | Container logs |
 | GET | `/api/system` | System info |
 | GET | `/api/config` | Current configuration |
+| GET | `/api/performance` | JVM memory plan (with measured RSS) |
+| PUT | `/api/performance` | Update JVM memory plan |
 | POST | `/api/backup` | Trigger backup |
 | GET | `/api/backup/list` | Backup history |
 | GET | `/api/backup/schedule` | Get backup schedule |
@@ -227,6 +231,12 @@ backup_type = "full"
 enabled = false
 path = ""
 binlog_enabled = false
+
+# Optional. Absent means auto-tune from the box's RAM; see src-tauri/src/performance.
+[performance]
+enabled = true
+auto_tune = true
+exit_on_oom = false
 ```
 
 ## Documentation
@@ -244,7 +254,8 @@ binlog_enabled = false
 ## Testing
 
 ```bash
-# Rust tests (33 tests covering config, detection, docker_update, licensing, messaging, releases, remote_shell)
+# Rust tests (69 tests covering config, detection, docker_update, licensing, messaging,
+# performance, releases, remote_shell)
 cargo test
 
 # Angular tests

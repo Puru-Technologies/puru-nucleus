@@ -815,3 +815,33 @@ pub async fn gcp_token(
         "expires_at": expires_at,
     })))
 }
+
+// ── Performance (JVM memory plan) ────────────────────────────────────────────
+
+/// GET /api/performance
+pub async fn get_performance() -> Result<Json<crate::performance::MemoryPlan>, (StatusCode, String)>
+{
+    let config = crate::config::load_config().map_err(|e| internal_err(e.user_message()))?;
+    let mut plan = crate::performance::plan(&config);
+
+    let processes = crate::process_explorer::list_processes().await;
+    for row in &mut plan.services {
+        row.measured_rss_mb = processes
+            .iter()
+            .find(|p| p.label == row.service)
+            .map(|p| p.mem_mb);
+    }
+
+    Ok(Json(plan))
+}
+
+/// PUT /api/performance — replaces the whole `[performance]` section and returns
+/// the plan that results, so the caller sees what its edit actually produced.
+pub async fn update_performance(
+    Json(input): Json<crate::performance::PerformanceConfig>,
+) -> Result<Json<crate::performance::MemoryPlan>, (StatusCode, String)> {
+    let mut config = crate::config::load_config().map_err(|e| internal_err(e.user_message()))?;
+    config.performance = input;
+    crate::config::save_config(&config).map_err(|e| internal_err(e.user_message()))?;
+    Ok(Json(crate::performance::plan(&config)))
+}

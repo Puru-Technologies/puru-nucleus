@@ -45,6 +45,12 @@ export const COMMAND_MAP: Record<string, HttpMapping> = {
   // ── System / config / license ──────────────────────────────────────────────
   get_telemetry_snapshot: { method: 'GET', path: '/api/system' },
   get_config: { method: 'GET', path: '/api/config' },
+  get_performance_plan: { method: 'GET', path: '/api/performance' },
+  save_performance_config: {
+    method: 'PUT',
+    path: '/api/performance',
+    body: 'raw:performance',
+  },
   get_license: { method: 'GET', path: '/api/license', notFoundNull: true },
   pull_settings: { method: 'POST', path: '/api/pull' },
 

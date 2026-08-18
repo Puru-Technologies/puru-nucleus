@@ -438,9 +438,18 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     // Load env vars
     let env_vars = load_env_files(config, name);
 
+    // JVM options from the memory plan. These must precede `-jar`: everything
+    // after it is an argument to the application, not to the VM. An empty vec
+    // (tuning switched off) reproduces the old bare `java -jar` launch exactly.
+    let vm_args = crate::performance::jvm_args(name, config);
+    if !vm_args.is_empty() {
+        tracing::info!("Starting {} with JVM options: {}", name, vm_args.join(" "));
+    }
+
     // Spawn process from the config dir — services resolve relative paths
     // (e.g. credential files) against their working directory
     let child = crate::process::silent_cmd(&java_bin.to_string_lossy())
+        .args(&vm_args)
         .args(["-jar", &jar.to_string_lossy()])
         .envs(env_vars)
         .current_dir(crate::config::config_dir())

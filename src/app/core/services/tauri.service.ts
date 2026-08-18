@@ -260,6 +260,67 @@ export interface NucleusConfig {
   lan: LanConfig;
   setup_completed?: boolean;
   production_mode?: boolean;
+  performance?: PerformanceConfig;
+}
+
+/** JVM memory settings for one service. */
+export interface ServiceMemory {
+  /** -Xms */
+  min_mb: number;
+  /** -Xmx — the figure every other number is derived from. */
+  max_mb: number;
+  /** -XX:MaxMetaspaceSize */
+  metaspace_mb: number;
+  /** -XX:MaxDirectMemorySize. Null leaves the JVM default, which equals max heap. */
+  direct_mb: number | null;
+  gc: 'default' | 'serial' | 'g1';
+  extra_flags: string[];
+}
+
+/** RAM held back from the JVM budget for everything else on the box. */
+export interface ReserveConfig {
+  os_mb: number;
+  nucleus_mb: number;
+  mysql_mb: number;
+  rabbitmq_mb: number;
+  other_mb: number;
+}
+
+/** The [performance] section of nucleus.toml. */
+export interface PerformanceConfig {
+  enabled: boolean;
+  auto_tune: boolean;
+  exit_on_oom: boolean;
+  reserves: ReserveConfig | null;
+  services: Record<string, ServiceMemory>;
+}
+
+export interface ServicePlan {
+  service: string;
+  tier: 'hot' | 'mid' | 'light';
+  installed: boolean;
+  memory: ServiceMemory;
+  /** Heap + non-heap tail: what this service is expected to cost the box. */
+  estimated_rss_mb: number;
+  /** Measured RSS, when the process is running. */
+  measured_rss_mb: number | null;
+  jvm_args: string[];
+}
+
+export interface MemoryPlan {
+  total_ram_mb: number;
+  reserves: ReserveConfig;
+  reserved_total_mb: number;
+  jvm_budget_mb: number;
+  allocated_mb: number;
+  /** Budget minus allocation. Negative means the plan does not fit. */
+  headroom_mb: number;
+  fits: boolean;
+  auto_tune: boolean;
+  enabled: boolean;
+  exit_on_oom: boolean;
+  services: ServicePlan[];
+  warnings: string[];
 }
 
 export interface DaemonStatus {
