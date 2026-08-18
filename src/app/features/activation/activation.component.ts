@@ -158,7 +158,7 @@ interface SystemClockStatus {
           @if (credentialsReady) {
             <div class="creds-saved-banner">
               <span class="material-icons">check_circle</span>
-              <span class="banner-title">Service account configured</span>
+              <span class="banner-title">Authentication complete</span>
               <button class="btn-icon" (click)="resetCredentials()" title="Edit">
                 <span class="material-icons">edit</span>
               </button>
