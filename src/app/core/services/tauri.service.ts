@@ -297,7 +297,7 @@ export interface PerformanceConfig {
 
 export interface ServicePlan {
   service: string;
-  tier: 'hot' | 'mid' | 'light';
+  tier: 'heavy' | 'standard' | 'small';
   installed: boolean;
   memory: ServiceMemory;
   /** Heap + non-heap tail: what this service is expected to cost the box. */

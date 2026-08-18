@@ -50,52 +50,58 @@ const SERIAL_GC_MAX_HEAP_MB: u64 = 256;
 /// Heap sizes are rounded down to a multiple of this, so the flags stay readable.
 const HEAP_GRANULARITY_MB: u64 = 64;
 
-/// How hard each service works, which sets its share of the heap pool. These are
-/// starting points inferred from each service's role, not measurements — the
-/// Performance screen shows measured RSS beside the plan so a site can correct
-/// them.
+/// How much memory a service actually wants, which sets its share of the heap
+/// pool. This is deliberately about footprint rather than request rate: a
+/// service can sit on the critical path of every request and still hold very
+/// little (puru-auth), while one that is called rarely can hold a great deal
+/// (puru-pacs, moving DICOM studies around).
+///
+/// The Performance screen shows measured RSS beside the plan, so a site can
+/// correct a tier from what it observes rather than from what we assumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
-    /// On the critical path of nearly every request.
-    Hot,
-    /// Steady clinical traffic.
-    Mid,
-    /// Background or low-volume.
-    Light,
+    /// Holds large working sets — images, documents, bulk result data.
+    Heavy,
+    /// Ordinary request/response work over the database.
+    Standard,
+    /// Small, stateless, or low-volume.
+    Small,
 }
 
 impl Tier {
     fn weight(self) -> u64 {
         match self {
-            Tier::Hot => 4,
-            Tier::Mid => 3,
-            Tier::Light => 2,
+            Tier::Heavy => 4,
+            Tier::Standard => 3,
+            Tier::Small => 2,
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Tier::Hot => "hot",
-            Tier::Mid => "mid",
-            Tier::Light => "light",
+            Tier::Heavy => "heavy",
+            Tier::Standard => "standard",
+            Tier::Small => "small",
         }
     }
 }
 
 const SERVICE_TIERS: &[(&str, Tier)] = &[
-    ("puru-auth", Tier::Hot),
-    ("puru-xenon", Tier::Hot),
-    ("puru-neon", Tier::Hot),
-    ("puru-has", Tier::Hot),
-    ("puru-pacs", Tier::Mid),
-    ("puru-realtime", Tier::Mid),
-    ("puru-argon", Tier::Mid),
-    ("puru-comm", Tier::Mid),
-    ("puru-integration", Tier::Light),
-    ("puru-mercury", Tier::Light),
-    ("puru-counter", Tier::Light),
-    ("puru-bridge", Tier::Light),
+    // Confirmed by the people who run these: pacs and has are the heavy ones,
+    // auth is small despite being on every request path.
+    ("puru-pacs", Tier::Heavy),
+    ("puru-has", Tier::Heavy),
+    ("puru-xenon", Tier::Standard),
+    ("puru-neon", Tier::Standard),
+    ("puru-argon", Tier::Standard),
+    ("puru-comm", Tier::Standard),
+    ("puru-realtime", Tier::Standard),
+    ("puru-auth", Tier::Small),
+    ("puru-integration", Tier::Small),
+    ("puru-mercury", Tier::Small),
+    ("puru-counter", Tier::Small),
+    ("puru-bridge", Tier::Small),
 ];
 
 /// puru-pacs streams DICOM through direct byte buffers. `MaxDirectMemorySize`
@@ -430,7 +436,7 @@ pub fn plan(config: &NucleusConfig) -> MemoryPlan {
 
         services.push(ServicePlan {
             service: (*svc).to_string(),
-            tier: tier_for(svc).map(Tier::as_str).unwrap_or("mid").to_string(),
+            tier: tier_for(svc).map(Tier::as_str).unwrap_or("standard").to_string(),
             installed: is_installed,
             jvm_args: render_args(&memory, perf),
             memory,
@@ -563,10 +569,13 @@ mod tests {
         let pool = budget as i64 - (NON_HEAP_TAIL_MB * 12) as i64;
         let alloc = distribute(&all_installed(), pool);
 
-        // The tiers documented for a 16 GB box: 512 / 384 / 256 MB of heap.
-        assert_eq!(alloc["puru-auth"], 512, "hot tier");
-        assert_eq!(alloc["puru-pacs"], 384, "mid tier");
-        assert_eq!(alloc["puru-counter"], 256, "light tier");
+        // The tiers documented for a 16 GB box: 576 / 384 / 256 MB of heap.
+        // pacs and has hold the large working sets; auth is on every request
+        // path but holds little, so it sits in the small tier.
+        assert_eq!(alloc["puru-pacs"], 576, "heavy tier");
+        assert_eq!(alloc["puru-has"], 576, "heavy tier");
+        assert_eq!(alloc["puru-xenon"], 384, "standard tier");
+        assert_eq!(alloc["puru-auth"], 256, "small tier");
 
         // The whole plan has to fit the budget it was derived from.
         let total_rss: u64 = alloc.values().map(|m| m + NON_HEAP_TAIL_MB).sum();
@@ -676,3 +685,4 @@ mod tests {
         assert!(jvm_args("puru-hydrogen", &config).is_empty());
     }
 }
+

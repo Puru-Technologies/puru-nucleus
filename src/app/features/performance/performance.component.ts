@@ -207,7 +207,7 @@ import { NotificationService } from '../../core/services/notification.service';
             <thead>
               <tr>
                 <th>Service</th>
-                <th>Tier</th>
+                <th>Footprint</th>
                 <th class="num">Min heap</th>
                 <th class="num">Max heap</th>
                 <th class="num">Metaspace</th>
@@ -366,9 +366,9 @@ import { NotificationService } from '../../core/services/notification.service';
       display: inline-block; padding: 1px 7px; border-radius: 10px;
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.03em;
     }
-    .tier-hot { background: #fee2e2; color: #b91c1c; }
-    .tier-mid { background: #ffedd5; color: #c2410c; }
-    .tier-light { background: #e0f2fe; color: #0369a1; }
+    .tier-heavy { background: #fee2e2; color: #b91c1c; }
+    .tier-standard { background: #ffedd5; color: #c2410c; }
+    .tier-small { background: #e0f2fe; color: #0369a1; }
 
     .table-foot {
       padding: 10px 14px; font-size: 0.75rem; line-height: 1.5;
