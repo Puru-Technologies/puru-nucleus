@@ -10,6 +10,9 @@ use super::{ServiceResult, ServiceStatus, get_exe_path};
 
 const TASK_NAME: &str = "PuruDC";
 const DISPLAY_NAME: &str = "Puru DC";
+/// Per-user logon task that launches the tray/GUI (separate from the SYSTEM
+/// daemon boot task above).
+const GUI_TASK_NAME: &str = "PuruDCGui";
 
 /// XML-escape a string for embedding in the task definition.
 fn xml_escape(s: &str) -> String {
@@ -118,6 +121,74 @@ pub async fn install() -> Result<ServiceResult, String> {
             DISPLAY_NAME
         ),
     })
+}
+
+/// Ensure a delayed logon task that starts the tray GUI ~30s after login.
+///
+/// The HKCU Run key fires too early at boot for the notification area to be
+/// ready — the tray icon fails to register and the GUI exits, leaving the
+/// daemon running "without a trace." A logon-triggered scheduled task with a
+/// short delay is reliable. It must be created by the SYSTEM daemon (a normal
+/// user is denied `schtasks /Create`); it runs as the interactive user
+/// (`S-1-5-4`) so the tray shows in that session. Idempotent — safe to call on
+/// every daemon boot.
+pub fn ensure_gui_logon_task() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => return,
+    };
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Puru DC tray/GUI — starts minimized at logon (delayed so the notification area is ready).</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled><Delay>PT30S</Delay></LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <GroupId>S-1-5-4</GroupId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+      <Arguments>--minimized</Arguments>
+    </Exec>
+  </Actions>
+</Task>"#,
+        exe = xml_escape(&exe),
+    );
+
+    let xml_path = std::env::temp_dir().join("puru-dc-gui-task.xml");
+    let mut utf16: Vec<u8> = vec![0xFF, 0xFE]; // UTF-16LE BOM (schtasks /XML requires it)
+    for unit in xml.encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    if std::fs::write(&xml_path, &utf16).is_err() {
+        return;
+    }
+    let _ = crate::process::silent_std_cmd("schtasks")
+        .args([
+            "/Create",
+            "/TN",
+            GUI_TASK_NAME,
+            "/XML",
+            &xml_path.to_string_lossy(),
+            "/F",
+        ])
+        .status();
+    let _ = std::fs::remove_file(&xml_path);
 }
 
 /// Remove the scheduled task.

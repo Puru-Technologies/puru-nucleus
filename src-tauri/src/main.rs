@@ -254,21 +254,16 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 /// must live; the daemon's boot task (SYSTEM) is separate and headless.
 #[cfg(target_os = "windows")]
 fn ensure_login_autostart() {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    let value = format!("\"{}\" --minimized", exe.display());
+    // Autostart is now a delayed logon scheduled task (PuruDCGui) created by the
+    // SYSTEM daemon — the HKCU Run key fired too early at boot for the tray to
+    // register, so the GUI exited and left no tray. Remove any legacy Run-key
+    // entry so we don't double-launch.
     let _ = crate::process::silent_std_cmd("reg")
         .args([
-            "add",
+            "delete",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
             "PuruDC",
-            "/t",
-            "REG_SZ",
-            "/d",
-            &value,
             "/f",
         ])
         .output();

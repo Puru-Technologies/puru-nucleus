@@ -25,6 +25,11 @@ pub async fn run_daemon() {
 
     tracing::info!("Daemon mode: port={}, auth={}", port, !daemon_cfg.api_key.is_empty());
 
+    // Ensure the tray/GUI logon task exists (the daemon runs as SYSTEM and can
+    // create it; a normal user can't). This is what makes the tray reliably
+    // appear after a reboot instead of the daemon running "without a trace."
+    crate::platform::ensure_gui_logon_task();
+
     // 2. Build shared state
     let state = Arc::new(AppState {
         api_key: daemon_cfg.api_key.clone(),

@@ -35,6 +35,14 @@ fn get_exe_path() -> Result<String, String> {
         .map_err(|e| format!("Cannot determine executable path: {}", e))
 }
 
+/// Ensure the per-user tray/GUI logon task exists so the tray reliably appears
+/// after a reboot. Windows-only; no-op on other platforms. Called by the SYSTEM
+/// daemon on boot (it has the rights a normal user lacks).
+pub fn ensure_gui_logon_task() {
+    #[cfg(windows)]
+    windows::ensure_gui_logon_task();
+}
+
 /// Install puru-dc as a system service (platform-specific).
 pub async fn install_service() -> Result<ServiceResult, String> {
     #[cfg(target_os = "linux")]
