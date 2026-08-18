@@ -254,7 +254,7 @@ exit_on_oom = false
 ## Testing
 
 ```bash
-# Rust tests (69 tests covering config, detection, docker_update, licensing, messaging,
+# Rust tests (70 tests covering config, detection, docker_update, licensing, messaging,
 # performance, releases, remote_shell)
 cargo test
 

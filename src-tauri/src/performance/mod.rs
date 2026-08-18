@@ -29,9 +29,6 @@ use crate::config::NucleusConfig;
 /// in work. Nothing is ever planned smaller.
 pub const HEAP_FLOOR_MB: u64 = 192;
 
-/// No single service needs more than this; past it we'd be handing one JVM
-/// headroom the rest of the box could use.
-pub const HEAP_CEILING_MB: u64 = 2048;
 
 /// Non-heap resident cost of one Spring Boot 3 JVM: metaspace (~120 MB), code
 /// cache (~50 MB), thread stacks, GC structures and direct buffers. Budgeted per
@@ -70,6 +67,23 @@ pub enum Tier {
 }
 
 impl Tier {
+    /// The most heap this class of service can actually put to use.
+    ///
+    /// Without this the budget divides the whole pool by weight, which is right
+    /// when a dozen services compete for a 16 GB box and wrong when two share
+    /// one: a single-purpose imaging site would hand puru-pacs a 1.8 GB heap it
+    /// will fill with garbage rather than work, leaving the box no free memory
+    /// for anything else. Past these figures a larger heap only defers
+    /// collection, and the RAM does more good as OS page cache — which is what
+    /// MySQL reads through.
+    fn ceiling_mb(self) -> u64 {
+        match self {
+            Tier::Heavy => 1024,
+            Tier::Standard => 768,
+            Tier::Small => 384,
+        }
+    }
+
     fn weight(self) -> u64 {
         match self {
             Tier::Heavy => 4,
@@ -373,13 +387,16 @@ fn distribute(installed: &[&str], heap_pool_mb: i64) -> HashMap<String, u64> {
 
     let total_weight: u64 = installed
         .iter()
-        .map(|s| tier_for(s).map(Tier::weight).unwrap_or(2))
+        .map(|s| tier_for(s).unwrap_or(Tier::Standard).weight())
         .sum();
 
     for svc in installed {
-        let weight = tier_for(svc).map(Tier::weight).unwrap_or(2);
-        let share = (heap_pool_mb as u64) * weight / total_weight.max(1);
-        let heap = round_down(share, HEAP_GRANULARITY_MB).clamp(HEAP_FLOOR_MB, HEAP_CEILING_MB);
+        let tier = tier_for(svc).unwrap_or(Tier::Standard);
+        let share = (heap_pool_mb as u64) * tier.weight() / total_weight.max(1);
+        // Capped at what the service can use, not at what the box can spare —
+        // any surplus is left free rather than inflating heaps that don't need it.
+        let heap =
+            round_down(share, HEAP_GRANULARITY_MB).clamp(HEAP_FLOOR_MB, tier.ceiling_mb());
         out.insert((*svc).to_string(), heap);
     }
 
@@ -612,9 +629,39 @@ mod tests {
     }
 
     #[test]
-    fn heap_never_exceeds_the_ceiling_on_a_large_box() {
+    fn a_large_box_stops_at_what_each_service_can_use() {
         let alloc = distribute(&all_installed(), 200_000);
-        assert!(alloc.values().all(|m| *m <= HEAP_CEILING_MB));
+        for (svc, mb) in &alloc {
+            assert_eq!(*mb, tier_for(svc).unwrap().ceiling_mb(), "{}", svc);
+        }
+    }
+
+    #[test]
+    fn a_single_purpose_site_gets_a_real_share_without_swallowing_the_box() {
+        // An imaging-only 8 GB site: pacs and auth are the only JARs on disk.
+        // pacs should get far more than it would on a box running all twelve,
+        // but not the entire pool — the rest stays free for page cache.
+        let reserves = ReserveConfig {
+            os_mb: 2048,
+            nucleus_mb: 400,
+            mysql_mb: 2402,
+            rabbitmq_mb: 512,
+            other_mb: 600,
+        };
+        let budget = 8192 - reserves.total_mb();
+        let pool = budget as i64 - (NON_HEAP_TAIL_MB * 2) as i64;
+        let alloc = distribute(&["puru-pacs", "puru-auth"], pool);
+
+        assert_eq!(alloc["puru-pacs"], Tier::Heavy.ceiling_mb());
+        assert_eq!(alloc["puru-auth"], Tier::Small.ceiling_mb());
+
+        let used: u64 = alloc.values().map(|m| m + NON_HEAP_TAIL_MB).sum();
+        assert!(
+            (budget as i64) - (used as i64) > 200,
+            "a sparse site should keep real headroom, had {} of {}",
+            used,
+            budget
+        );
     }
 
     #[test]
@@ -685,4 +732,3 @@ mod tests {
         assert!(jvm_args("puru-hydrogen", &config).is_empty());
     }
 }
-
