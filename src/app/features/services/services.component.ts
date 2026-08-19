@@ -59,7 +59,7 @@ interface UpdateFlow {
   standalone: true,
   imports: [CommonModule, RouterLink, FormsModule, PuruProgressComponent],
   template: `
-    <div class="page" [class.drawer-open]="logContainer">
+    <div class="page">
       <div class="page-header">
         <div>
           <h1>Services</h1>
@@ -191,7 +191,7 @@ interface UpdateFlow {
                             <button class="uf-btn primary" (click)="applyUpdate(service)" [disabled]="batchBusy">Install</button>
                             <button class="uf-btn ghost" (click)="discardUpdate(service)" [disabled]="batchBusy">Discard</button>
                           }
-                          @if (up.phase === 'up-to-date' || up.phase === 'done' || up.phase === 'error') {
+                          @if (up.phase === 'error') {
                             <button class="uf-btn ghost" (click)="dismissFlow(service)">Dismiss</button>
                           }
                         </div>
@@ -202,6 +202,10 @@ interface UpdateFlow {
                     }
                   </td>
                   <td class="actions-cell">
+                    <button class="btn btn-stroked btn-sm inline-logs" (click)="openLogs(service)" title="View logs">
+                      <span class="material-icons">article</span>
+                      Logs
+                    </button>
                     <div class="menu-wrap">
                       <button class="btn-icon" (click)="toggleMenu(service, $event)">
                         <span class="material-icons">more_vert</span>
@@ -364,41 +368,75 @@ interface UpdateFlow {
       }
     </div>
 
-    <!-- ── Log drawer (right side) ──────────────────────────────────────────── -->
+    <!-- ── Log dialog (modal) ───────────────────────────────────────────────── -->
     @if (logContainer) {
-      <div class="drawer-scrim" (click)="closeLogs()"></div>
-      <aside class="log-drawer">
-        <div class="log-header">
-          <div class="log-title">
-            <span class="material-icons">article</span>
-            <span>{{ displayName(logContainer) }} — logs</span>
+      <div class="log-modal-backdrop">
+        <div class="log-modal" role="dialog" aria-modal="true">
+          <div class="log-header">
+            <div class="log-title">
+              <span class="material-icons">article</span>
+              <span>{{ displayName(logContainer) }} — logs</span>
+            </div>
+            <div class="log-head-right">
+              <select class="log-select" [(ngModel)]="logTimeFilter" (ngModelChange)="refreshLogs()">
+                <option value="tail">Latest 200 lines</option>
+                <option value="1h">Last 1 hour</option>
+                <option value="6h">Last 6 hours</option>
+                <option value="24h">Last 24 hours</option>
+                <option value="3d">Last 3 days</option>
+                <option value="7d">Last 7 days</option>
+              </select>
+              <button class="btn-icon log-btn" (click)="closeLogs()" title="Close (Esc)">
+                <span class="material-icons">close</span>
+              </button>
+            </div>
           </div>
-          <div class="log-actions">
-            <select class="log-time-select" [(ngModel)]="logTimeFilter" (ngModelChange)="refreshLogs()">
-              <option value="tail">Latest</option>
-              <option value="1h">Last 1 hour</option>
-              <option value="6h">Last 6 hours</option>
-              <option value="24h">Last 24 hours</option>
-              <option value="3d">Last 3 days</option>
-              <option value="7d">Last 7 days</option>
-            </select>
-            <button class="btn-icon log-btn" (click)="closeLogs()" title="Close">
-              <span class="material-icons">close</span>
+
+          <div class="log-toolbar">
+            <div class="log-search">
+              <span class="material-icons">search</span>
+              <input type="text" [(ngModel)]="logSearch" placeholder="Filter lines…" spellcheck="false" />
+              @if (logSearch) {
+                <button class="ls-clear" (click)="logSearch = ''" title="Clear"><span class="material-icons">close</span></button>
+              }
+            </div>
+            <div class="log-levels">
+              <button class="lv-btn" [class.on]="logLevel === 'all'" (click)="logLevel = 'all'">All</button>
+              <button class="lv-btn lv-warn" [class.on]="logLevel === 'warn'" (click)="logLevel = 'warn'">Warnings+</button>
+              <button class="lv-btn lv-err" [class.on]="logLevel === 'error'" (click)="logLevel = 'error'">Errors</button>
+            </div>
+            <span class="log-count">{{ logLines.length }} line{{ logLines.length === 1 ? '' : 's' }}</span>
+            <div class="log-tools">
+              <button class="btn-icon log-btn" (click)="logWrap = !logWrap" [title]="logWrap ? 'No wrap (single line)' : 'Wrap lines'">
+                <span class="material-icons">{{ logWrap ? 'wrap_text' : 'notes' }}</span>
+              </button>
+              <button class="btn-icon log-btn" (click)="copyLogs()" title="Copy all">
+                <span class="material-icons">{{ copied ? 'check' : 'content_copy' }}</span>
+              </button>
+            </div>
+          </div>
+
+          @if (logsLoading) {
+            <div class="log-loading"><span class="spinner"></span></div>
+          } @else if (logLines.length === 0) {
+            <div class="log-empty">{{ logSearch || logLevel !== 'all' ? 'No lines match the filter.' : 'No logs available.' }}</div>
+          } @else {
+            <div class="log-body" [class.nowrap]="!logWrap">
+              @for (ln of logLines; track $index) {
+                <div class="log-line" [class]="ln.cls">{{ ln.text }}</div>
+              }
+            </div>
+          }
+
+          <div class="log-foot">
+            <span class="log-hint">Press Esc to close</span>
+            <button class="btn btn-primary" (click)="refreshLogs()" [disabled]="logsLoading">
+              <span class="material-icons">refresh</span>
+              {{ logsLoading ? 'Refreshing…' : 'Refresh (jump to latest)' }}
             </button>
           </div>
         </div>
-        @if (logsLoading) {
-          <div class="log-loading"><span class="spinner"></span></div>
-        } @else {
-          <pre class="log-body">{{ logOutput || 'No logs available.' }}</pre>
-        }
-        <div class="log-foot">
-          <button class="btn btn-primary btn-block" (click)="refreshLogs()" [disabled]="logsLoading">
-            <span class="material-icons">refresh</span>
-            {{ logsLoading ? 'Refreshing…' : 'Refresh (jump to latest)' }}
-          </button>
-        </div>
-      </aside>
+      </div>
     }
   `,
   styles: [`
@@ -444,7 +482,10 @@ interface UpdateFlow {
     .services-table { width: 100%; table-layout: auto; }
     .services-table td { vertical-align: middle; }
     .update-col { width: auto; }
-    .actions-cell { text-align: right; width: 48px; }
+    .actions-cell { text-align: right; width: 1%; white-space: nowrap; }
+    .actions-cell .inline-logs { margin-right: 6px; vertical-align: middle; }
+    .actions-cell .menu-wrap { display: inline-block; vertical-align: middle; }
+    .inline-logs .material-icons { font-size: 15px; }
 
     .name-cell { display: flex; align-items: center; gap: 12px; }
     .status-dot {
@@ -544,61 +585,102 @@ interface UpdateFlow {
     }
     .btn-sm { padding: 4px 10px; font-size: 0.78rem; .material-icons { font-size: 14px; } }
 
-    /* ── Log drawer ───────────────────────────── */
-    .drawer-scrim {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.18); z-index: 40;
+    /* ── Log modal ────────────────────────────── */
+    .log-modal-backdrop {
+      position: fixed; inset: 0; z-index: 60;
+      background: rgba(2, 6, 23, 0.55);
+      display: flex; align-items: center; justify-content: center;
+      padding: 32px;
     }
-    .log-drawer {
-      position: fixed; top: 0; right: 0; bottom: 0; width: 460px; z-index: 41;
+    .log-modal {
       display: flex; flex-direction: column;
-      background: #0f172a; box-shadow: -8px 0 24px rgba(0,0,0,0.25);
+      width: min(1100px, 94vw); height: min(820px, 88vh);
+      background: #0f172a; border-radius: 12px; overflow: hidden;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.45);
     }
     .log-header {
       display: flex; justify-content: space-between; align-items: center;
       padding: 12px 16px; background: #1e293b; color: #e2e8f0; flex-shrink: 0;
     }
     .log-title {
-      display: flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600;
+      display: flex; align-items: center; gap: 8px; font-size: 0.95rem; font-weight: 600;
       .material-icons { font-size: 18px; }
     }
-    .log-actions { display: flex; align-items: center; gap: 6px; }
+    .log-head-right { display: flex; align-items: center; gap: 8px; }
     .log-btn { color: #94a3b8; &:hover { background: rgba(255,255,255,0.1); color: #fff; } }
-    .log-time-select {
-      background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;
-      padding: 4px 8px; font-size: 0.75rem; cursor: pointer; outline: none;
+    .log-select {
+      background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px;
+      padding: 5px 8px; font-size: 0.76rem; cursor: pointer; outline: none;
       &:hover { border-color: #475569; }
       option { background: #1e293b; color: #e2e8f0; }
     }
+
+    .log-toolbar {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 8px 14px; background: #131c31; border-bottom: 1px solid #1e293b; flex-shrink: 0;
+    }
+    .log-search {
+      display: flex; align-items: center; gap: 6px; flex: 1; min-width: 160px;
+      background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 4px 8px;
+      .material-icons { font-size: 16px; color: #64748b; }
+      input {
+        flex: 1; background: transparent; border: none; outline: none; color: #e2e8f0;
+        font-size: 0.8rem; font-family: inherit;
+        &::placeholder { color: #64748b; }
+      }
+      .ls-clear { color: #64748b; display: flex; .material-icons { font-size: 15px; } &:hover { color: #e2e8f0; } }
+    }
+    .log-levels { display: flex; gap: 4px; }
+    .lv-btn {
+      padding: 4px 10px; font-size: 0.74rem; font-weight: 600; border-radius: 6px;
+      border: 1px solid #334155; background: transparent; color: #94a3b8; cursor: pointer;
+      &:hover { border-color: #475569; color: #e2e8f0; }
+      &.on { background: #334155; color: #fff; }
+      &.lv-warn.on { background: #b45309; border-color: #b45309; }
+      &.lv-err.on { background: #b91c1c; border-color: #b91c1c; }
+    }
+    .log-count { font-size: 0.74rem; color: #64748b; font-variant-numeric: tabular-nums; }
+    .log-tools { display: flex; gap: 2px; margin-left: auto; }
+
     .log-loading { display: flex; justify-content: center; align-items: center; flex: 1; background: #0f172a; }
+    .log-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 0.85rem; background: #0f172a; }
+
     .log-body {
-      margin: 0; padding: 16px; flex: 1; overflow-y: auto;
+      margin: 0; flex: 1; overflow: auto;
       background: #0f172a; color: #e2e8f0;
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.74rem; line-height: 1.6;
-      white-space: pre-wrap; word-break: break-all;
+      font-size: 0.75rem; line-height: 1.55;
+      padding: 10px 0;
     }
-    .log-foot { padding: 10px 12px; background: #1e293b; flex-shrink: 0; }
-    .btn-block { width: 100%; justify-content: center; }
-
-    /* When the drawer is open, don't also squeeze the page below tablet width —
-       the drawer overlays full-width instead. */
-    @media (max-width: 1100px) {
-      .page.drawer-open { margin-right: 0; }
-      .log-drawer { width: 420px; }
+    .log-line {
+      padding: 1px 16px;
+      white-space: pre-wrap; word-break: break-word;   /* wrapped mode (default off) */
     }
+    .log-body.nowrap .log-line { white-space: pre; }    /* single line each, horizontal scroll */
+    .log-line:hover { background: rgba(148, 163, 184, 0.08); }
+    .log-line.ll-error { color: #f87171; }
+    .log-line.ll-warn { color: #fbbf24; }
+    .log-line.ll-info { color: #cbd5e1; }
+    .log-line.ll-debug { color: #64748b; }
 
-    /* Tablet / narrow window: drawer goes full-width, header actions wrap,
-       trim horizontal padding so nothing overflows the viewport. */
+    .log-foot {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 14px; background: #1e293b; flex-shrink: 0;
+    }
+    .log-hint { font-size: 0.74rem; color: #64748b; }
+
+    /* Tablet / narrow window: header actions wrap, trim padding, full-screen modal. */
     @media (max-width: 820px) {
       .page { padding: 20px 18px; }
-      .log-drawer { width: 100%; }
       .page-header { flex-direction: column; align-items: stretch; gap: 12px; }
       .header-actions { justify-content: flex-start; }
-      .update-col { width: 1%; }        /* shrink-to-fit so Service/Status keep room */
+      .update-col { width: 1%; }
+      .inline-logs { display: none; }   /* logs live in the ⋮ menu on small screens */
+      .log-modal-backdrop { padding: 0; }
+      .log-modal { width: 100vw; height: 100vh; border-radius: 0; }
     }
 
-    /* Phone-width: tighten paddings and let the update text truncate rather than
-       push the table wider than the screen. */
+    /* Phone-width: tighten paddings and let the update text truncate. */
     @media (max-width: 560px) {
       .page { padding: 16px 12px; }
       .header-actions .btn { flex: 1 1 auto; justify-content: center; }
@@ -628,6 +710,12 @@ export class ServicesComponent implements OnInit, OnDestroy {
   logOutput = '';
   logsLoading = false;
   logTimeFilter: 'tail' | '1h' | '6h' | '24h' | '3d' | '7d' = 'tail';
+  /** Log viewer controls. */
+  logSearch = '';
+  logLevel: 'all' | 'warn' | 'error' = 'all';
+  logWrap = false;      // default: one line per entry (horizontal scroll)
+  copied = false;
+  private logVersion = 0;   // bumped whenever logOutput changes, to bust the line cache
 
   sortKey = 'name';
   sortDir: 1 | -1 = 1;
@@ -650,7 +738,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
   displayName(name: string): string {
     const stripped = name.replace(/^puru-/, '');
     const special: Record<string, string> = {
-      'hydrogen': 'Web app',
+      'hydrogen': 'Front End',
       'dviewer': 'DICOM viewer',
       'has': 'HAS',
       'pacs': 'PACS',
@@ -724,6 +812,75 @@ export class ServicesComponent implements OnInit, OnDestroy {
     this.openMenu = null;
   }
 
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.logContainer) this.closeLogs();
+  }
+
+  /** Open the log dialog for a service (routes infra rows to their own reader). */
+  openLogs(service: ServiceInfo): void {
+    if (service.infra) {
+      this.viewInfraLog(service);
+    } else {
+      this.viewLogs(service);
+    }
+  }
+
+  /** Parsed, filtered log lines for the dialog — memoized so change detection
+   *  (which runs on every poll tick) doesn't re-parse on every cycle. */
+  private _logLinesCache: { text: string; cls: string }[] = [];
+  private _logLinesSig = '';
+  get logLines(): { text: string; cls: string }[] {
+    const sig = `${this.logVersion}|${this.logLevel}|${this.logSearch}`;
+    if (sig !== this._logLinesSig) {
+      this._logLinesSig = sig;
+      this._logLinesCache = this.computeLogLines();
+    }
+    return this._logLinesCache;
+  }
+
+  private computeLogLines(): { text: string; cls: string }[] {
+    const raw = this.logOutput || '';
+    if (!raw.trim()) return [];
+    const q = this.logSearch.trim().toLowerCase();
+    const out: { text: string; cls: string }[] = [];
+    let carry = ''; // level carried onto indented stack-trace continuation lines
+    for (const line of raw.split(/\r?\n/)) {
+      if (line === '') continue;
+      let cls = this.lineClass(line);
+      if (cls) {
+        carry = cls;
+      } else if (/^\s/.test(line) && carry) {
+        cls = carry; // "  at com...", "Caused by:" — keep with the error above it
+      } else {
+        carry = '';
+      }
+      // Level filter
+      if (this.logLevel === 'error' && cls !== 'll-error') continue;
+      if (this.logLevel === 'warn' && cls !== 'll-error' && cls !== 'll-warn') continue;
+      // Search filter
+      if (q && !line.toLowerCase().includes(q)) continue;
+      out.push({ text: line, cls });
+    }
+    return out;
+  }
+
+  private lineClass(line: string): string {
+    if (/\bERROR\b|\bSEVERE\b|\bFATAL\b|Exception[:\s]|\bat [\w.$]+\(/.test(line)) return 'll-error';
+    if (/\bWARN(ING)?\b/.test(line)) return 'll-warn';
+    if (/\bDEBUG\b|\bTRACE\b/.test(line)) return 'll-debug';
+    if (/\bINFO\b/.test(line)) return 'll-info';
+    return '';
+  }
+
+  async copyLogs(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(this.logOutput || '');
+      this.copied = true;
+      setTimeout(() => (this.copied = false), 1500);
+    } catch { /* clipboard unavailable */ }
+  }
+
   ngOnInit(): void {
     this.loadDeploymentMode();
     this.loadServices().then(() => this.loadStagedUpdates());
@@ -794,6 +951,8 @@ export class ServicesComponent implements OnInit, OnDestroy {
   async viewInfraLog(service: ServiceInfo): Promise<void> {
     this.logContainer = service.name;
     this.logTimeFilter = 'tail';
+    this.logSearch = '';
+    this.logLevel = 'all';
     this.logsLoading = true;
     this.logOutput = '';
     try {
@@ -802,6 +961,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.logOutput = `Failed to fetch ${service.name} log: ${e}`;
     } finally {
       this.logsLoading = false;
+      this.logVersion++;
       this.scrollLogsToBottom();
     }
   }
@@ -834,10 +994,14 @@ export class ServicesComponent implements OnInit, OnDestroy {
     this.updateFlow[name] = { phase: 'checking', message: 'Checking…' };
     try {
       const c = await this.tauri.invoke<JarUpdateCheck>('check_service_update', { serviceName: name });
-      this.updateFlow[name] = c.update_available
-        ? { phase: 'available', message: 'Update available',
-            currentSha: c.current_sha, latestSha: c.latest_sha }
-        : { phase: 'up-to-date', message: 'Up to date', currentSha: c.current_sha };
+      if (c.update_available) {
+        this.updateFlow[name] = { phase: 'available', message: 'Update available',
+          currentSha: c.current_sha, latestSha: c.latest_sha };
+      } else {
+        this.updateFlow[name] = { phase: 'up-to-date', message: 'Up to date', currentSha: c.current_sha };
+        // Auto-clear the "Up to date" note — nothing to act on, no Dismiss needed.
+        setTimeout(() => { if (this.updateFlow[name]?.phase === 'up-to-date') delete this.updateFlow[name]; }, 2500);
+      }
     } catch (e) {
       this.updateFlow[name] = { phase: 'error', message: 'Check failed', progressState: 'fail' };
     }
@@ -1021,6 +1185,8 @@ export class ServicesComponent implements OnInit, OnDestroy {
   async viewLogs(service: ServiceInfo): Promise<void> {
     this.logContainer = this.isNative ? service.name : service.container_name;
     this.logTimeFilter = 'tail';
+    this.logSearch = '';
+    this.logLevel = 'all';
     this.logsLoading = true;
     this.logOutput = '';
     try {
@@ -1029,6 +1195,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.logOutput = `Failed to fetch logs for ${service.container_name}.`;
     } finally {
       this.logsLoading = false;
+      this.logVersion++;
       this.scrollLogsToBottom();
     }
   }
@@ -1042,6 +1209,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.logOutput = 'Failed to refresh logs.';
     } finally {
       this.logsLoading = false;
+      this.logVersion++;
       this.scrollLogsToBottom();
     }
   }

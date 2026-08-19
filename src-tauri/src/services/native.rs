@@ -31,16 +31,21 @@ async fn enabled_services_cached(config: &NucleusConfig) -> Vec<String> {
         }
     }
 
+    // The hospital's real service set is its Firestore module selection. When
+    // that can't be fetched (offline, token/credential hiccup in this process),
+    // fall back to what's actually INSTALLED on this box — NOT the full catalog.
+    // Otherwise a fetch failure dumps every known service as a "Not installed"
+    // row, which is confusing on a client machine that only runs a few.
     let list = if !config.hospital_code.is_empty() {
         match crate::firestore::FirestoreClient::new_from_config().await {
             Ok(client) => match client.fetch_modules(&config.hospital_code).await {
                 Ok(modules) => modules.enabled_service_names(),
-                Err(_) => releases::all_updatable_services(),
+                Err(_) => installed_service_names(config),
             },
-            Err(_) => releases::all_updatable_services(),
+            Err(_) => installed_service_names(config),
         }
     } else {
-        releases::all_updatable_services()
+        installed_service_names(config)
     };
 
     if let Ok(mut guard) = ENABLED_SERVICES_CACHE.lock() {
@@ -132,6 +137,24 @@ fn log_path(config: &NucleusConfig, service: &str) -> PathBuf {
 
 fn jar_path(config: &NucleusConfig, service: &str) -> PathBuf {
     config.jars_dir().join(format!("{}.jar", service))
+}
+
+/// Services with an installed artifact on this box — a JAR present, or the
+/// hydrogen/dviewer static bundle deployed. Used as the fallback service list
+/// when the hospital's Firestore module selection can't be fetched, so the UI
+/// never shows the entire catalog as "Not installed" rows.
+fn installed_service_names(config: &NucleusConfig) -> Vec<String> {
+    let mut names: Vec<String> = releases::all_updatable_services()
+        .into_iter()
+        .filter(|s| s != "puru-hydrogen" && s != "dviewer" && jar_path(config, s).exists())
+        .collect();
+    if config.nginx_html_dir().join("index.html").exists() {
+        names.push("puru-hydrogen".into());
+    }
+    if config.dviewer_dir().join("index.html").exists() {
+        names.push("dviewer".into());
+    }
+    names
 }
 
 fn service_port(service: &str) -> Option<u16> {
