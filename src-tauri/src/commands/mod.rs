@@ -1902,6 +1902,11 @@ pub(crate) fn rabbitmq_service_name() -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn rabbitmq_service_name() -> Option<String> {
+    None
+}
+
 /// Start the RabbitMQ Windows service if it isn't running and wait for the node
 /// to accept AMQP on 5672. The service (SYSTEM) picks up the shared cookie written
 /// by `ensure_erlang_cookie` on start, so this must run after it.

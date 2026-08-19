@@ -1215,6 +1215,11 @@ pub(crate) fn mysql_service_name() -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn mysql_service_name() -> Option<String> {
+    None
+}
+
 #[cfg(target_os = "windows")]
 fn install_erlang_silent(installer_path: &PathBuf) -> Result<(), String> {
     let output = std::process::Command::new(installer_path)
