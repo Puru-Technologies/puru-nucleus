@@ -646,6 +646,13 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
 
         let port_str = port.map(|p| format!("{}:{}", p, p)).unwrap_or_default();
 
+        // Human-readable uptime from the process start time, for the UI.
+        let uptime = if alive {
+            pid.and_then(process_uptime_secs).map(fmt_uptime)
+        } else {
+            None
+        };
+
         services.push(ServiceInfo {
             name: svc_name.clone(),
             container_name: pid.map(|p| format!("PID:{}", p)).unwrap_or_default(),
@@ -653,7 +660,7 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             status,
             health: None,
             ports: vec![port_str],
-            uptime: None, // Could be computed from PID start time
+            uptime,
             health_response_ms: None,
             detail: None,
             infra: false,
@@ -953,6 +960,23 @@ struct ProbeOutcome {
 
 /// Process uptime in seconds (epoch now − process start time), or None if the
 /// process can't be found. Used to tell "still booting" from "stuck".
+/// Format an uptime in seconds as a short human string ("3d 4h", "5h 12m",
+/// "8m", "42s") for the Services page.
+fn fmt_uptime(secs: u64) -> String {
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3_600;
+    let m = (secs % 3_600) / 60;
+    if d > 0 {
+        format!("{}d {}h", d, h)
+    } else if h > 0 {
+        format!("{}h {}m", h, m)
+    } else if m > 0 {
+        format!("{}m", m)
+    } else {
+        format!("{}s", secs)
+    }
+}
+
 fn process_uptime_secs(pid: u32) -> Option<u64> {
     use sysinfo::{Pid, PidExt, ProcessExt, System, SystemExt};
     let mut sys = System::new();

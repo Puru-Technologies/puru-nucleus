@@ -59,16 +59,15 @@ interface UpdateFlow {
   standalone: true,
   imports: [CommonModule, RouterLink, FormsModule, PuruProgressComponent],
   template: `
-    <div class="page">
+    <div class="page" [class.drawer-open]="logContainer">
       <div class="page-header">
         <div>
           <h1>Services</h1>
           <p class="page-subtitle">
             @if (!loading) {
-              {{ runningCount }}/{{ services.length }} {{ isNative ? 'services' : 'containers' }} running
-              @if (isNative) { <span class="mode-tag native">Native</span> }
+              {{ runningCount }}/{{ services.length }} running
             } @else {
-              Loading services...
+              Loading…
             }
           </p>
         </div>
@@ -78,9 +77,9 @@ interface UpdateFlow {
             Refresh
           </button>
           @if (isNative && updatableServices.length > 0) {
-            <button class="btn btn-stroked" (click)="checkAllUpdates()" [disabled]="batchBusy" title="Check every service for a newer build">
+            <button class="btn btn-stroked" (click)="checkAllUpdates()" [disabled]="batchBusy" title="Check every service for a newer version">
               <span class="material-icons">system_update</span>
-              Check updates
+              Check for updates
             </button>
             @if (availableCount > 0) {
               <button class="btn btn-stroked" (click)="downloadAllUpdates()" [disabled]="batchBusy" title="Download all available updates (services keep running)">
@@ -89,102 +88,17 @@ interface UpdateFlow {
               </button>
             }
             @if (stagedCount > 0) {
-              <button class="btn btn-primary" (click)="applyAllUpdates()" [disabled]="batchBusy" title="Apply all downloaded updates (stops, swaps, restarts each)">
+              <button class="btn btn-primary" (click)="applyAllUpdates()" [disabled]="batchBusy" title="Install all downloaded updates">
                 <span class="material-icons">restart_alt</span>
-                Apply all ({{ stagedCount }})
+                Install all ({{ stagedCount }})
               </button>
             }
           }
           <button class="btn btn-primary" (click)="startAll()" [disabled]="services.length === 0">
             <span class="material-icons">play_arrow</span>
-            Start All
+            Start all
           </button>
         </div>
-      </div>
-
-      <!-- Port Tools / Process Explorer — Puru-scoped Task Manager -->
-      <div class="card pt-card">
-        <div class="pt-header" (click)="toggleProcessExplorer()">
-          <div class="pt-title">
-            <span class="material-icons">build</span>
-            <span>Port Tools</span>
-            <span class="pt-sub">Find &amp; kill processes holding Puru ports</span>
-          </div>
-          <div class="pt-header-actions" (click)="$event.stopPropagation()">
-            @if (processExplorerOpen) {
-              <button class="btn btn-stroked" (click)="refreshProcesses()" [disabled]="processesLoading">
-                <span class="material-icons">refresh</span>
-                {{ processesLoading ? 'Scanning...' : 'Refresh' }}
-              </button>
-            }
-            <span class="material-icons pt-toggle">
-              {{ processExplorerOpen ? 'expand_less' : 'expand_more' }}
-            </span>
-          </div>
-        </div>
-        @if (processExplorerOpen) {
-          <div class="pt-body">
-            @if (processesLoading && processes.length === 0) {
-              <div class="pt-loading"><span class="spinner"></span></div>
-            } @else if (processes.length === 0) {
-              <div class="pt-empty">
-                No Puru-relevant processes found (java / nginx / mysqld / rabbitmq / beam).
-              </div>
-            } @else {
-              <table class="data-table pt-table">
-                <thead>
-                  <tr>
-                    <th>PID</th>
-                    <th>Process</th>
-                    <th>Listening Ports</th>
-                    <th>CPU</th>
-                    <th>Memory</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  @for (p of processes; track p.pid) {
-                    <tr>
-                      <td><span class="pid">{{ p.pid }}</span></td>
-                      <td>
-                        <div class="pt-name">
-                          <span class="pt-bin">{{ p.name }}</span>
-                          @if (p.label) {
-                            <span class="pt-label">{{ p.label }}</span>
-                          }
-                        </div>
-                        @if (p.cmd) {
-                          <div class="pt-cmd" [title]="p.cmd">{{ p.cmd }}</div>
-                        }
-                      </td>
-                      <td>
-                        @if (p.listening_ports.length === 0) {
-                          <span class="text-muted">&mdash;</span>
-                        } @else {
-                          @for (port of p.listening_ports; track port) {
-                            <span class="pt-port">{{ port }}</span>
-                          }
-                        }
-                      </td>
-                      <td>{{ p.cpu_pct }}%</td>
-                      <td>{{ p.mem_mb }} MB</td>
-                      <td class="actions-cell">
-                        <button class="btn btn-danger btn-sm" (click)="killProcess(p)" [disabled]="!!killing[p.pid]">
-                          <span class="material-icons">close</span>
-                          {{ killing[p.pid] ? 'Killing...' : 'Kill' }}
-                        </button>
-                      </td>
-                    </tr>
-                  }
-                </tbody>
-              </table>
-              <div class="pt-foot">
-                Showing {{ processes.length }} {{ processes.length === 1 ? 'process' : 'processes' }}.
-                Kill sends SIGKILL (Unix) or <code>taskkill /F /T</code> (Windows) — the process gets no chance to clean up.
-              </div>
-            }
-          </div>
-        }
       </div>
 
       @if (loading) {
@@ -197,70 +111,28 @@ interface UpdateFlow {
             <div class="empty-icon">
               <span class="material-icons">cloud_off</span>
             </div>
-            <h3>No Services Found</h3>
-            <p>{{ isNative ? 'No JARs installed. Run the setup wizard to pull and start services.' : 'Docker may not be installed or no Puru containers are running.' }}</p>
+            <h3>No services found</h3>
+            <p>{{ isNative ? 'Run the setup wizard to install and start services.' : 'No running services were found.' }}</p>
             <button class="btn btn-stroked" routerLink="/setup">
               <span class="material-icons">build</span>
-              Run Setup Wizard
+              Run setup wizard
             </button>
           </div>
         </div>
       } @else {
-        <!-- Log Viewer Panel -->
-        @if (logContainer) {
-          <div class="card log-card">
-            <div class="log-header">
-              <div class="log-title">
-                <span class="material-icons">article</span>
-                <span>Logs: {{ logContainer }}</span>
-              </div>
-              <div class="log-actions">
-                <select class="log-time-select" [(ngModel)]="logTimeFilter" (ngModelChange)="refreshLogs()">
-                  <option value="tail">Last 200 lines</option>
-                  <option value="1h">Last 1 hour</option>
-                  <option value="6h">Last 6 hours</option>
-                  <option value="24h">Last 24 hours</option>
-                  <option value="3d">Last 3 days</option>
-                  <option value="7d">Last 7 days</option>
-                </select>
-                <button class="btn-icon log-btn" (click)="refreshLogs()" [disabled]="logsLoading">
-                  <span class="material-icons">refresh</span>
-                </button>
-                <button class="btn-icon log-btn" (click)="closeLogs()">
-                  <span class="material-icons">close</span>
-                </button>
-              </div>
-            </div>
-            @if (logsLoading) {
-              <div class="log-loading">
-                <span class="spinner"></span>
-              </div>
-            } @else {
-              <pre class="log-content">{{ logOutput || 'No logs available.' }}</pre>
-            }
-          </div>
-        }
-
         <div class="card table-card">
           <table class="data-table services-table">
             <thead>
               <tr>
                 <th class="sortable" (click)="sortBy('name')">
-                  {{ isNative ? 'Service' : 'Container' }}
+                  Service
                   <span class="material-icons sort-arrow">{{ sortArrow('name') }}</span>
-                </th>
-                <th class="sortable" (click)="sortBy('image')">
-                  {{ isNative ? 'Build' : 'Image' }}
-                  <span class="material-icons sort-arrow">{{ sortArrow('image') }}</span>
                 </th>
                 <th class="sortable" (click)="sortBy('status')">
                   Status <span class="material-icons sort-arrow">{{ sortArrow('status') }}</span>
                 </th>
-                <th class="sortable" (click)="sortBy('health')">
-                  Health <span class="material-icons sort-arrow">{{ sortArrow('health') }}</span>
-                </th>
-                <th>Ports</th>
                 <th>Uptime</th>
+                <th class="update-col"></th>
                 <th></th>
               </tr>
             </thead>
@@ -271,10 +143,7 @@ interface UpdateFlow {
                     <div class="name-cell">
                       <div class="status-dot" [class]="'dot-' + service.status"></div>
                       <div class="name-info">
-                        <span class="name-primary">{{ service.name }}</span>
-                        @if (service.container_name) {
-                          <span class="name-secondary">{{ service.container_name }}</span>
-                        }
+                        <span class="name-primary">{{ displayName(service.name) }}</span>
                         @if (actionMsg[service.name]; as m) {
                           <span class="action-msg" [class]="'am-' + m.kind">
                             @if (m.kind === 'busy') {
@@ -290,25 +159,48 @@ interface UpdateFlow {
                       </div>
                     </div>
                   </td>
-                  <td><span class="image-text">{{ shortenImage(service.image) }}</span></td>
                   <td>
-                    <span [class]="'chip chip-' + service.status">{{ service.status }}</span>
-                    @if (service.detail) {
-                      <div class="svc-detail">{{ service.detail }}</div>
+                    <span [class]="'chip chip-' + service.status">{{ statusLabel(service) }}</span>
+                    @if (service.status === 'error') {
+                      <div class="svc-detail">Not responding — open logs to see why.</div>
                     }
                   </td>
-                  <td>
-                    @if (service.health) {
-                      <span [class]="'chip chip-' + service.health">{{ service.health }}</span>
-                      @if (service.health_response_ms != null) {
-                        <span class="health-latency">{{ service.health_response_ms }}ms</span>
-                      }
-                    } @else {
-                      <span class="text-muted">&mdash;</span>
+                  <td><span class="uptime-text">{{ service.uptime || '—' }}</span></td>
+                  <td class="update-cell">
+                    @if (updateFlow[service.name]; as up) {
+                      <div class="uf-inline" [class.uf-err]="up.phase === 'error'">
+                        <div class="uf-line">
+                          <span class="material-icons uf-ic">
+                            @switch (up.phase) {
+                              @case ('checking') { hourglass_top }
+                              @case ('up-to-date') { check_circle }
+                              @case ('available') { new_releases }
+                              @case ('downloading') { cloud_download }
+                              @case ('staged') { inventory_2 }
+                              @case ('applying') { sync }
+                              @case ('done') { check_circle }
+                              @case ('error') { error }
+                            }
+                          </span>
+                          <span class="uf-txt">{{ up.message }}</span>
+                          @if (up.phase === 'available') {
+                            <button class="uf-btn primary" (click)="downloadUpdate(service)" [disabled]="batchBusy">Update</button>
+                            <button class="uf-btn ghost" (click)="dismissFlow(service)">Later</button>
+                          }
+                          @if (up.phase === 'staged') {
+                            <button class="uf-btn primary" (click)="applyUpdate(service)" [disabled]="batchBusy">Install</button>
+                            <button class="uf-btn ghost" (click)="discardUpdate(service)" [disabled]="batchBusy">Discard</button>
+                          }
+                          @if (up.phase === 'up-to-date' || up.phase === 'done' || up.phase === 'error') {
+                            <button class="uf-btn ghost" (click)="dismissFlow(service)">Dismiss</button>
+                          }
+                        </div>
+                        @if (up.phase === 'downloading' || up.phase === 'applying' || up.phase === 'done' || up.phase === 'staged') {
+                          <puru-progress [value]="up.percent || 0" [state]="up.progressState || 'active'" [height]="4"></puru-progress>
+                        }
+                      </div>
                     }
                   </td>
-                  <td><span class="port-text">{{ service.ports.join(', ') || '—' }}</span></td>
-                  <td>{{ service.uptime || '—' }}</td>
                   <td class="actions-cell">
                     <div class="menu-wrap">
                       <button class="btn-icon" (click)="toggleMenu(service, $event)">
@@ -331,7 +223,7 @@ interface UpdateFlow {
                               <span class="material-icons menu-orange">refresh</span> Restart
                             </button>
                             <button class="menu-item" (click)="viewInfraLog(service); openMenu = null">
-                              <span class="material-icons">article</span> View log
+                              <span class="material-icons">article</span> View logs
                             </button>
                           } @else {
                             @if (service.status === 'stopped' || service.status === 'error') {
@@ -341,7 +233,7 @@ interface UpdateFlow {
                             }
                             @if (service.status === 'notinstalled') {
                               <button class="menu-item" routerLink="/setup" (click)="openMenu = null">
-                                <span class="material-icons menu-green">build</span> Install (Run Setup)
+                                <span class="material-icons menu-green">build</span> Install (run setup)
                               </button>
                             }
                             @if (service.status === 'running') {
@@ -353,7 +245,7 @@ interface UpdateFlow {
                               <span class="material-icons menu-orange">refresh</span> Restart
                             </button>
                             <button class="menu-item" (click)="viewLogs(service); openMenu = null">
-                              <span class="material-icons">article</span> View Logs
+                              <span class="material-icons">article</span> View logs
                             </button>
                             @if (isNative && service.name !== 'puru-hydrogen' && service.name !== 'dviewer' && service.status !== 'notinstalled') {
                               <button class="menu-item" (click)="checkUpdate(service); openMenu = null">
@@ -362,7 +254,7 @@ interface UpdateFlow {
                             }
                             @if (isNative) {
                               <button class="menu-item" (click)="rollbackService(service); openMenu = null">
-                                <span class="material-icons menu-orange">undo</span> Rollback
+                                <span class="material-icons menu-orange">undo</span> Roll back
                               </button>
                             }
                           }
@@ -371,98 +263,152 @@ interface UpdateFlow {
                     </div>
                   </td>
                 </tr>
-                @if (updateFlow[service.name]; as up) {
-                  <tr class="update-progress-row" [class.uf-error]="up.phase === 'error'">
-                    <td colspan="7">
-                      <div class="update-progress">
-                        <div class="up-head">
-                          <span class="up-msg">
-                            <span class="material-icons uf-icon">
-                              @switch (up.phase) {
-                                @case ('checking') { hourglass_top }
-                                @case ('up-to-date') { check_circle }
-                                @case ('available') { new_releases }
-                                @case ('downloading') { cloud_download }
-                                @case ('staged') { inventory_2 }
-                                @case ('applying') { sync }
-                                @case ('done') { check_circle }
-                                @case ('error') { error }
-                              }
-                            </span>
-                            {{ up.message }}
-                          </span>
-                          <span class="up-actions">
-                            @if (up.phase === 'downloading' && (up.total || 0) > 0) {
-                              <span class="up-bytes">{{ fmtMB(up.downloaded || 0) }} / {{ fmtMB(up.total || 0) }} MB</span>
-                            }
-                            @if (up.phase === 'available') {
-                              <button class="uf-btn primary" (click)="downloadUpdate(service)" [disabled]="batchBusy">
-                                <span class="material-icons">cloud_download</span> Download
-                              </button>
-                              <button class="uf-btn ghost" (click)="dismissFlow(service)">Later</button>
-                            }
-                            @if (up.phase === 'staged') {
-                              <button class="uf-btn primary" (click)="applyUpdate(service)" [disabled]="batchBusy">
-                                <span class="material-icons">restart_alt</span> Apply &amp; restart
-                              </button>
-                              <button class="uf-btn ghost" (click)="discardUpdate(service)" [disabled]="batchBusy">Discard</button>
-                            }
-                            @if (up.phase === 'up-to-date' || up.phase === 'done' || up.phase === 'error') {
-                              <button class="uf-btn ghost" (click)="dismissFlow(service)">Dismiss</button>
-                            }
-                          </span>
-                        </div>
-                        @if (up.phase === 'downloading' || up.phase === 'applying' || up.phase === 'done' || up.phase === 'staged') {
-                          <puru-progress [value]="up.percent || 0" [state]="up.progressState || 'active'" [height]="6"></puru-progress>
-                        }
-                      </div>
-                    </td>
-                  </tr>
-                }
               }
             </tbody>
           </table>
         </div>
+
+        <!-- ── Developer Tools (advanced — to be password-protected) ────────── -->
+        <div class="card dev-card">
+          <div class="dev-header" (click)="devToolsOpen = !devToolsOpen">
+            <div class="dev-title">
+              <span class="material-icons">lock</span>
+              <span>Developer tools</span>
+              <span class="dev-sub">Advanced diagnostics — for support staff</span>
+            </div>
+            <span class="material-icons dev-toggle">{{ devToolsOpen ? 'expand_less' : 'expand_more' }}</span>
+          </div>
+          @if (devToolsOpen) {
+            <div class="dev-body">
+              <div class="dev-links">
+                <button class="dev-link" routerLink="/performance">
+                  <span class="material-icons">memory</span>
+                  <div>
+                    <span class="dl-title">Performance</span>
+                    <span class="dl-sub">Memory tuning for each service</span>
+                  </div>
+                  <span class="material-icons dl-arrow">chevron_right</span>
+                </button>
+                <button class="dev-link" (click)="toggleProcessExplorer()">
+                  <span class="material-icons">build</span>
+                  <div>
+                    <span class="dl-title">Port tools</span>
+                    <span class="dl-sub">Find &amp; free processes holding Puru ports</span>
+                  </div>
+                  <span class="material-icons dl-arrow">{{ processExplorerOpen ? 'expand_less' : 'expand_more' }}</span>
+                </button>
+              </div>
+
+              @if (processExplorerOpen) {
+                <div class="pt-body">
+                  <div class="pt-bar">
+                    <button class="btn btn-stroked btn-sm" (click)="refreshProcesses()" [disabled]="processesLoading">
+                      <span class="material-icons">refresh</span>
+                      {{ processesLoading ? 'Scanning…' : 'Refresh' }}
+                    </button>
+                  </div>
+                  @if (processesLoading && processes.length === 0) {
+                    <div class="pt-loading"><span class="spinner"></span></div>
+                  } @else if (processes.length === 0) {
+                    <div class="pt-empty">No Puru-relevant processes found.</div>
+                  } @else {
+                    <table class="data-table pt-table">
+                      <thead>
+                        <tr>
+                          <th>PID</th>
+                          <th>Process</th>
+                          <th>Listening ports</th>
+                          <th>CPU</th>
+                          <th>Memory</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        @for (p of processes; track p.pid) {
+                          <tr>
+                            <td><span class="pid">{{ p.pid }}</span></td>
+                            <td>
+                              <div class="pt-name">
+                                <span class="pt-bin">{{ p.name }}</span>
+                                @if (p.label) { <span class="pt-label">{{ p.label }}</span> }
+                              </div>
+                              @if (p.cmd) { <div class="pt-cmd" [title]="p.cmd">{{ p.cmd }}</div> }
+                            </td>
+                            <td>
+                              @if (p.listening_ports.length === 0) {
+                                <span class="text-muted">&mdash;</span>
+                              } @else {
+                                @for (port of p.listening_ports; track port) {
+                                  <span class="pt-port">{{ port }}</span>
+                                }
+                              }
+                            </td>
+                            <td>{{ p.cpu_pct }}%</td>
+                            <td>{{ p.mem_mb }} MB</td>
+                            <td class="actions-cell">
+                              <button class="btn btn-danger btn-sm" (click)="killProcess(p)" [disabled]="!!killing[p.pid]">
+                                <span class="material-icons">close</span>
+                                {{ killing[p.pid] ? 'Killing…' : 'Kill' }}
+                              </button>
+                            </td>
+                          </tr>
+                        }
+                      </tbody>
+                    </table>
+                  }
+                </div>
+              }
+            </div>
+          }
+        </div>
       }
     </div>
+
+    <!-- ── Log drawer (right side) ──────────────────────────────────────────── -->
+    @if (logContainer) {
+      <div class="drawer-scrim" (click)="closeLogs()"></div>
+      <aside class="log-drawer">
+        <div class="log-header">
+          <div class="log-title">
+            <span class="material-icons">article</span>
+            <span>{{ displayName(logContainer) }} — logs</span>
+          </div>
+          <div class="log-actions">
+            <select class="log-time-select" [(ngModel)]="logTimeFilter" (ngModelChange)="refreshLogs()">
+              <option value="tail">Latest</option>
+              <option value="1h">Last 1 hour</option>
+              <option value="6h">Last 6 hours</option>
+              <option value="24h">Last 24 hours</option>
+              <option value="3d">Last 3 days</option>
+              <option value="7d">Last 7 days</option>
+            </select>
+            <button class="btn-icon log-btn" (click)="closeLogs()" title="Close">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+        </div>
+        @if (logsLoading) {
+          <div class="log-loading"><span class="spinner"></span></div>
+        } @else {
+          <pre class="log-body">{{ logOutput || 'No logs available.' }}</pre>
+        }
+        <div class="log-foot">
+          <button class="btn btn-primary btn-block" (click)="refreshLogs()" [disabled]="logsLoading">
+            <span class="material-icons">refresh</span>
+            {{ logsLoading ? 'Refreshing…' : 'Refresh (jump to latest)' }}
+          </button>
+        </div>
+      </aside>
+    }
   `,
   styles: [`
-    .update-progress-row td {
-      padding: 10px 16px 14px;
-      background: var(--bg-subtle, rgba(0,158,251,0.04));
-      border-top: none;
-    }
-    .update-progress { display: flex; flex-direction: column; gap: 7px; }
-    .up-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      font-size: 0.82rem;
-    }
-    .up-msg { color: var(--text-secondary, #5a6472); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
-    .up-msg .uf-icon { font-size: 17px; color: var(--brand-blue, #009efb); }
-    .update-progress-row.uf-error .uf-icon { color: var(--brand-red, #e83a3a); }
-    .up-actions { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
-    .up-bytes { color: var(--text-muted, #8a94a3); font-variant-numeric: tabular-nums; }
-    .uf-btn {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 10px; font-size: 0.78rem; font-weight: 600;
-      border-radius: 6px; cursor: pointer; border: 1px solid transparent;
-      transition: background 0.15s ease, color 0.15s ease;
-    }
-    .uf-btn .material-icons { font-size: 15px; }
-    .uf-btn.primary { color: #fff; background: var(--brand-blue, #009efb); }
-    .uf-btn.primary:hover:not(:disabled) { filter: brightness(0.94); }
-    .uf-btn.ghost { color: var(--text-secondary, #5a6472); background: transparent; border-color: var(--border, #d5dbe3); }
-    .uf-btn.ghost:hover:not(:disabled) { background: var(--bg-hover, rgba(0,0,0,0.04)); }
-    .uf-btn:disabled { opacity: 0.5; cursor: default; }
-
     .page {
       max-width: 1200px;
       margin: 0 auto;
       padding: 28px 32px;
+      transition: margin-right 0.2s ease;
     }
+    .page.drawer-open { margin-right: 460px; }
 
     .page-header {
       display: flex;
@@ -470,385 +416,195 @@ interface UpdateFlow {
       align-items: flex-start;
       margin-bottom: 20px;
 
-      h1 {
-        font-size: 1.5rem;
-        font-weight: 700;
-        margin-bottom: 2px;
-      }
-      .page-subtitle {
-        color: var(--text-secondary);
-        font-size: 0.85rem;
-      }
+      h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 2px; }
+      .page-subtitle { color: var(--text-secondary); font-size: 0.85rem; }
     }
 
-    .mode-tag {
-      font-size: 0.7rem;
-      font-weight: 600;
-      padding: 1px 8px;
-      border-radius: 10px;
-      margin-left: 6px;
-      vertical-align: middle;
+    .header-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 
-      &.native {
-        background: #fff3e0;
-        color: #e65100;
-      }
-    }
-
-    .header-actions {
-      display: flex;
-      gap: 10px;
-    }
-
-    .loading-state {
-      display: flex;
-      justify-content: center;
-      padding: 80px 0;
-    }
+    .loading-state { display: flex; justify-content: center; padding: 80px 0; }
 
     /* ── Empty State ──────────────────────────── */
-    .empty-card {
-      padding: 0 !important;
-    }
+    .empty-card { padding: 0 !important; }
     .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 12px;
-      padding: 60px 20px;
-      text-align: center;
-
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      padding: 60px 20px; text-align: center;
       .empty-icon {
-        width: 64px;
-        height: 64px;
-        border-radius: 16px;
-        background: #f1f5f9;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        .material-icons {
-          font-size: 32px;
-          color: #94a3b8;
-        }
+        width: 64px; height: 64px; border-radius: 16px; background: #f1f5f9;
+        display: flex; align-items: center; justify-content: center;
+        .material-icons { font-size: 32px; color: #94a3b8; }
       }
-
-      h3 {
-        font-size: 1rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin: 0;
-      }
-      p {
-        font-size: 0.85rem;
-        color: var(--text-secondary);
-        margin: 0;
-        max-width: 340px;
-      }
-      button {
-        margin-top: 8px;
-      }
+      h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin: 0; }
+      p { font-size: 0.85rem; color: var(--text-secondary); margin: 0; max-width: 340px; }
+      button { margin-top: 8px; }
     }
 
     /* ── Table ────────────────────────────────── */
-    .table-card {
-      /* visible so the row action dropdown isn't clipped at the card edge */
-      overflow: visible;
-    }
+    .table-card { overflow: visible; }
+    .services-table { width: 100%; table-layout: auto; }
+    .services-table td { vertical-align: middle; }
+    .update-col { width: auto; }
+    .actions-cell { text-align: right; width: 48px; }
 
-    .services-table {
-      width: 100%;
-    }
-
-    .actions-cell {
-      text-align: right;
-      width: 48px;
-    }
-
-    .name-cell {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
+    .name-cell { display: flex; align-items: center; gap: 12px; }
     .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
       &.dot-running { background: var(--status-green); box-shadow: 0 0 6px rgba(34, 197, 94, 0.4); }
-      &.dot-stopped { background: var(--status-red); }
+      &.dot-stopped { background: var(--text-muted); }
       &.dot-starting { background: var(--status-orange); }
       &.dot-notinstalled { background: var(--text-muted); }
       &.dot-error { background: var(--status-red); }
     }
+    .name-info { display: flex; flex-direction: column; }
+    .name-primary { font-weight: 600; font-size: 0.9rem; color: var(--text-primary); }
 
-    .name-info {
-      display: flex;
-      flex-direction: column;
-    }
-    .name-primary {
-      font-weight: 600;
-      font-size: 0.85rem;
-      color: var(--text-primary);
-    }
-    .name-secondary {
-      font-size: 0.7rem;
-      color: var(--text-muted);
-      font-family: 'SF Mono', 'Fira Code', monospace;
-    }
-    /* Transient inline status just below the service name. */
     .action-msg {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      margin-top: 3px;
-      font-size: 0.72rem;
-      font-weight: 600;
-    }
-    .action-msg .material-icons { font-size: 13px; }
-    .action-msg.am-busy { color: var(--text-muted, #8a94a3); }
-    .action-msg.am-ok { color: var(--brand-green, #2e9e5b); }
-    .action-msg.am-error { color: var(--brand-red, #e83a3a); }
-
-    .image-text {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      display: inline-flex; align-items: center; gap: 4px; margin-top: 3px;
+      font-size: 0.72rem; font-weight: 600;
+      .material-icons { font-size: 13px; }
+      &.am-busy { color: var(--text-muted, #8a94a3); }
+      &.am-ok { color: var(--brand-green, #2e9e5b); }
+      &.am-error { color: var(--brand-red, #e83a3a); }
     }
 
-    .port-text {
-      font-size: 0.8rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      color: var(--text-secondary);
-    }
-
-    .text-muted {
-      color: var(--text-muted);
-    }
-
-    .health-latency {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-left: 6px;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-    }
+    .uptime-text { font-size: 0.85rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+    .text-muted { color: var(--text-muted); }
 
     .svc-detail {
-      margin-top: 4px;
-      font-size: 11px;
-      line-height: 1.35;
-      color: var(--status-red);
-      max-width: 360px;
-      white-space: pre-line;   /* multi-line diagnosis (e.g. RabbitMQ + last log error) */
-      word-break: break-word;
+      margin-top: 4px; font-size: 11px; line-height: 1.35;
+      color: var(--status-red); max-width: 360px;
     }
 
     .menu-green { color: var(--status-green) !important; }
     .menu-red { color: var(--status-red) !important; }
     .menu-orange { color: var(--status-orange) !important; }
 
-    /* ── Log Viewer ──────────────────────────── */
-    .log-card {
-      margin-bottom: 16px;
-      padding: 0 !important;
-      overflow: hidden;
+    /* ── Inline per-service update ────────────── */
+    .update-cell { padding-right: 8px; }
+    .uf-inline { display: flex; flex-direction: column; gap: 5px; }
+    .uf-line { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; }
+    .uf-ic { font-size: 16px; color: var(--brand-blue, #009efb); flex-shrink: 0; }
+    .uf-inline.uf-err .uf-ic { color: var(--brand-red, #e83a3a); }
+    .uf-txt { color: var(--text-secondary, #5a6472); font-weight: 500; white-space: nowrap; }
+    .uf-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 12px; font-size: 0.76rem; font-weight: 600;
+      border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+      transition: background 0.15s ease, filter 0.15s ease;
     }
+    .uf-btn.primary { color: #fff; background: var(--brand-blue, #009efb); }
+    .uf-btn.primary:hover:not(:disabled) { filter: brightness(0.94); }
+    .uf-btn.ghost { color: var(--text-secondary, #5a6472); background: transparent; border: 1px solid var(--border, #d5dbe3); }
+    .uf-btn.ghost:hover:not(:disabled) { background: var(--bg-hover, rgba(0,0,0,0.04)); }
+    .uf-btn:disabled { opacity: 0.5; cursor: default; }
 
-    .log-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 16px;
-      background: #1e293b;
-      color: #e2e8f0;
-    }
-
-    .log-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 0.85rem;
-      font-weight: 600;
-
-      .material-icons {
-        font-size: 18px;
-      }
-    }
-
-    .log-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .log-btn {
-      color: #94a3b8;
-      &:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-    }
-
-    .log-time-select {
-      background: #1e293b;
-      color: #e2e8f0;
-      border: 1px solid #334155;
-      border-radius: 4px;
-      padding: 4px 8px;
-      font-size: 0.75rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      cursor: pointer;
-      outline: none;
-
-      &:hover {
-        border-color: #475569;
-      }
-      &:focus {
-        border-color: #6366f1;
-      }
-
-      option {
-        background: #1e293b;
-        color: #e2e8f0;
-      }
-    }
-
-    .log-loading {
-      display: flex;
-      justify-content: center;
-      padding: 24px;
-      background: #0f172a;
-    }
-
-    .log-content {
-      margin: 0;
-      padding: 16px;
-      background: #0f172a;
-      color: #e2e8f0;
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.75rem;
-      line-height: 1.6;
-      max-height: 400px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-
-    /* ── Port Tools / Process Explorer ────────── */
-    .pt-card {
-      margin-bottom: 16px;
-      padding: 0 !important;
-      overflow: hidden;
-    }
-    .pt-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px;
-      cursor: pointer;
-      user-select: none;
-      background: #f8fafc;
-      border-bottom: 1px solid transparent;
-      transition: background 0.15s;
+    /* ── Developer Tools ──────────────────────── */
+    .dev-card { margin-top: 16px; padding: 0 !important; overflow: hidden; }
+    .dev-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; cursor: pointer; user-select: none;
+      background: #f8fafc; transition: background 0.15s;
       &:hover { background: #f1f5f9; }
     }
-    .pt-title {
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      font-size: 0.9rem;
-      font-weight: 600;
-      .material-icons { font-size: 18px; align-self: center; color: #64748b; }
+    .dev-title {
+      display: flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600;
+      .material-icons { font-size: 17px; color: #64748b; }
     }
-    .pt-sub {
-      font-weight: 400;
-      color: #64748b;
-      font-size: 0.78rem;
-      margin-left: 4px;
+    .dev-sub { font-weight: 400; color: #64748b; font-size: 0.78rem; margin-left: 2px; }
+    .dev-toggle { color: #64748b; }
+    .dev-body { border-top: 1px solid #e2e8f0; padding: 14px 16px; }
+    .dev-links { display: flex; flex-direction: column; gap: 10px; }
+    .dev-link {
+      display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+      padding: 12px 14px; border: 1px solid var(--border, #e2e8f0); border-radius: 10px;
+      background: #fff; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+      &:hover { border-color: #cbd5e1; background: #f8fafc; }
+      > .material-icons:first-child { font-size: 20px; color: #64748b; }
+      div { display: flex; flex-direction: column; flex: 1; }
+      .dl-title { font-size: 0.86rem; font-weight: 600; color: var(--text-primary); }
+      .dl-sub { font-size: 0.74rem; color: #64748b; }
+      .dl-arrow { color: #94a3b8; font-size: 20px; }
     }
-    .pt-header-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .pt-toggle { color: #64748b; }
-    .pt-body { border-top: 1px solid #e2e8f0; }
-    .pt-loading {
-      display: flex;
-      justify-content: center;
-      padding: 24px;
-    }
-    .pt-empty {
-      padding: 16px;
-      color: #64748b;
-      font-size: 0.85rem;
-      text-align: center;
-    }
+
+    .pt-body { margin-top: 12px; }
+    .pt-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+    .pt-loading { display: flex; justify-content: center; padding: 24px; }
+    .pt-empty { padding: 16px; color: #64748b; font-size: 0.85rem; text-align: center; }
     .pt-table th, .pt-table td { font-size: 0.82rem; }
-    .pid {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.8rem;
-    }
-    .pt-name {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .pt-bin {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      color: #1e293b;
-      font-size: 0.82rem;
-    }
-    .pt-label {
-      display: inline-block;
-      background: #eef2ff;
-      color: #4338ca;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 0.7rem;
-      font-weight: 600;
-    }
-    .pt-cmd {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.7rem;
-      color: #94a3b8;
-      margin-top: 2px;
-      max-width: 380px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .pt-port {
-      display: inline-block;
-      background: #f1f5f9;
-      color: #334155;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.75rem;
-      margin-right: 4px;
-      margin-bottom: 2px;
-    }
+    .pid { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; }
+    .pt-name { display: flex; align-items: center; gap: 8px; }
+    .pt-bin { font-family: 'SF Mono', 'Fira Code', monospace; color: #1e293b; font-size: 0.82rem; }
+    .pt-label { display: inline-block; background: #eef2ff; color: #4338ca; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+    .pt-cmd { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.7rem; color: #94a3b8; margin-top: 2px; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pt-port { display: inline-block; background: #f1f5f9; color: #334155; padding: 2px 8px; border-radius: 4px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; margin-right: 4px; margin-bottom: 2px; }
     .btn-danger {
-      background: #dc2626;
-      color: #fff;
-      border: 1px solid #dc2626;
+      background: #dc2626; color: #fff; border: 1px solid #dc2626;
       &:hover:not([disabled]) { background: #b91c1c; border-color: #b91c1c; }
       &[disabled] { opacity: 0.55; cursor: not-allowed; }
     }
-    .btn-sm {
-      padding: 4px 10px;
-      font-size: 0.78rem;
-      .material-icons { font-size: 14px; }
+    .btn-sm { padding: 4px 10px; font-size: 0.78rem; .material-icons { font-size: 14px; } }
+
+    /* ── Log drawer ───────────────────────────── */
+    .drawer-scrim {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.18); z-index: 40;
     }
-    .pt-foot {
-      padding: 8px 16px 12px;
-      font-size: 0.72rem;
-      color: #94a3b8;
-      code {
-        background: #f1f5f9;
-        padding: 1px 4px;
-        border-radius: 3px;
-        font-size: 0.7rem;
-      }
+    .log-drawer {
+      position: fixed; top: 0; right: 0; bottom: 0; width: 460px; z-index: 41;
+      display: flex; flex-direction: column;
+      background: #0f172a; box-shadow: -8px 0 24px rgba(0,0,0,0.25);
+    }
+    .log-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px 16px; background: #1e293b; color: #e2e8f0; flex-shrink: 0;
+    }
+    .log-title {
+      display: flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600;
+      .material-icons { font-size: 18px; }
+    }
+    .log-actions { display: flex; align-items: center; gap: 6px; }
+    .log-btn { color: #94a3b8; &:hover { background: rgba(255,255,255,0.1); color: #fff; } }
+    .log-time-select {
+      background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;
+      padding: 4px 8px; font-size: 0.75rem; cursor: pointer; outline: none;
+      &:hover { border-color: #475569; }
+      option { background: #1e293b; color: #e2e8f0; }
+    }
+    .log-loading { display: flex; justify-content: center; align-items: center; flex: 1; background: #0f172a; }
+    .log-body {
+      margin: 0; padding: 16px; flex: 1; overflow-y: auto;
+      background: #0f172a; color: #e2e8f0;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.74rem; line-height: 1.6;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .log-foot { padding: 10px 12px; background: #1e293b; flex-shrink: 0; }
+    .btn-block { width: 100%; justify-content: center; }
+
+    /* When the drawer is open, don't also squeeze the page below tablet width —
+       the drawer overlays full-width instead. */
+    @media (max-width: 1100px) {
+      .page.drawer-open { margin-right: 0; }
+      .log-drawer { width: 420px; }
+    }
+
+    /* Tablet / narrow window: drawer goes full-width, header actions wrap,
+       trim horizontal padding so nothing overflows the viewport. */
+    @media (max-width: 820px) {
+      .page { padding: 20px 18px; }
+      .log-drawer { width: 100%; }
+      .page-header { flex-direction: column; align-items: stretch; gap: 12px; }
+      .header-actions { justify-content: flex-start; }
+      .update-col { width: 1%; }        /* shrink-to-fit so Service/Status keep room */
+    }
+
+    /* Phone-width: tighten paddings and let the update text truncate rather than
+       push the table wider than the screen. */
+    @media (max-width: 560px) {
+      .page { padding: 16px 12px; }
+      .header-actions .btn { flex: 1 1 auto; justify-content: center; }
+      .services-table th, .services-table td { padding-left: 8px; padding-right: 8px; }
+      .uf-txt { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+      .name-primary { font-size: 0.84rem; }
     }
   `]
 })
@@ -877,6 +633,9 @@ export class ServicesComponent implements OnInit, OnDestroy {
   sortDir: 1 | -1 = 1;
   openMenu: string | null = null;
 
+  /** Developer-tools section (advanced; will be password-gated later). */
+  devToolsOpen = false;
+
   // ── Port Tools / Process Explorer ────────────
   processExplorerOpen = false;
   processes: ProcessInfo[] = [];
@@ -885,6 +644,32 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
   get runningCount(): number {
     return this.services.filter(s => s.status === 'running').length;
+  }
+
+  /** Friendly display name — strip the internal "puru-" prefix, Title Case. */
+  displayName(name: string): string {
+    const stripped = name.replace(/^puru-/, '');
+    const special: Record<string, string> = {
+      'hydrogen': 'Web app',
+      'dviewer': 'DICOM viewer',
+      'has': 'HAS',
+      'pacs': 'PACS',
+      'ris': 'RIS',
+    };
+    if (special[stripped]) return special[stripped];
+    return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+  }
+
+  /** Client-friendly status label — no developer jargon. */
+  statusLabel(s: ServiceInfo): string {
+    switch (s.status as string) {
+      case 'running': return 'Running';
+      case 'starting': return 'Starting';
+      case 'stopped': return 'Stopped';
+      case 'error': return 'Needs attention';
+      case 'notinstalled': return 'Not installed';
+      default: return String(s.status);
+    }
   }
 
   private _sortedCache: ServiceInfo[] = [];
@@ -896,7 +681,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
    */
   get sortedServices(): ServiceInfo[] {
     const sig = `${this.sortKey}|${this.sortDir}|` +
-      this.services.map(s => `${s.name}:${s.status}:${s.health || ''}`).join(',');
+      this.services.map(s => `${s.name}:${s.status}:${s.uptime || ''}`).join(',');
     if (sig !== this._sortSig) {
       this._sortSig = sig;
       const dir = this.sortDir;
@@ -910,9 +695,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
   private sortValue(s: ServiceInfo, key: string): string {
     switch (key) {
-      case 'image': return s.image || '';
       case 'status': return s.status || '';
-      case 'health': return s.health || '';
       default: return s.name || '';
     }
   }
@@ -954,24 +737,24 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
       if (p.phase === 'downloading') {
         this.updateFlow[p.service] = {
-          ...cur, phase: 'downloading', message: p.message,
+          ...cur, phase: 'downloading', message: 'Downloading…',
           downloaded: p.downloaded, total: p.total, percent: p.percent,
           progressState: indeterminate ? 'indeterminate' : 'active',
         };
       } else if (p.phase === 'staged') {
         this.updateFlow[p.service] = {
-          ...cur, phase: 'staged', message: p.message, percent: 100, progressState: 'complete',
+          ...cur, phase: 'staged', message: 'Ready to install', percent: 100, progressState: 'complete',
         };
       } else if (p.phase === 'stopping' || p.phase === 'starting') {
         this.updateFlow[p.service] = {
-          ...cur, phase: 'applying', message: p.message, percent: p.percent, progressState: 'active',
+          ...cur, phase: 'applying', message: 'Installing…', percent: p.percent, progressState: 'active',
         };
       } else if (p.phase === 'done') {
-        this.updateFlow[p.service] = { ...cur, phase: 'done', message: p.message, percent: 100, progressState: 'complete' };
+        this.updateFlow[p.service] = { ...cur, phase: 'done', message: 'Updated', percent: 100, progressState: 'complete' };
         const svc = p.service;
         setTimeout(() => { if (this.updateFlow[svc]?.phase === 'done') delete this.updateFlow[svc]; }, 2500);
       } else if (p.phase === 'error') {
-        this.updateFlow[p.service] = { ...cur, phase: 'error', message: p.message, progressState: 'fail' };
+        this.updateFlow[p.service] = { ...cur, phase: 'error', message: 'Update failed', progressState: 'fail' };
       }
     }).then((un) => (this.unlistenProgress = un));
   }
@@ -1019,6 +802,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.logOutput = `Failed to fetch ${service.name} log: ${e}`;
     } finally {
       this.logsLoading = false;
+      this.scrollLogsToBottom();
     }
   }
   get availableCount(): number {
@@ -1037,7 +821,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
           this.updateFlow[s.name] = {
             phase: 'staged', percent: 100, progressState: 'complete',
             latestSha: staged.short_sha,
-            message: `Downloaded build ${staged.short_sha} (${staged.size_mb.toFixed(1)} MB) — ready to apply`,
+            message: 'Ready to install',
           };
         }
       } catch { /* ignore */ }
@@ -1047,15 +831,15 @@ export class ServicesComponent implements OnInit, OnDestroy {
   /** Step 1: identify. */
   async checkUpdate(service: ServiceInfo): Promise<void> {
     const name = service.name;
-    this.updateFlow[name] = { phase: 'checking', message: 'Checking for updates…' };
+    this.updateFlow[name] = { phase: 'checking', message: 'Checking…' };
     try {
       const c = await this.tauri.invoke<JarUpdateCheck>('check_service_update', { serviceName: name });
       this.updateFlow[name] = c.update_available
-        ? { phase: 'available', message: `Update available: ${c.current_sha || 'none'} → ${c.latest_sha}`,
+        ? { phase: 'available', message: 'Update available',
             currentSha: c.current_sha, latestSha: c.latest_sha }
-        : { phase: 'up-to-date', message: `Up to date (${c.current_sha || c.latest_sha})`, currentSha: c.current_sha };
+        : { phase: 'up-to-date', message: 'Up to date', currentSha: c.current_sha };
     } catch (e) {
-      this.updateFlow[name] = { phase: 'error', message: String(e), progressState: 'fail' };
+      this.updateFlow[name] = { phase: 'error', message: 'Check failed', progressState: 'fail' };
     }
   }
 
@@ -1063,16 +847,16 @@ export class ServicesComponent implements OnInit, OnDestroy {
   async downloadUpdate(service: ServiceInfo): Promise<void> {
     const name = service.name;
     const prev = this.updateFlow[name];
-    this.updateFlow[name] = { phase: 'downloading', message: 'Starting download…', percent: 0,
+    this.updateFlow[name] = { phase: 'downloading', message: 'Downloading…', percent: 0,
       progressState: 'active', latestSha: prev?.latestSha };
     try {
       const s = await this.tauri.invoke<StagedUpdate>('download_service_update', { serviceName: name });
       this.updateFlow[name] = { phase: 'staged', percent: 100, progressState: 'complete',
         latestSha: s.short_sha,
-        message: `Downloaded build ${s.short_sha} (${s.size_mb.toFixed(1)} MB) — ready to apply` };
+        message: 'Ready to install' };
     } catch (e) {
       if (this.updateFlow[name]?.phase !== 'error') {
-        this.updateFlow[name] = { phase: 'error', message: String(e), progressState: 'fail' };
+        this.updateFlow[name] = { phase: 'error', message: 'Download failed', progressState: 'fail' };
       }
     }
   }
@@ -1080,17 +864,17 @@ export class ServicesComponent implements OnInit, OnDestroy {
   /** Step 3: apply — stop → swap → restart. */
   async applyUpdate(service: ServiceInfo, skipConfirm = false): Promise<void> {
     const name = service.name;
-    if (!skipConfirm && !confirm(`Apply the downloaded update for ${name}? This stops the service, swaps the JAR, and restarts it.`)) return;
-    this.updateFlow[name] = { phase: 'applying', message: 'Applying update…', percent: 10, progressState: 'active' };
+    if (!skipConfirm && !confirm(`Install the downloaded update for ${this.displayName(name)}? The service restarts briefly.`)) return;
+    this.updateFlow[name] = { phase: 'applying', message: 'Installing…', percent: 10, progressState: 'active' };
     try {
       const r = await this.tauri.invoke<any>('apply_service_update', { serviceName: name });
-      this.updateFlow[name] = { phase: 'done', message: `Applied build ${r.short_sha}`, percent: 100, progressState: 'complete' };
+      this.updateFlow[name] = { phase: 'done', message: 'Updated', percent: 100, progressState: 'complete' };
       await this.loadServicesSilent();
       const svc = name;
       setTimeout(() => { if (this.updateFlow[svc]?.phase === 'done') delete this.updateFlow[svc]; }, 2500);
     } catch (e) {
       if (this.updateFlow[name]?.phase !== 'error') {
-        this.updateFlow[name] = { phase: 'error', message: String(e), progressState: 'fail' };
+        this.updateFlow[name] = { phase: 'error', message: 'Install failed', progressState: 'fail' };
       }
     }
   }
@@ -1126,7 +910,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
   async applyAllUpdates(): Promise<void> {
     const targets = this.updatableServices.filter(s => this.updateFlow[s.name]?.phase === 'staged');
     if (targets.length === 0) return;
-    if (!confirm(`Apply ${targets.length} downloaded update(s)? Each service is stopped, swapped, and restarted one at a time.`)) return;
+    if (!confirm(`Install ${targets.length} downloaded update(s)? Each service restarts briefly, one at a time.`)) return;
     this.batchBusy = true;
     try { for (const s of targets) await this.applyUpdate(s, true); } // sequential — one restart at a time
     finally { this.batchBusy = false; }
@@ -1173,13 +957,6 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
   async refreshServices(): Promise<void> {
     await this.loadServicesSilent();
-  }
-
-  shortenImage(image: string): string {
-    // Trim long registry prefixes for display
-    return image
-      .replace(/^asia-south2-docker\.pkg\.dev\/puru-255206\/puru1\//, '')
-      .replace(/^gcr\.io\/puru-255206\//, '');
   }
 
   /** In native mode use service name; in Docker mode use container_name */
@@ -1252,6 +1029,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.logOutput = `Failed to fetch logs for ${service.container_name}.`;
     } finally {
       this.logsLoading = false;
+      this.scrollLogsToBottom();
     }
   }
 
@@ -1264,7 +1042,16 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.logOutput = 'Failed to refresh logs.';
     } finally {
       this.logsLoading = false;
+      this.scrollLogsToBottom();
     }
+  }
+
+  /** Jump the log view to the newest lines — that's what operators want to see. */
+  private scrollLogsToBottom(): void {
+    setTimeout(() => {
+      const el = document.querySelector('.log-body') as HTMLElement | null;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 0);
   }
 
   private buildLogArgs(): Record<string, unknown> {
@@ -1297,7 +1084,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
 
   async rollbackService(service: ServiceInfo): Promise<void> {
-    if (!confirm(`Rollback ${service.name} to previous JAR?`)) return;
+    if (!confirm(`Roll back ${this.displayName(service.name)} to the previous version?`)) return;
     const name = service.name;
     this.setMsg(name, 'Rolling back…', 'busy');
     try {
