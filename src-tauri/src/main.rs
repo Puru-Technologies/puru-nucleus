@@ -399,6 +399,7 @@ fn run_gui(minimized: bool) {
             commands::setup_pull_jars,
             commands::setup_start_native_services,
             commands::setup_seed_queues,
+            commands::setup_init_auth,
             commands::setup_seed_database,
             commands::is_elevated,
             commands::restart_as_admin,

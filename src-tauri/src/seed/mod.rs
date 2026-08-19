@@ -275,6 +275,10 @@ const HAS_SERVICES: &[(&str, &str, u8, bool)] = &[
 // Union of all @RabbitListener queues across services. Spring services do
 // passive declares and crash at boot when a queue is missing.
 
+// Retained for reference / easy revival, but no longer seeded — services
+// declare their own queues now (see run_seed). #[allow(dead_code)] keeps the
+// build warning-free without deleting the catalog.
+#[allow(dead_code)]
 const QUEUES: &[&str] = &[
     // puru-auth
     "puru_message_to_auth",
@@ -357,7 +361,15 @@ pub async fn run_seed(
     }
 
     if seed_queues {
-        report.sections.push(seed_rabbitmq_queues(&config).await);
+        // Queue seeding is intentionally disabled. Each Spring Boot service
+        // declares its own queues via RabbitAdmin (@Bean Queue) with the exact
+        // arguments it needs. Nucleus pre-creating them "plain" caused
+        // arg-mismatch conflicts (e.g. PACS's dead-letter args → PRECONDITION_
+        // FAILED), so we let the services own their topology. Kept as a logged
+        // no-op so the setup step / run_seed API surface don't change.
+        tracing::info!(
+            "Seed: skipping RabbitMQ queue creation — each service declares its own queues"
+        );
     }
 
     if seed_templates {
@@ -365,6 +377,76 @@ pub async fn run_seed(
     }
 
     Ok(report)
+}
+
+/// Auth's app port. The role/user bootstrap endpoint (`/init1`) lives here and
+/// is unauthenticated (see puru-auth SecurityConfiguration permitAll list).
+const AUTH_HTTP_PORT: u16 = 8080;
+
+/// Bootstrap auth's roles, privileges, and the root user by calling auth's own
+/// unauthenticated `GET /init1` — the same endpoint the front-end "init" flow
+/// hits. This runs AFTER auth has started for the first time (its tables must
+/// exist), so we poll `/init1/status` until auth answers.
+///
+/// Idempotent twice over: we skip entirely when roles already exist, and
+/// `/init1` itself checks-before-create. Returns auth's human-readable summary
+/// (which includes the root login), or a clear error if auth never came up.
+pub async fn init_auth_roles() -> Result<String, NucleusError> {
+    let base = format!("http://127.0.0.1:{}", AUTH_HTTP_PORT);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| NucleusError::Internal(format!("http client: {}", e)))?;
+
+    // 1. Wait for auth to answer — first boot (create schema + start Tomcat)
+    //    can take ~30s, and this step may fire right after we launch it.
+    let status_url = format!("{}/init1/status", base);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut existing_roles: i64 = 0;
+    loop {
+        if let Ok(resp) = client.get(&status_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    existing_roles = json.get("totalRoles").and_then(|v| v.as_i64()).unwrap_or(0);
+                }
+                break;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(NucleusError::Internal(format!(
+                "puru-auth did not become reachable on :{} — cannot initialize roles/root user",
+                AUTH_HTTP_PORT
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    // 2. Already bootstrapped? Leave it alone.
+    if existing_roles > 0 {
+        tracing::info!(
+            "Auth init: {} roles already present — skipping /init1",
+            existing_roles
+        );
+        return Ok(format!("Already initialized ({} roles present)", existing_roles));
+    }
+
+    // 3. Bootstrap: seed roles/privileges + create the root user.
+    let init_url = format!("{}/init1", base);
+    let resp = client
+        .get(&init_url)
+        .send()
+        .await
+        .map_err(|e| NucleusError::Internal(format!("auth /init1 request failed: {}", e)))?;
+    let ok = resp.status().is_success();
+    let body = resp.text().await.unwrap_or_default();
+    if !ok {
+        return Err(NucleusError::Internal(format!(
+            "auth /init1 returned an error: {}",
+            body
+        )));
+    }
+    tracing::info!("Auth init (/init1): {}", body);
+    Ok(body)
 }
 
 fn create_mysql_pool(config: &NucleusConfig) -> mysql_async::Pool {
@@ -736,6 +818,7 @@ async fn seed_has_services(pool: &mysql_async::Pool) -> SeedSection {
 
 // ── RabbitMQ queue seeder ────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn load_rabbit_settings(config: &NucleusConfig) -> (String, String, String, String) {
     let mut vars: HashMap<String, String> = HashMap::new();
     let path = config.env_dir().join("rabbitmq.env");
@@ -770,6 +853,7 @@ fn load_rabbit_settings(config: &NucleusConfig) -> (String, String, String, Stri
     (host, vhost, user, pass)
 }
 
+#[allow(dead_code)]
 async fn seed_rabbitmq_queues(config: &NucleusConfig) -> SeedSection {
     let mut section = SeedSection {
         name: "rabbitmq queues".into(),

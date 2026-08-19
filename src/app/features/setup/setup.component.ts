@@ -1315,6 +1315,7 @@ export class SetupComponent implements OnInit {
     { label: 'Start native services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
     { label: 'Seed database & templates', status: 'pending' },
+    { label: 'Initialize roles & users', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
     { label: 'Install daemon service', status: 'pending' },
     { label: 'Configure HTTPS (TLS)', status: 'pending' }
@@ -1856,6 +1857,7 @@ export class SetupComponent implements OnInit {
       'setup_start_native_services',
       'setup_health_check',
       'setup_seed_database',
+      'setup_init_auth',
       'setup_configure_backups',
       'setup_install_daemon',
       'setup_tls'

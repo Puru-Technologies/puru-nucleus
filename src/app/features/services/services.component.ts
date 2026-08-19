@@ -285,6 +285,18 @@ interface UpdateFlow {
           @if (devToolsOpen) {
             <div class="dev-body">
               <div class="dev-links">
+                <button class="dev-link" (click)="initRoles()" [disabled]="initRolesBusy">
+                  <span class="material-icons">admin_panel_settings</span>
+                  <div>
+                    <span class="dl-title">Initialize roles &amp; permissions</span>
+                    <span class="dl-sub">{{ initRolesBusy ? 'Working…' : 'Seed roles, permissions and the root user (via Auth)' }}</span>
+                  </div>
+                  @if (initRolesBusy) {
+                    <span class="spinner" style="width:16px;height:16px;border-width:2px"></span>
+                  } @else {
+                    <span class="material-icons dl-arrow">chevron_right</span>
+                  }
+                </button>
                 <button class="dev-link" routerLink="/performance">
                   <span class="material-icons">memory</span>
                   <div>
@@ -723,6 +735,8 @@ export class ServicesComponent implements OnInit, OnDestroy {
 
   /** Developer-tools section (advanced; will be password-gated later). */
   devToolsOpen = false;
+  /** True while the auth role/permission bootstrap is running. */
+  initRolesBusy = false;
 
   // ── Port Tools / Process Explorer ────────────
   processExplorerOpen = false;
@@ -1261,6 +1275,26 @@ export class ServicesComponent implements OnInit, OnDestroy {
       await this.loadServicesSilent();
     } catch {
       this.setMsg(name, 'Rollback failed', 'error');
+    }
+  }
+
+  // ── Initialize roles & permissions (auth bootstrap) ────────────────────
+
+  /** Manually run auth's role/permission/root-user bootstrap (GET /init1 via
+   *  the backend). Idempotent — skips when already initialized. */
+  async initRoles(): Promise<void> {
+    if (this.initRolesBusy) return;
+    if (!confirm('Initialize roles, permissions and the root user?\n\nThis is safe to run again — it is skipped automatically if already set up.')) {
+      return;
+    }
+    this.initRolesBusy = true;
+    try {
+      await this.tauri.invoke('setup_init_auth');
+      this.notification.success('Roles & permissions initialized');
+    } catch {
+      // TauriService already surfaced the error toast.
+    } finally {
+      this.initRolesBusy = false;
     }
   }
 

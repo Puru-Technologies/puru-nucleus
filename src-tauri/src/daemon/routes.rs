@@ -641,6 +641,9 @@ pub async fn setup_start_native_services() -> Result<Json<serde_json::Value>, (S
 pub async fn setup_seed_queues() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     ok_json(crate::commands::setup_seed_queues().await)
 }
+pub async fn setup_init_auth() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    ok_json(crate::commands::setup_init_auth().await)
+}
 pub async fn setup_seed_database() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     ok_json(crate::commands::setup_seed_database().await)
 }

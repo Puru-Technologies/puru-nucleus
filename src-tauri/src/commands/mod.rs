@@ -2985,6 +2985,19 @@ pub async fn setup_seed_queues() -> Result<(), String> {
     Ok(())
 }
 
+/// Native setup step: initialize auth's roles, privileges, and the root user.
+/// Calls auth's own unauthenticated `GET /init1` (the endpoint the front-end
+/// "init" flow uses) — runs AFTER auth has started for the first time; the
+/// function waits for auth to answer. Idempotent: skips when roles already
+/// exist. Returns auth's summary string (includes the root login).
+#[tauri::command]
+pub async fn setup_init_auth() -> Result<(), String> {
+    crate::seed::init_auth_roles()
+        .await
+        .map(|summary| tracing::info!("Setup (native): auth roles/root user — {}", summary))
+        .map_err(|e| e.user_message())
+}
+
 /// Native setup step: seed database defaults + Jasper report templates. Runs
 /// AFTER services boot (their tables must exist first). Idempotent and
 /// supplementary — issues are logged but don't fail the whole setup.

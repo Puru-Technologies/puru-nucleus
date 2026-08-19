@@ -102,6 +102,7 @@ pub async fn run_daemon() {
         .route("/api/setup/jars", post(routes::setup_pull_jars))
         .route("/api/setup/native-services/start", post(routes::setup_start_native_services))
         .route("/api/setup/seed-queues", post(routes::setup_seed_queues))
+        .route("/api/setup/init-auth", post(routes::setup_init_auth))
         .route("/api/setup/seed-database", post(routes::setup_seed_database))
         .route("/api/setup/health-check", post(routes::setup_health_check))
         .route("/api/setup/backups", post(routes::setup_configure_backups))
