@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, OnDestroy } from '@angular/core';
+import { Component, HostListener, inject, OnInit, OnDestroy } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive, Router, NavigationEnd } from '@angular/router';
 import { filter, map } from 'rxjs/operators';
 import { interval, Subscription } from 'rxjs';
@@ -43,17 +43,15 @@ interface CommandActivity {
   template: `
     @if (showShell) {
       <div class="shell">
-        <aside class="sidebar">
-          <!-- Brand -->
-          <div class="brand">
-            <puru-logo variant="normal" theme="dark" [size]="28"></puru-logo>
-            <span class="brand-sub">{{ hospitalCode ? ('Puru DC · ' + hospitalCode) : 'Puru DC' }}</span>
+        <header class="topbar">
+          <div class="tb-brand">
+            <puru-logo variant="normal" [size]="22"></puru-logo>
+            <div class="bdiv"></div>
+            <span class="hname">{{ hospitalName || hospitalCode || 'Puru DC' }}<span class="hdot">.</span></span>
           </div>
 
-          <!-- Navigation -->
-          <nav class="nav">
-            <span class="nav-section">Menu</span>
-
+          <nav class="topnav">
+            @if (navRevealed) {
             <a class="nav-item" routerLink="/dashboard" routerLinkActive="active">
               <span class="material-icons">grid_view</span>
               <span>Dashboard</span>
@@ -89,67 +87,58 @@ interface CommandActivity {
               <span class="material-icons">system_update</span>
               <span>Updates</span>
             </a>
-
-            @if (showConfigNav) {
-              <span class="nav-section nav-section-row">
-                <span>Configuration</span>
-                @if (setupCompleted && !productionMode) {
-                  <button class="nav-lock" (click)="configUnlocked = false" title="Hide configuration screens">
-                    <span class="material-icons">lock_open</span>
-                  </button>
-                }
-              </span>
-
-              <a class="nav-item" routerLink="/settings" routerLinkActive="active">
-                <span class="material-icons">tune</span>
-                <span>Settings</span>
-              </a>
-              @if (!isNative) {
-                <a class="nav-item" routerLink="/compose" routerLinkActive="active">
-                  <span class="material-icons">description</span>
-                  <span>Compose</span>
-                </a>
-              }
-              <a class="nav-item" routerLink="/setup" routerLinkActive="active">
-                <span class="material-icons">build</span>
-                <span>Setup</span>
-              </a>
-              <a class="nav-item" routerLink="/master-data" routerLinkActive="active">
-                <span class="material-icons">dataset</span>
-                <span>Master Data</span>
-              </a>
-              <a class="nav-item" routerLink="/remote-shell" routerLinkActive="active">
-                <span class="material-icons">terminal</span>
-                <span>Shell</span>
-              </a>
-            }
-
-            @if (canUnlockConfig) {
-              <button class="nav-item nav-unlock" (click)="configUnlocked = true"
-                      title="Reveal configuration screens (Settings, Setup, Compose, Master Data, Shell)">
-                <span class="material-icons">lock</span>
-                <span>Configuration</span>
-              </button>
             }
           </nav>
 
-          <!-- Footer -->
-          <div class="sidebar-footer">
+          <div class="topright">
+            @if (navRevealed) {
+            <div class="adv">
+              <button class="adv-btn" (click)="toggleAdv($event)" title="Advanced &amp; support screens">
+                <span class="material-icons">{{ showConfigNav ? 'lock_open' : 'lock' }}</span>
+                <span>Advanced</span>
+                <span class="material-icons caret">expand_more</span>
+              </button>
+              @if (advOpen) {
+                <div class="adv-menu" (click)="$event.stopPropagation()">
+                  @if (showConfigNav) {
+                    <a routerLink="/settings" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">tune</span>Settings</a>
+                    <a routerLink="/setup" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">build</span>Setup</a>
+                    @if (!isNative) {
+                      <a routerLink="/compose" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">description</span>Compose</a>
+                    }
+                    <a routerLink="/master-data" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">dataset</span>Master data</a>
+                    <a routerLink="/remote-shell" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">terminal</span>Shell</a>
+                    @if (setupCompleted && !productionMode) {
+                      <div class="adv-div"></div>
+                      <button (click)="configUnlocked = false; advOpen = false"><span class="material-icons">lock</span>Lock advanced screens</button>
+                    }
+                  } @else if (canUnlockConfig) {
+                    <button (click)="configUnlocked = true"><span class="material-icons">lock_open</span>Unlock config screens</button>
+                  } @else {
+                    <div class="adv-empty">No advanced screens available.</div>
+                  }
+                </div>
+              }
+            </div>
+            }
             <button class="conn-chip" [class.remote]="conn.isRemote()" (click)="goConnect()"
                     [title]="conn.isRemote() ? 'Connected to a remote daemon — click to manage' : 'Managing this machine — click to connect to a remote server'">
               <span class="conn-dot"
                     [class.up]="conn.isRemote() && conn.health()?.reachable"
                     [class.down]="conn.isRemote() && conn.health() && !conn.health()?.reachable"></span>
               @if (conn.isRemote()) {
-                <span class="conn-text">{{ conn.activeServer()?.name }}<span class="conn-ver">v{{ conn.health()?.version || '?' }}</span></span>
+                <span class="conn-text">{{ conn.activeServer()?.name }}</span>
               } @else {
                 <span class="conn-text">Local</span>
               }
               <span class="material-icons">swap_horiz</span>
             </button>
-            <div class="version">v{{ version }}</div>
+            <button class="nav-toggle" [class.on]="navRevealed" (click)="toggleNav($event)"
+                    [title]="navRevealed ? 'Hide menu' : 'Show menu'">
+              <span class="material-icons">{{ navRevealed ? 'close' : 'menu' }}</span>
+            </button>
           </div>
-        </aside>
+        </header>
 
         <main class="content">
           @if (!isAdmin && !conn.isRemote()) {
@@ -206,22 +195,62 @@ interface CommandActivity {
   styles: [`
     .shell {
       display: flex;
+      flex-direction: column;
       height: 100vh;
       overflow: hidden;
     }
 
-    .sidebar {
-      width: 240px;
-      flex-shrink: 0;
-      background: var(--bg-sidebar);
+    /* ── Top header (replaces the old sidebar) ── */
+    .topbar {
       display: flex;
-      flex-direction: column;
-      overflow-y: auto;
+      align-items: center;
+      gap: 20px;
+      height: 60px;
+      padding: 0 20px;
+      background: var(--card-bg, #fff);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 30;
     }
+    .topbar .tb-brand { display: flex; flex-direction: row; align-items: center; gap: 13px; flex-shrink: 0; }
+    .topbar .wm { font-size: 22px; font-weight: 700; letter-spacing: -0.6px; color: var(--text-primary); white-space: nowrap; line-height: 1; }
+    .topbar .wm-accent { color: var(--brand-blue, #009efb); }
+    .topbar .bdiv { width: 1px; height: 24px; background: var(--border-light, #e2e8f0); }
+    .topbar .hname { font-family: var(--font-brand); font-size: 20px; font-weight: 700; color: var(--text-primary); white-space: nowrap; letter-spacing: -0.01em; }
+    .topbar .hdot { color: var(--brand-red, #e83a3a); font-weight: 700; }
+    .topnav { display: flex; align-items: center; gap: 2px; flex: 1; overflow-x: auto; }
+    .topnav::-webkit-scrollbar { height: 0; }
+    .topnav a { display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 8px; font-size: 14px; color: var(--text-secondary); text-decoration: none; white-space: nowrap; }
+    .topnav a .material-icons { font-size: 18px; }
+    .topnav a:hover { background: var(--bg-hover, #f4f7fb); color: var(--text-primary); }
+    .topnav a.active { background: #e6f4fe; color: #0a6cad; font-weight: 500; }
+    .topnav .unread-badge { background: var(--status-red, #d94339); color: #fff; font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 10px; min-width: 16px; text-align: center; line-height: 16px; }
+    .topright { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .adv { position: relative; }
+    .adv-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg, #fff); cursor: pointer; font-size: 13.5px; color: var(--text-primary); }
+    .adv-btn .material-icons { font-size: 16px; } .adv-btn .caret { color: var(--text-muted); font-size: 18px; }
+    .adv-btn:hover { border-color: var(--brand-blue, #009efb); }
+    .adv-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; width: 212px; background: var(--card-bg, #fff); border: 1px solid var(--border); border-radius: 11px; padding: 6px; box-shadow: 0 14px 40px rgba(2,12,27,.18); }
+    .adv-menu a, .adv-menu button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 10px; border: 0; background: none; border-radius: 7px; font-size: 13.5px; color: var(--text-primary); cursor: pointer; text-align: left; text-decoration: none; font-family: inherit; }
+    .adv-menu a .material-icons, .adv-menu button .material-icons { font-size: 17px; color: var(--text-secondary); }
+    .adv-menu a:hover, .adv-menu button:hover { background: var(--bg-hover, #f4f7fb); }
+    .adv-menu a.active { background: #e6f4fe; color: #0a6cad; }
+    .adv-div { height: 1px; background: var(--border); margin: 5px 4px; }
+    .adv-empty { padding: 10px; font-size: 13px; color: var(--text-muted); }
+    .topright .conn-chip { display: flex; align-items: center; gap: 7px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg, #fff); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
+    .topright .conn-chip:hover { border-color: var(--brand-blue, #009efb); }
+    .topright .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+    .topright .conn-dot.up { background: var(--status-green, #149a63); } .topright .conn-dot.down { background: var(--status-red, #d94339); }
+    .topright .conn-chip .material-icons { font-size: 16px; }
+    .topright .conn-ver { color: var(--text-muted); margin-left: 4px; font-size: 11px; }
+    .nav-toggle { width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--border); background: var(--card-bg, #fff); cursor: pointer; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; }
+    .nav-toggle:hover { border-color: var(--brand-blue, #009efb); color: var(--text-primary); }
+    .nav-toggle.on { background: #e6f4fe; border-color: var(--brand-blue, #009efb); color: #0a6cad; }
+    .nav-toggle .material-icons { font-size: 20px; }
 
     .content {
       flex: 1;
-      height: 100vh;
+      min-height: 0;
       overflow-y: auto;
       background: var(--bg-primary);
     }
@@ -493,6 +522,11 @@ export class AppComponent implements OnInit, OnDestroy {
   title = 'puru-dc';
   version = packageJson.version;
   hospitalCode = '';
+  hospitalName = '';
+  advOpen = false;
+  /** The page navigation is hidden by default (operator view) and only shown
+   *  when the menu button is clicked — regular users never need the nav. */
+  navRevealed = false;
   showShell = true;
   unreadCount = 0;
   isAdmin = true;      // assume true until checked, so the banner doesn't flash
@@ -741,6 +775,15 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  /** Toggle the Advanced menu in the top bar. */
+  toggleAdv(e: Event): void { e.stopPropagation(); this.advOpen = !this.advOpen; }
+
+  /** Reveal / hide the page navigation (hidden by default for operators). */
+  toggleNav(e: Event): void { e.stopPropagation(); this.navRevealed = !this.navRevealed; if (!this.navRevealed) this.advOpen = false; }
+
+  @HostListener('document:click')
+  closeAdv(): void { this.advOpen = false; }
+
   private async loadHospitalCode(): Promise<void> {
     try {
       type ShellConfig = { hospital_code: string; deployment_mode?: string; production_mode?: boolean; setup_completed?: boolean };
@@ -756,6 +799,13 @@ export class AppComponent implements OnInit, OnDestroy {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().setTitle(`Puru DC — ${config.hospital_code}`);
       }
+      // Hospital display name for the header (best-effort; falls back to code).
+      try {
+        const lic = this.conn.isRemote()
+          ? await this.remote.execute<{ hospital_name?: string }>('get_license')
+          : await (await import('@tauri-apps/api/core')).invoke<{ hospital_name?: string }>('get_license');
+        if (lic?.hospital_name) this.hospitalName = lic.hospital_name;
+      } catch { /* non-fatal */ }
     } catch {
       // Non-fatal
     }

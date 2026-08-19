@@ -1,1005 +1,605 @@
-import { Component, OnInit, OnDestroy, inject } from '@angular/core';
+import { Component, OnInit, OnDestroy, HostListener, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Router } from '@angular/router';
 import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult, BackupRecord } from '../../core/services/tauri.service';
-import { License, getLicenseStatus, LicenseStatus } from '../../core/models/license.model';
+import { License } from '../../core/models/license.model';
+import { HospitalAlert } from '../../core/models/hospital.model';
 import { PuruLogoComponent } from '../../core/components/puru-logo.component';
+import { LogViewerDialogComponent } from '../../core/components/log-viewer-dialog.component';
+import { NotificationService } from '../../core/services/notification.service';
 import { interval, Subscription } from 'rxjs';
+
+interface ActivityItem { icon: string; kind: 'ok' | 'warn' | 'info'; text: string; time: string; }
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [
-    CommonModule,
-    RouterLink,
-    PuruLogoComponent,
-  ],
+  imports: [CommonModule, PuruLogoComponent, LogViewerDialogComponent],
   template: `
     <div class="page">
-      <!-- Page Header -->
-      <div class="page-header">
-        <puru-logo class="dash-logo" variant="normal" [size]="22"></puru-logo>
-        <h1>Dashboard</h1>
-        <p class="page-subtitle">
-          @if (license?.hospital_name) {
-            {{ license?.hospital_name }} &mdash;
-          }
-          System overview and quick actions
-        </p>
-      </div>
-
-      <!-- License Banner -->
-      @if (licenseStatus && licenseStatus.status !== 'active' && licenseStatus.status !== 'unlimited') {
-        <div class="license-banner" [class]="'banner-' + licenseStatus.status">
-          <span class="material-icons">{{ licenseStatus.icon }}</span>
-          <div class="banner-text">
-            <strong>{{ licenseStatus.status === 'expired' ? 'License Expired' : 'License Expiring Soon' }}</strong>
-            <span>{{ licenseStatus.message }}</span>
-          </div>
-          <button class="btn btn-stroked" routerLink="/settings">Contact Support</button>
+      <!-- Metric cards -->
+      <div class="cards">
+        <div class="metric">
+          <div class="lab"><span class="material-icons">developer_board</span>CPU</div>
+          <div class="val">{{ telemetry ? (telemetry.cpu_percent | number:'1.0-1') : '—' }}<small>%</small></div>
+          <div class="bar"><i [class]="barClass(telemetry?.cpu_percent, 50, 80)" [style.width.%]="telemetry?.cpu_percent || 0"></i></div>
         </div>
-      }
-
-      <!-- Stats Row -->
-      <div class="stats-row">
-        @if (systemInfo) {
-          <div class="stat-card">
-            <div class="stat-icon" [class]="cpuClass"><span class="material-icons">memory</span></div>
-            <div class="stat-body">
-              <span class="stat-value">{{ telemetry?.cpu_percent | number:'1.0-0' }}%</span>
-              <span class="stat-label">CPU ({{ systemInfo.cpu_cores }} cores)</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon" [class]="ramClass"><span class="material-icons">storage</span></div>
-            <div class="stat-body">
-              <span class="stat-value">{{ telemetry?.ram_gb | number:'1.1-1' }} / {{ systemInfo.total_ram_gb | number:'1.0-0' }} GB</span>
-              <span class="stat-label">RAM Usage</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon" [class]="diskClass"><span class="material-icons">hard_drive</span></div>
-            <div class="stat-body">
-              <span class="stat-value">{{ telemetry?.disk_percent | number:'1.0-0' }}%</span>
-              <span class="stat-label">Disk ({{ systemInfo.disk_free_gb | number:'1.0-0' }} GB free)</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon" [class]="services.length > 0 ? 'si-green' : 'si-muted'">
-              <span class="material-icons">dns</span>
-            </div>
-            <div class="stat-body">
-              <span class="stat-value">{{ runningCount }}/{{ services.length }}</span>
-              <span class="stat-label">Services Up</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon" [class]="daemonRunning ? 'si-green' : 'si-muted'">
-              <span class="material-icons">router</span>
-            </div>
-            <div class="stat-body">
-              <span class="stat-value">{{ daemonRunning ? 'Online' : 'Offline' }}</span>
-              <span class="stat-label">Daemon</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon" [class]="networkStatClass">
-              <span class="material-icons">{{ networkStatus?.connected ? 'wifi' : 'wifi_off' }}</span>
-            </div>
-            <div class="stat-body">
-              <span class="stat-value">{{ networkStatValue }}</span>
-              <span class="stat-label">Network</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon" [class]="lastBackupTime ? 'si-green' : 'si-muted'">
-              <span class="material-icons">backup</span>
-            </div>
-            <div class="stat-body">
-              <span class="stat-value">{{ lastBackupTime || 'Never' }}</span>
-              <span class="stat-label">Last Backup</span>
-            </div>
-          </div>
-        } @else {
-          @for (_ of [1,2,3,4,5,6]; track $index) {
-            <div class="stat-card stat-skeleton">
-              <div class="skeleton-circle"></div>
-              <div class="skeleton-lines">
-                <div class="skeleton-line w60"></div>
-                <div class="skeleton-line w40"></div>
-              </div>
-            </div>
-          }
-        }
+        <div class="metric hi">
+          <div class="lab"><span class="material-icons">memory</span>Memory</div>
+          <div class="val">{{ ramPct }}<small>% · {{ ramUsed }}/{{ ramTotal }} GB</small></div>
+          <div class="bar"><i [class]="barClass(ramPct, 60, 85)" [style.width.%]="ramPct"></i></div>
+        </div>
+        <div class="metric">
+          <div class="lab"><span class="material-icons">storage</span>Disk</div>
+          <div class="val">{{ telemetry ? (telemetry.disk_percent | number:'1.0-1') : '—' }}<small>% · {{ diskFree }} GB free</small></div>
+          <div class="bar"><i [class]="barClass(telemetry?.disk_percent, 70, 90)" [style.width.%]="telemetry?.disk_percent || 0"></i></div>
+        </div>
+        <div class="metric">
+          <div class="lab"><span class="material-icons">wifi</span>Network</div>
+          <div class="val">{{ networkStatValue }}</div>
+          <div class="bar"><i class="g" [style.width.%]="networkStatus?.connected ? 20 : 0"></i></div>
+        </div>
+        <div class="metric">
+          <div class="lab"><span class="material-icons">dns</span>Services</div>
+          <div class="val">{{ runningApp }} <small>/ {{ appServices.length }} up</small></div>
+          <div class="bar"><i [class]="runningApp === appServices.length ? 'g' : 'a'" [style.width.%]="servicePct"></i></div>
+        </div>
+        <div class="metric">
+          <div class="lab"><span class="material-icons">schedule</span>Uptime</div>
+          <div class="val">{{ systemUptime }}</div>
+          <div class="bar"><i class="g" style="width:100%"></i></div>
+        </div>
       </div>
 
-      <!-- Main Grid -->
-      <div class="grid-2">
-        <!-- Services Card -->
-        <div class="card dash-card">
-          <div class="card-top">
+      <div class="grid2">
+        <!-- Services -->
+        <div class="panel svc-panel" [class.manage-on]="manageOn">
+          <div class="phead">
             <h3>Services</h3>
-            <button class="btn btn-stroked btn-sm" routerLink="/services">
-              Manage
-              <span class="material-icons">arrow_forward</span>
+            <button class="toggle" [class.on]="manageOn" (click)="manageOn = !manageOn">
+              <span class="material-icons">tune</span>Manage
             </button>
           </div>
           @if (servicesLoading) {
-            <div class="svc-loading">
-              <span class="spinner"></span>
-              <span>Loading services…</span>
-            </div>
-          } @else if (services.length > 0) {
-            <div class="service-list">
-              @for (service of services.slice(0, 8); track service.name) {
-                <div class="svc-row">
-                  <div class="svc-indicator" [class]="'ind-' + service.status"></div>
-                  <span class="svc-name">{{ service.name }}</span>
-                  <span class="svc-container">{{ service.container_name }}</span>
-                  <span class="svc-status" [class]="'st-' + service.status">{{ service.status }}</span>
-                </div>
-              }
-            </div>
-            @if (services.length > 8) {
-              <div class="card-footer-link">
-                <a routerLink="/services">View all {{ services.length }} services</a>
-              </div>
-            }
+            <div class="pad-mid"><span class="spinner"></span></div>
+          } @else if (appServices.length === 0) {
+            <div class="pad-mid muted">No services installed yet.</div>
           } @else {
-            <div class="empty-state">
-              <span class="material-icons">cloud_off</span>
-              <span>No services detected</span>
-              <a routerLink="/setup" class="empty-link">Run Setup</a>
-            </div>
+            <table>
+              <thead><tr><th>Service</th><th>Status</th><th>Uptime</th><th></th></tr></thead>
+              <tbody>
+                @for (s of appServices; track s.name) {
+                  <tr>
+                    <td>
+                      <div class="svc">
+                        <span class="sdot" [class]="'d-' + s.status"></span>
+                        <span>
+                          {{ displayName(s.name) }}
+                          @if (actionMsg[s.name]; as m) { <span class="amsg" [class]="'am-' + m.kind">· {{ m.text }}</span> }
+                        </span>
+                      </div>
+                    </td>
+                    <td><span class="pill" [class]="'p-' + s.status">{{ statusLabel(s) }}</span></td>
+                    <td class="up">{{ s.uptime || '—' }}</td>
+                    <td class="kebab-wrap">
+                      <button class="kebab" [class.open]="openMenu === s.name" (click)="toggleMenu(s.name, $event)">
+                        <span class="material-icons">more_vert</span>
+                      </button>
+                      @if (openMenu === s.name) {
+                        <div class="kmenu" (click)="$event.stopPropagation()">
+                          <button (click)="viewLogs(s)"><span class="material-icons">article</span>View logs</button>
+                          <button (click)="copyLogs(s)"><span class="material-icons">content_copy</span>Copy logs</button>
+                          <div class="div"></div>
+                          <button (click)="checkUpdate()"><span class="material-icons">system_update</span>Check update</button>
+                          <button (click)="rollback(s)"><span class="material-icons">undo</span>Roll back</button>
+                          <div class="div"></div>
+                          @if (s.status === 'running') {
+                            <button (click)="act(s, 'restart_service', 'Restarting…', 'Restarted')"><span class="material-icons">refresh</span>Restart</button>
+                            <button (click)="act(s, 'stop_service', 'Stopping…', 'Stopped')"><span class="material-icons">stop</span>Stop</button>
+                          } @else {
+                            <button (click)="act(s, 'start_service', 'Starting…', 'Started')"><span class="material-icons">play_arrow</span>Start</button>
+                          }
+                          <div class="div"></div>
+                          <button class="danger" (click)="kill(s)"><span class="material-icons">close</span>Kill process</button>
+                        </div>
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
           }
         </div>
 
-        <!-- License & Quick Actions -->
-        <div class="right-stack">
-          <!-- License Card -->
-          <div class="card dash-card">
-            <div class="card-top">
-              <h3>License</h3>
-            </div>
-            @if (license && licenseStatus) {
-              <div class="license-row">
-                <div class="license-badge" [class]="'lb-' + licenseStatus.status">
-                  <span class="material-icons">{{ licenseStatus.icon }}</span>
-                </div>
-                <div class="license-info">
-                  <span class="license-plan">{{ license.hospital_name }}</span>
-                  <span class="license-msg" [class]="'lt-' + licenseStatus.status">{{ licenseStatus.message }}</span>
-                </div>
-              </div>
-              <div class="feature-tags">
-                <span class="ftag" [class.active]="license.features.binlog_shipping">
-                  <span class="material-icons">{{ license.features.binlog_shipping ? 'check' : 'close' }}</span>
-                  Binlog Shipping
-                </span>
-                <span class="ftag" [class.active]="license.features.point_in_time_recovery">
-                  <span class="material-icons">{{ license.features.point_in_time_recovery ? 'check' : 'close' }}</span>
-                  PITR
-                </span>
-                <span class="ftag" [class.active]="license.features.priority_support">
-                  <span class="material-icons">{{ license.features.priority_support ? 'check' : 'close' }}</span>
-                  Priority Support
-                </span>
-              </div>
-              @if (license.machine_name || license.machine_fingerprint) {
-                <div class="machine-row">
-                  <span class="material-icons">computer</span>
-                  <span class="machine-name">{{ license.machine_name || 'Unknown' }}</span>
-                  @if (license.machine_fingerprint) {
-                    <code class="machine-fp">{{ license.machine_fingerprint.slice(0, 16) }}...</code>
-                  }
-                </div>
-              }
+        <div class="col">
+          <!-- Backups -->
+          <div class="panel">
+            <div class="phead"><h3>Backups</h3><button class="gobtn" (click)="openBackups()">Open <span class="material-icons">arrow_forward</span></button></div>
+            <div class="bigrow"><span class="b">{{ lastBackupTime || 'No backups yet' }}</span>@if (lastBackupTime) {<span class="s">Full · uploaded to cloud</span>}</div>
+            <div class="kv"><span>Backups kept</span><span>{{ backupHistory.length }}</span></div>
+            <div class="pfoot"><button class="btn primary" [disabled]="busyBackup" (click)="backupNow()"><span class="material-icons">backup</span>{{ busyBackup ? 'Starting…' : 'Back up now' }}</button></div>
+          </div>
+
+          <!-- Alerts -->
+          <div class="panel">
+            <div class="phead"><h3>Alerts @if (openAlerts.length) {<span class="count a">{{ openAlerts.length }}</span>}</h3><button class="gobtn" (click)="goto('/alerts')">All alerts <span class="material-icons">arrow_forward</span></button></div>
+            @if (openAlerts.length === 0) {
+              <div class="pad-mid muted small">Nothing needs your attention.</div>
             } @else {
-              <div class="empty-state sm">
-                <span class="material-icons">license</span>
-                <span>No license activated</span>
-                <a routerLink="/settings" class="empty-link">Activate License</a>
-              </div>
+              <table class="alerts"><tbody>
+                @for (a of openAlerts.slice(0, 3); track a.id) {
+                  <tr>
+                    <td style="width:3px;padding-right:0"><div class="sev" [class]="'sev-' + a.severity"></div></td>
+                    <td><div class="msg">{{ a.title }}</div><div class="sub">{{ timeAgo(toDate(a.created_at)) }}</div></td>
+                    <td style="text-align:right"><button class="ackbtn" (click)="ack(a)">Ack</button></td>
+                  </tr>
+                }
+              </tbody></table>
             }
           </div>
 
-          <!-- Network Card -->
-          <div class="card dash-card">
-            <div class="card-top">
-              <h3>Network</h3>
-              <button class="btn btn-stroked btn-sm" (click)="runSpeedTest()" [disabled]="speedTestRunning">
-                @if (speedTestRunning) {
-                  <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-                } @else {
-                  <span class="material-icons">speed</span>
-                }
-                Speed Test
+          <!-- Connectivity -->
+          <div class="panel">
+            <div class="phead">
+              <h3>Connectivity</h3>
+              <button class="gobtn" (click)="runSpeedTest()" [disabled]="speedTestRunning">
+                @if (speedTestRunning) { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
+                @else { <span class="material-icons">speed</span> }
+                Speed test
               </button>
             </div>
-            <div class="network-rows">
-              <div class="net-row">
-                <span class="net-label">Internet</span>
-                <span class="net-value" [class]="networkStatus?.connected ? 'nv-green' : 'nv-red'">
-                  {{ networkStatus?.connected ? 'Connected' : (networkStatus ? 'Offline' : '—') }}
-                </span>
-              </div>
-              <div class="net-row">
-                <span class="net-label">Latency</span>
-                <span class="net-value" [class]="latencyClass">
-                  {{ networkStatus?.latency_ms != null ? networkStatus!.latency_ms + ' ms' : '—' }}
-                </span>
-              </div>
-              <div class="net-row">
-                <span class="net-label">DICOM Server</span>
-                <span class="net-value" [class]="gcpClass">
-                  @if (!networkStatus) {
-                    —
-                  } @else if (networkStatus.gcp_reachable) {
-                    Reachable{{ networkStatus.gcp_latency_ms != null ? ' (' + networkStatus.gcp_latency_ms + ' ms)' : '' }}
-                  } @else {
-                    Unreachable
-                  }
-                </span>
-              </div>
+            <div class="net-rows">
+              <div class="net-row"><span class="net-label">Internet</span><span class="net-value" [class]="networkStatus?.connected ? 'nv-green' : 'nv-red'">{{ networkStatus?.connected ? 'Connected' : (networkStatus ? 'Offline' : '—') }}</span></div>
+              <div class="net-row"><span class="net-label">Latency</span><span class="net-value" [class]="latencyClass">{{ networkStatus?.latency_ms != null ? networkStatus!.latency_ms + ' ms' : '—' }}</span></div>
+              <div class="net-row"><span class="net-label">DICOM server</span><span class="net-value" [class]="gcpClass">
+                @if (!networkStatus) { — }
+                @else if (networkStatus.gcp_reachable) { Reachable{{ networkStatus.gcp_latency_ms != null ? ' (' + networkStatus.gcp_latency_ms + ' ms)' : '' }} }
+                @else { Unreachable }
+              </span></div>
               @if (speedTestResult) {
-                <div class="net-row">
-                  <span class="net-label">Download</span>
-                  <span class="net-value" [class]="downloadClass">
-                    {{ speedTestResult.download_mbps != null ? (speedTestResult.download_mbps | number:'1.1-1') + ' Mbps' : '—' }}
-                  </span>
-                </div>
-                <div class="net-row">
-                  <span class="net-label">Upload</span>
-                  <span class="net-value" [class]="uploadClass">
-                    {{ speedTestResult.upload_mbps != null ? (speedTestResult.upload_mbps | number:'1.1-1') + ' Mbps' : '—' }}
-                  </span>
-                </div>
+                <div class="net-row"><span class="net-label">Download</span><span class="net-value" [class]="downloadClass">{{ speedTestResult.download_mbps != null ? (speedTestResult.download_mbps | number:'1.1-1') + ' Mbps' : '—' }}</span></div>
+                <div class="net-row"><span class="net-label">Upload</span><span class="net-value" [class]="uploadClass">{{ speedTestResult.upload_mbps != null ? (speedTestResult.upload_mbps | number:'1.1-1') + ' Mbps' : '—' }}</span></div>
               }
             </div>
           </div>
 
-          <!-- Quick Actions -->
-          <div class="card dash-card">
-            <div class="card-top">
-              <h3>Quick Actions</h3>
-            </div>
-            <div class="actions-grid">
-              <button class="action-btn" (click)="runBackup()">
-                <div class="ab-icon ab-blue"><span class="material-icons">backup</span></div>
-                <span>Backup</span>
-              </button>
-              <button class="action-btn" (click)="restartServices()">
-                <div class="ab-icon ab-orange"><span class="material-icons">refresh</span></div>
-                <span>Restart All</span>
-              </button>
-              <button class="action-btn" (click)="syncConfig()">
-                <div class="ab-icon ab-purple"><span class="material-icons">cloud_sync</span></div>
-                <span>Sync</span>
-              </button>
-              <button class="action-btn" routerLink="/alerts">
-                <div class="ab-icon ab-green"><span class="material-icons">notifications_none</span></div>
-                <span>Alerts</span>
-              </button>
-            </div>
+          <!-- Recent activity -->
+          <div class="panel">
+            <div class="phead"><h3>Recent activity</h3></div>
+            @if (activity.length === 0) {
+              <div class="pad-mid muted small">No recent activity.</div>
+            } @else {
+              <div class="act">
+                @for (a of activity; track $index) {
+                  <div class="arow">
+                    <div class="aic" [class]="'ai-' + a.kind"><span class="material-icons">{{ a.icon }}</span></div>
+                    <div><div class="atext">{{ a.text }}</div><div class="atime">{{ a.time }}</div></div>
+                  </div>
+                }
+              </div>
+            }
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Backups drawer -->
+    @if (backupsOpen) {
+      <div class="scrim" (click)="backupsOpen = false"></div>
+      <aside class="drawer">
+        <div class="dhead"><h3>Backups</h3><button class="dclose" (click)="backupsOpen = false"><span class="material-icons">close</span></button></div>
+        <div class="dbody">
+          <div class="hero">
+            <div class="t">Last backup</div>
+            <div class="v">{{ lastBackupTime || 'No backups yet' }}</div>
+          </div>
+          <div class="drow">
+            <button class="btn primary" [disabled]="busyBackup" (click)="backupNow()"><span class="material-icons">backup</span>Back up now</button>
+            <button class="btn" (click)="goto('/backups')"><span class="material-icons">restore</span>Restore</button>
+          </div>
+          <div class="dlabel">History</div>
+          @if (backupHistory.length === 0) {
+            <div class="muted small">No backups recorded yet.</div>
+          } @else {
+            <div class="hist">
+              @for (b of backupHistory.slice(0, 12); track b.id) {
+                <div class="h">
+                  <div class="hi-ic" [class.fail]="b.status !== 'completed'"><span class="material-icons">{{ b.status === 'completed' ? 'check' : 'error_outline' }}</span></div>
+                  <div><div>{{ b.type === 'full' ? 'Full backup' : 'Partial backup' }}</div><div class="meta">{{ timeAgo(toDate(b.created_at)) }}</div></div>
+                  <div class="sz">{{ b.size_mb ? (b.size_mb | number:'1.0-0') + ' MB' : '' }}</div>
+                </div>
+              }
+            </div>
+          }
+          <div class="dfoot"><button class="btn wide" (click)="goto('/backups')">Open full backups page <span class="material-icons">arrow_forward</span></button></div>
+        </div>
+      </aside>
+    }
+
+    <!-- Per-service log viewer dialog -->
+    @if (logService) {
+      <app-log-viewer-dialog
+        [serviceName]="logService.name"
+        [title]="displayName(logService.name)"
+        [infra]="!!logService.infra"
+        (close)="logService = null">
+      </app-log-viewer-dialog>
+    }
   `,
   styles: [`
-    .page {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 28px 32px;
-    }
+    .page{max-width:1220px;margin:0 auto;padding:22px 26px 40px;}
+    .material-icons{font-size:18px;line-height:1;}
 
-    .dash-logo {
-      display: inline-flex;
-      margin-bottom: 10px;
-    }
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:16px;border-bottom:1px solid var(--border);margin-bottom:20px;}
+    .brand{display:flex;align-items:center;gap:13px;}
+    .bdiv{width:1px;height:26px;background:var(--border);}
+    .hname{font-size:22px;font-weight:700;letter-spacing:-.4px;color:var(--text-primary);}
+    .top-actions{display:flex;align-items:center;gap:10px;}
+    .ibtn{position:relative;height:40px;width:40px;border-radius:10px;border:1px solid var(--border);background:var(--card-bg,#fff);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-secondary);}
+    .ibtn.wide{width:auto;padding:0 15px;gap:8px;font-size:14px;color:var(--text-primary);}
+    .ibtn:hover{border-color:var(--brand-blue,#009efb);color:var(--text-primary);}
+    .ibtn .dot{position:absolute;top:8px;right:9px;width:8px;height:8px;border-radius:50%;background:var(--brand-blue,#009efb);border:2px solid var(--card-bg,#fff);}
+    .prof{position:relative;}
+    .pavatar{width:40px;height:40px;border-radius:50%;background:#e6f4fe;color:#0a6cad;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;cursor:pointer;}
+    .pmenu{position:absolute;top:calc(100% + 8px);right:0;z-index:20;width:190px;background:var(--card-bg,#fff);border:1px solid var(--border);border-radius:11px;padding:6px;box-shadow:0 14px 40px rgba(2,12,27,.18);}
+    .pmenu button{display:flex;width:100%;align-items:center;gap:10px;padding:9px 10px;border:0;background:none;border-radius:7px;font-size:13.5px;color:var(--text-primary);cursor:pointer;text-align:left;font-family:inherit;}
+    .pmenu button:hover{background:var(--bg-hover,#f4f7fb);}
+    .pmenu .material-icons{color:var(--text-secondary);}
 
-    /* ── License Banner ─────────────────────────── */
-    .license-banner {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 16px;
-      border-radius: var(--radius-md);
-      margin-bottom: 20px;
-      font-size: 0.875rem;
+    .cards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px;}
+    .metric{background:var(--card-bg,#fff);border:1px solid var(--border);border-radius:13px;padding:13px 14px;}
+    .metric.hi{border-color:var(--status-orange,#c67608);}
+    .metric .lab{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);}
+    .metric .lab .material-icons{font-size:15px;}
+    .metric .val{font-size:22px;font-weight:700;letter-spacing:-.5px;margin-top:7px;font-variant-numeric:tabular-nums;color:var(--text-primary);}
+    .metric .val small{font-size:12px;color:var(--text-secondary);font-weight:400;}
+    .bar{height:5px;border-radius:3px;background:var(--border);margin-top:9px;overflow:hidden;}
+    .bar i{display:block;height:100%;border-radius:3px;background:var(--brand-blue,#009efb);}
+    .bar i.g{background:var(--status-green,#149a63);} .bar i.a{background:var(--status-orange,#c67608);} .bar i.r{background:var(--status-red,#d94339);}
 
-      .material-icons { font-size: 20px; width: 20px; height: 20px; }
-      .banner-text {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        strong { font-size: 0.8rem; }
-        span { color: inherit; opacity: 0.8; font-size: 0.8rem; }
-      }
+    .grid2{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start;}
+    .col{display:flex;flex-direction:column;gap:16px;}
+    .panel{background:var(--card-bg,#fff);border:1px solid var(--border);border-radius:14px;}
+    .phead{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 12px;}
+    .phead h3{margin:0;font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px;color:var(--text-primary);}
+    .count{font-size:12px;font-weight:600;padding:1px 8px;border-radius:20px;} .count.a{background:#fbeed6;color:#c67608;}
+    .pad-mid{padding:22px;display:flex;justify-content:center;} .muted{color:var(--text-muted);} .small{font-size:13px;}
 
-      &.banner-expired {
-        background: var(--status-red-bg);
-        color: #991b1b;
-        border: 1px solid #fecaca;
-      }
-      &.banner-expiring_soon {
-        background: var(--status-orange-bg);
-        color: #92400e;
-        border: 1px solid #fde68a;
-      }
-    }
+    .gobtn,.toggle{display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg,#fff);cursor:pointer;color:var(--text-primary);}
+    .gobtn .material-icons,.toggle .material-icons{font-size:15px;}
+    .gobtn:hover{border-color:var(--brand-blue,#009efb);color:var(--brand-blue,#009efb);}
+    .toggle.on{border-color:var(--brand-blue,#009efb);background:#e6f4fe;color:#0a6cad;font-weight:500;}
 
-    /* ── Stats Row ──────────────────────────────── */
-    .stats-row {
-      display: grid;
-      /* responsive auto-fit — cards wrap instead of forcing 6/7 columns and
-         overflowing on narrow widths */
-      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-      gap: 14px;
-      margin-bottom: 20px;
-    }
+    table{width:100%;border-collapse:collapse;}
+    thead th{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--text-muted);text-align:left;font-weight:500;padding:6px 16px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+    tbody td{padding:11px 16px;border-bottom:1px solid var(--border);font-size:14px;vertical-align:middle;color:var(--text-primary);}
+    tbody tr:last-child td{border-bottom:0;}
+    .svc{display:flex;align-items:center;gap:10px;font-weight:500;}
+    .sdot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--text-muted);}
+    .sdot.d-running{background:var(--status-green,#149a63);box-shadow:0 0 0 3px #e2f5ec;}
+    .sdot.d-error,.sdot.d-stopped{background:var(--status-red,#d94339);}
+    .sdot.d-starting{background:var(--status-orange,#c67608);box-shadow:0 0 0 3px #fbeed6;}
+    .amsg{font-size:12px;font-weight:500;margin-left:4px;} .am-busy{color:var(--text-muted);} .am-ok{color:var(--status-green);} .am-error{color:var(--status-red);}
+    .pill{display:inline-flex;font-size:12.5px;font-weight:500;padding:3px 10px;border-radius:20px;background:#eef2f7;color:var(--text-secondary);}
+    .pill.p-running{background:#e2f5ec;color:#149a63;} .pill.p-error{background:#fbe9e7;color:#d94339;} .pill.p-starting{background:#fbeed6;color:#c67608;}
+    .up{font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+    .kebab-wrap{position:relative;text-align:right;}
+    .kebab{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg,#fff);cursor:pointer;color:var(--text-secondary);display:none;align-items:center;justify-content:center;}
+    .svc-panel.manage-on .kebab{display:inline-flex;}
+    .kebab:hover,.kebab.open{border-color:var(--brand-blue,#009efb);color:#0a6cad;background:#e6f4fe;}
+    .kmenu{position:absolute;top:calc(100% + 6px);right:0;z-index:15;width:182px;background:var(--card-bg,#fff);border:1px solid var(--border);border-radius:11px;padding:6px;box-shadow:0 16px 40px rgba(2,12,27,.2);}
+    .kmenu button{display:flex;width:100%;align-items:center;gap:10px;padding:8px 10px;border:0;background:none;border-radius:7px;font-size:13.5px;color:var(--text-primary);cursor:pointer;text-align:left;font-family:inherit;}
+    .kmenu button .material-icons{font-size:16px;color:var(--text-secondary);}
+    .kmenu button:hover{background:var(--bg-hover,#f4f7fb);}
+    .kmenu button.danger{color:var(--status-red,#d94339);} .kmenu button.danger .material-icons{color:var(--status-red,#d94339);}
+    .kmenu .div{height:1px;background:var(--border);margin:5px 4px;}
 
-    .stat-card {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-      background: var(--bg-card);
-      border: 1px solid var(--border-card);
-      border-radius: var(--radius-md);
-      padding: 14px 16px;
-      box-shadow: var(--shadow-sm);
-    }
+    .bigrow{display:flex;align-items:baseline;gap:8px;padding:2px 16px 4px;}
+    .bigrow .b{font-size:20px;font-weight:700;letter-spacing:-.4px;color:var(--text-primary);}
+    .bigrow .s{font-size:13px;color:var(--text-secondary);}
+    .kv{display:flex;justify-content:space-between;padding:7px 16px;font-size:13.5px;border-top:1px solid var(--border);color:var(--text-primary);}
+    .kv span:first-child{color:var(--text-secondary);}
+    .pfoot{padding:12px 16px;}
+    .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;font-size:13.5px;padding:8px 14px;border-radius:9px;border:1px solid var(--border);background:var(--card-bg,#fff);cursor:pointer;color:var(--text-primary);}
+    .btn .material-icons{font-size:16px;}
+    .btn:hover{border-color:var(--brand-blue,#009efb);color:#0a6cad;}
+    .btn.primary{background:var(--brand-blue,#009efb);border-color:var(--brand-blue,#009efb);color:#fff;} .btn.primary:hover{filter:brightness(.96);color:#fff;}
+    .btn.primary:disabled{opacity:.6;cursor:default;}
+    .btn.wide{width:100%;}
 
-    .stat-icon {
-      width: 42px;
-      height: 42px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
+    .alerts .msg{color:var(--text-primary);} .alerts .sub{color:var(--text-secondary);font-size:12.5px;}
+    .sev{width:3px;height:30px;border-radius:2px;background:var(--text-muted);}
+    .sev-critical{background:var(--status-red,#d94339);} .sev-warning{background:var(--status-orange,#c67608);} .sev-info{background:var(--brand-blue,#009efb);}
+    .ackbtn{font-size:12.5px;padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--card-bg,#fff);cursor:pointer;color:var(--text-secondary);}
+    .ackbtn:hover{color:var(--text-primary);border-color:var(--brand-blue,#009efb);}
 
-      .material-icons {
-        font-size: 22px;
-        width: 22px;
-        height: 22px;
-        color: white;
-      }
+    .act{padding:4px 16px 12px;}
+    .arow{display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);} .arow:last-child{border-bottom:0;}
+    .aic{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+    .aic .material-icons{font-size:16px;}
+    .ai-ok{background:#e2f5ec;color:#149a63;} .ai-warn{background:#fbeed6;color:#c67608;} .ai-info{background:#e6f4fe;color:#0a6cad;}
+    .atext{font-size:13.5px;line-height:1.45;color:var(--text-primary);} .atime{font-size:12px;color:var(--text-muted);margin-top:1px;}
 
-      &.si-blue { background: linear-gradient(135deg, #3b82f6, #6366f1); }
-      &.si-purple { background: linear-gradient(135deg, #8b5cf6, #a855f7); }
-      &.si-green { background: linear-gradient(135deg, #22c55e, #16a34a); }
-      &.si-orange { background: linear-gradient(135deg, #f59e0b, #d97706); }
-      &.si-orange { background: linear-gradient(135deg, #f59e0b, #d97706); }
-      &.si-red { background: linear-gradient(135deg, #ef4444, #dc2626); }
-      &.si-muted { background: #cbd5e1; }
-    }
+    .net-rows{padding:2px 16px 14px;}
+    .net-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:0.84rem;}
+    .net-row:last-child{border-bottom:none;}
+    .net-label{color:var(--text-secondary);font-weight:500;}
+    .net-value{font-weight:600;color:var(--text-primary);}
+    .net-value.nv-green{color:var(--status-green,#149a63);} .net-value.nv-red{color:var(--status-red,#d94339);} .net-value.nv-orange{color:var(--status-orange,#c67608);}
 
-    .stat-body {
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-    .stat-value {
-      font-size: 1.15rem;
-      font-weight: 700;
-      color: var(--text-primary);
-      line-height: 1.2;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .stat-label {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    .scrim{position:fixed;inset:0;background:rgba(10,17,30,.28);z-index:40;}
+    .drawer{position:fixed;top:0;right:0;bottom:0;width:440px;z-index:41;background:var(--card-bg,#fff);border-left:1px solid var(--border);box-shadow:-16px 0 44px rgba(2,12,27,.22);display:flex;flex-direction:column;}
+    .dhead{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);}
+    .dhead h3{margin:0;font-size:17px;font-weight:600;color:var(--text-primary);}
+    .dclose{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:var(--card-bg,#fff);cursor:pointer;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;}
+    .dbody{padding:16px 18px;overflow:auto;flex:1;}
+    .hero{background:var(--bg-subtle,#f6f8fc);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:14px;}
+    .hero .t{font-size:13px;color:var(--text-secondary);} .hero .v{font-size:20px;font-weight:700;margin-top:3px;color:var(--text-primary);}
+    .drow{display:flex;gap:8px;margin-bottom:16px;} .drow .btn{flex:1;}
+    .dlabel{font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;}
+    .hist{font-size:13.5px;}
+    .hist .h{display:flex;align-items:center;gap:10px;padding:11px 2px;border-bottom:1px solid var(--border);color:var(--text-primary);} .hist .h:last-child{border-bottom:0;}
+    .hi-ic{width:28px;height:28px;border-radius:7px;background:#e2f5ec;color:#149a63;display:flex;align-items:center;justify-content:center;} .hi-ic.fail{background:#fbe9e7;color:#d94339;}
+    .hi-ic .material-icons{font-size:15px;}
+    .hist .meta{color:var(--text-muted);font-size:12px;} .hist .sz{margin-left:auto;color:var(--text-secondary);font-variant-numeric:tabular-nums;}
+    .dfoot{margin-top:16px;}
+    .spinner{width:22px;height:22px;border:3px solid var(--border);border-top-color:var(--brand-blue,#009efb);border-radius:50%;animation:spin .8s linear infinite;} @keyframes spin{to{transform:rotate(360deg);}}
 
-    /* ── Skeleton ───────────────────────────────── */
-    .stat-skeleton {
-      .skeleton-circle {
-        width: 42px; height: 42px;
-        border-radius: 10px;
-        background: #e2e8f0;
-        animation: pulse 1.5s ease-in-out infinite;
-      }
-      .skeleton-lines {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-      .skeleton-line {
-        height: 12px;
-        border-radius: 4px;
-        background: #e2e8f0;
-        animation: pulse 1.5s ease-in-out infinite;
-        &.w60 { width: 60px; height: 16px; }
-        &.w40 { width: 48px; }
-      }
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    /* ── Grid ───────────────────────────────────── */
-    .grid-2 {
-      display: grid;
-      /* minmax(0,…) lets columns shrink below content width so wide/unbreakable
-         content (container names, fingerprints) can't blow the grid out */
-      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-      gap: 20px;
-    }
-
-    .dash-card { min-width: 0; }
-
-    .right-stack {
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      min-width: 0;
-    }
-
-    /* ── Card Top Bar ───────────────────────────── */
-    .dash-card {
-      padding: 0 !important;
-
-      .card-top {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 16px 20px 12px;
-
-        h3 {
-          font-size: 0.9rem;
-          font-weight: 600;
-          color: var(--text-primary);
-          margin: 0;
-        }
-      }
-    }
-
-    .btn-sm {
-      font-size: 0.8rem !important;
-      padding: 0 12px !important;
-      height: 32px !important;
-      line-height: 32px !important;
-      .material-icons {
-        font-size: 16px;
-        width: 16px;
-        height: 16px;
-        margin-left: 4px;
-      }
-    }
-
-    /* ── Service List ───────────────────────────── */
-    .service-list {
-      padding: 0 20px 16px;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .svc-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 9px 0;
-      border-bottom: 1px solid var(--border-card);
-      font-size: 0.825rem;
-      min-width: 0;
-
-      &:last-child { border-bottom: none; }
-    }
-
-    .svc-indicator {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-
-      &.ind-running { background: var(--status-green); box-shadow: 0 0 6px rgba(34, 197, 94, 0.4); }
-      &.ind-stopped { background: var(--status-red); }
-      &.ind-starting { background: var(--status-orange); }
-      &.ind-notinstalled { background: var(--text-muted); }
-      &.ind-error { background: var(--status-red); }
-    }
-
-    .svc-name {
-      font-weight: 600;
-      color: var(--text-primary);
-      flex-shrink: 0;
-      max-width: 140px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .svc-container {
-      flex: 1;
-      min-width: 0;
-      color: var(--text-muted);
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.75rem;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .svc-status { flex-shrink: 0; }
-
-    .svc-status {
-      font-size: 0.7rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-
-      &.st-running { color: var(--status-green); }
-      &.st-stopped { color: var(--status-red); }
-      &.st-starting { color: var(--status-orange); }
-      &.st-notinstalled { color: var(--text-muted); }
-      &.st-error { color: var(--status-red); }
-    }
-
-    .card-footer-link {
-      padding: 10px 20px;
-      border-top: 1px solid var(--border-card);
-      text-align: center;
-
-      a {
-        font-size: 0.8rem;
-        color: var(--accent-indigo);
-        text-decoration: none;
-        font-weight: 500;
-        &:hover { text-decoration: underline; }
-      }
-    }
-
-    /* ── Empty State ────────────────────────────── */
-    .svc-loading {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      padding: 40px 20px;
-      color: var(--text-muted);
-      font-size: 0.85rem;
-    }
-    .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-      padding: 40px 20px;
-      color: var(--text-muted);
-
-      .material-icons {
-        font-size: 36px;
-        width: 36px;
-        height: 36px;
-        color: #cbd5e1;
-      }
-
-      span {
-        font-size: 0.875rem;
-      }
-
-      .empty-link {
-        font-size: 0.8rem;
-        color: var(--accent-indigo);
-        text-decoration: none;
-        font-weight: 500;
-        &:hover { text-decoration: underline; }
-      }
-
-      &.sm {
-        padding: 24px 20px;
-        .material-icons { font-size: 24px; width: 24px; height: 24px; }
-      }
-    }
-
-    /* ── License ────────────────────────────────── */
-    .license-row {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 0 20px 12px;
-    }
-
-    .license-badge {
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-
-      .material-icons { font-size: 22px; width: 22px; height: 22px; color: white; }
-
-      &.lb-active, &.lb-unlimited { background: linear-gradient(135deg, #22c55e, #16a34a); }
-      &.lb-expiring_soon { background: linear-gradient(135deg, #f59e0b, #d97706); }
-      &.lb-expired { background: linear-gradient(135deg, #ef4444, #dc2626); }
-    }
-
-    .license-info {
-      display: flex;
-      flex-direction: column;
-    }
-    .license-plan {
-      font-weight: 600;
-      font-size: 0.9rem;
-      color: var(--text-primary);
-    }
-    .license-msg {
-      font-size: 0.75rem;
-      font-weight: 500;
-      &.lt-active, &.lt-unlimited { color: var(--status-green); }
-      &.lt-expiring_soon { color: var(--status-orange); }
-      &.lt-expired { color: var(--status-red); }
-    }
-
-    .feature-tags {
-      display: flex;
-      gap: 8px;
-      padding: 0 20px 16px;
-      flex-wrap: wrap;
-    }
-
-    .ftag {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 0.7rem;
-      font-weight: 500;
-      padding: 4px 10px;
-      border-radius: 6px;
-      background: #f1f5f9;
-      color: var(--text-muted);
-
-      .material-icons {
-        font-size: 14px;
-        width: 14px;
-        height: 14px;
-      }
-
-      &.active {
-        background: var(--status-green-bg);
-        color: #15803d;
-      }
-    }
-
-    /* ── Machine Row ──────────────────────────── */
-    .machine-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 20px 14px;
-      font-size: 0.8rem;
-
-      > .material-icons {
-        font-size: 16px;
-        width: 16px;
-        height: 16px;
-        color: var(--text-muted);
-      }
-
-      .machine-name {
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-
-      .machine-fp {
-        font-family: 'SF Mono', 'Fira Code', monospace;
-        font-size: 0.7rem;
-        color: var(--text-muted);
-        background: #f1f5f9;
-        padding: 2px 6px;
-        border-radius: 4px;
-      }
-    }
-
-    /* ── Network Card ──────────────────────────── */
-    .network-rows {
-      padding: 0 20px 16px;
-    }
-
-    .net-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--border-card);
-      font-size: 0.825rem;
-
-      &:last-child { border-bottom: none; }
-    }
-
-    .net-label {
-      color: var(--text-secondary);
-      font-weight: 500;
-    }
-
-    .net-value {
-      font-weight: 600;
-      color: var(--text-primary);
-
-      &.nv-green { color: var(--status-green); }
-      &.nv-red { color: var(--status-red); }
-      &.nv-orange { color: var(--status-orange); }
-    }
-
-    /* ── Quick Actions ──────────────────────────── */
-    .actions-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      padding: 0 20px 20px;
-    }
-
-    .action-btn {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-      padding: 16px 8px;
-      border: 1px solid var(--border-light);
-      border-radius: var(--radius-md);
-      background: var(--bg-card);
-      cursor: pointer;
-      transition: border-color 0.15s ease, background-color 0.15s ease,
-                  box-shadow 0.15s ease, transform 0.15s ease;
-
-      span {
-        font-size: 0.7rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-      }
-
-      &:hover {
-        border-color: var(--accent-indigo);
-        background: var(--accent-indigo-light);
-        transform: translateY(-1px);
-        box-shadow: var(--shadow-md);
-      }
-    }
-
-    .ab-icon {
-      width: 36px;
-      height: 36px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-
-      .material-icons {
-        font-size: 20px;
-        width: 20px;
-        height: 20px;
-        color: white;
-      }
-
-      &.ab-blue { background: linear-gradient(135deg, #3b82f6, #6366f1); }
-      &.ab-orange { background: linear-gradient(135deg, #f59e0b, #ef4444); }
-      &.ab-purple { background: linear-gradient(135deg, #8b5cf6, #6366f1); }
-      &.ab-green { background: linear-gradient(135deg, #22c55e, #14b8a6); }
-    }
+    @media (max-width:1080px){.cards{grid-template-columns:repeat(3,1fr);}.grid2{grid-template-columns:1fr;}.drawer{width:100%;}}
   `]
 })
 export class DashboardComponent implements OnInit, OnDestroy {
   private tauri = inject(TauriService);
+  private router = inject(Router);
+  private notify = inject(NotificationService);
 
   systemInfo: SystemInfo | null = null;
   services: ServiceInfo[] = [];
-  /** True until the first services fetch resolves — gates the spinner vs the "Run Setup" empty state. */
   servicesLoading = true;
   license: License | null = null;
-  licenseStatus: LicenseStatus | null = null;
   daemonRunning = false;
   telemetry: { cpu_percent: number; ram_gb: number; disk_percent: number } | null = null;
   lastBackupTime: string | null = null;
-
-  get cpuClass(): string {
-    const v = this.telemetry?.cpu_percent ?? 0;
-    return v > 80 ? 'si-red' : v > 50 ? 'si-orange' : 'si-blue';
-  }
-  get ramClass(): string {
-    if (!this.telemetry || !this.systemInfo) return 'si-purple';
-    const pct = (this.telemetry.ram_gb / this.systemInfo.total_ram_gb) * 100;
-    return pct > 85 ? 'si-red' : pct > 60 ? 'si-orange' : 'si-purple';
-  }
-  get diskClass(): string {
-    const v = this.telemetry?.disk_percent ?? 0;
-    return v > 90 ? 'si-red' : v > 70 ? 'si-orange' : 'si-green';
-  }
+  backupHistory: BackupRecord[] = [];
+  alerts: HospitalAlert[] = [];
   networkStatus: NetworkStatus | null = null;
   speedTestResult: SpeedTestResult | null = null;
   speedTestRunning = false;
 
+  manageOn = true;
+  openMenu: string | null = null;
+  profileOpen = false;
+  backupsOpen = false;
+  busyBackup = false;
+  logService: ServiceInfo | null = null;
+  actionMsg: Record<string, { text: string; kind: 'busy' | 'ok' | 'error' }> = {};
+
   private refreshSub?: Subscription;
   private networkSub?: Subscription;
 
-  get runningCount(): number {
-    return this.services.filter(s => s.status === 'running').length;
+  // ── Derived ──────────────────────────────────────────────────────────────
+  get hospitalName(): string { return this.license?.hospital_name || 'Puru Hospital'; }
+  get initials(): string {
+    const n = this.hospitalName.trim().split(/\s+/);
+    return ((n[0]?.[0] || 'P') + (n[1]?.[0] || '')).toUpperCase();
   }
-
+  /** App services only (drop infra rows + the static bundles for the compact table). */
+  get appServices(): ServiceInfo[] {
+    return this.services.filter(s => !s.infra && s.name !== 'dviewer');
+  }
+  get runningApp(): number { return this.appServices.filter(s => s.status === 'running').length; }
+  get servicePct(): number { return this.appServices.length ? Math.round(this.runningApp / this.appServices.length * 100) : 0; }
+  get openAlerts(): HospitalAlert[] { return this.alerts.filter(a => !a.acknowledged); }
+  get ramTotal(): string { return this.systemInfo ? this.systemInfo.total_ram_gb.toFixed(0) : '—'; }
+  get ramUsed(): string { return this.telemetry ? this.telemetry.ram_gb.toFixed(1) : '—'; }
+  get ramPct(): number {
+    if (!this.telemetry || !this.systemInfo || !this.systemInfo.total_ram_gb) return 0;
+    return Math.round(this.telemetry.ram_gb / this.systemInfo.total_ram_gb * 100);
+  }
+  get diskFree(): string { return this.systemInfo ? this.systemInfo.disk_free_gb.toFixed(0) : '—'; }
   get networkStatValue(): string {
     if (!this.networkStatus) return '—';
     if (!this.networkStatus.connected) return 'Offline';
     return this.networkStatus.latency_ms != null ? `${this.networkStatus.latency_ms} ms` : 'Online';
   }
-
-  get networkStatClass(): string {
-    if (!this.networkStatus) return 'si-muted';
-    if (!this.networkStatus.connected) return 'si-orange';
-    if (this.networkStatus.latency_ms != null && this.networkStatus.latency_ms > 200) return 'si-orange';
-    return 'si-green';
-  }
-
   get latencyClass(): string {
-    if (!this.networkStatus?.latency_ms) return '';
-    if (this.networkStatus.latency_ms < 100) return 'nv-green';
-    if (this.networkStatus.latency_ms < 300) return 'nv-orange';
-    return 'nv-red';
+    const l = this.networkStatus?.latency_ms;
+    if (l == null) return '';
+    return l < 100 ? 'nv-green' : l < 300 ? 'nv-orange' : 'nv-red';
   }
-
   get gcpClass(): string {
     if (!this.networkStatus) return '';
     return this.networkStatus.gcp_reachable ? 'nv-green' : 'nv-red';
   }
-
   get downloadClass(): string {
-    if (!this.speedTestResult?.download_mbps) return '';
-    if (this.speedTestResult.download_mbps > 10) return 'nv-green';
-    if (this.speedTestResult.download_mbps > 2) return 'nv-orange';
-    return 'nv-red';
+    const d = this.speedTestResult?.download_mbps;
+    if (d == null) return '';
+    return d > 10 ? 'nv-green' : d > 2 ? 'nv-orange' : 'nv-red';
   }
-
   get uploadClass(): string {
-    if (!this.speedTestResult?.upload_mbps) return '';
-    if (this.speedTestResult.upload_mbps > 5) return 'nv-green';
-    if (this.speedTestResult.upload_mbps > 1) return 'nv-orange';
-    return 'nv-red';
+    const u = this.speedTestResult?.upload_mbps;
+    if (u == null) return '';
+    return u > 5 ? 'nv-green' : u > 1 ? 'nv-orange' : 'nv-red';
+  }
+  get systemUptime(): string {
+    const max = Math.max(0, ...this.appServices.filter(s => s.status === 'running').map(s => this.uptimeSecs(s.uptime)));
+    if (!max) return '—';
+    const d = Math.floor(max / 86400), h = Math.floor((max % 86400) / 3600), m = Math.floor((max % 3600) / 60);
+    if (d) return `${d}d ${h}h`;
+    if (h) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+  get activity(): ActivityItem[] {
+    const items: ActivityItem[] = [];
+    const lastDone = this.backupHistory.filter(b => b.status === 'completed')
+      .sort((a, b) => this.toDate(b.created_at).getTime() - this.toDate(a.created_at).getTime())[0];
+    if (lastDone) items.push({ icon: 'check_circle', kind: 'ok', text: 'Backup completed — uploaded to cloud', time: this.timeAgo(this.toDate(lastDone.created_at)) });
+    for (const a of this.alerts.slice(0, 3)) {
+      items.push({ icon: a.severity === 'critical' || a.severity === 'warning' ? 'warning_amber' : 'info', kind: a.severity === 'info' ? 'info' : 'warn', text: a.title, time: this.timeAgo(this.toDate(a.created_at)) });
+    }
+    return items.slice(0, 4);
   }
 
+  private uptimeSecs(u?: string): number {
+    if (!u) return 0;
+    let s = 0;
+    const d = u.match(/(\d+)\s*d/); if (d) s += +d[1] * 86400;
+    const h = u.match(/(\d+)\s*h/); if (h) s += +h[1] * 3600;
+    const m = u.match(/(\d+)\s*m(?!s)/); if (m) s += +m[1] * 60;
+    const sec = u.match(/(\d+)\s*s/); if (sec) s += +sec[1];
+    return s;
+  }
+  toDate(s: string): Date { return new Date(s); }
+  barClass(v: number | undefined, warn: number, crit: number): string {
+    const x = v ?? 0;
+    return x >= crit ? 'r' : x >= warn ? 'a' : 'g';
+  }
+  displayName(name: string): string {
+    const s = name.replace(/^puru-/, '');
+    const map: Record<string, string> = { hydrogen: 'Front End', dviewer: 'DICOM viewer', has: 'HAS', pacs: 'PACS', ris: 'RIS' };
+    return map[s] || (s.charAt(0).toUpperCase() + s.slice(1));
+  }
+  statusLabel(s: ServiceInfo): string {
+    switch (s.status) {
+      case 'running': return 'Running';
+      case 'starting': return 'Starting';
+      case 'stopped': return 'Stopped';
+      case 'error': return 'Needs attention';
+      case 'notinstalled': return 'Not installed';
+      default: return s.status;
+    }
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────
   ngOnInit(): void {
-    // Load fast data first (license, system info) — renders immediately
     this.loadFastData();
-    // Then load slow data (services, daemon status) — renders when ready
     this.loadSlowData();
     this.checkNetwork();
-
-    // Refresh every 30 seconds
-    this.refreshSub = interval(30000).subscribe(() => {
-      this.loadFastData();
-      this.loadSlowData();
-    });
-
-    // Network connectivity poll every 60 seconds
-    this.networkSub = interval(60000).subscribe(() => {
-      this.checkNetwork();
-    });
+    this.refreshSub = interval(30000).subscribe(() => { this.loadFastData(); this.loadSlowData(); });
+    this.networkSub = interval(60000).subscribe(() => this.checkNetwork());
   }
+  ngOnDestroy(): void { this.refreshSub?.unsubscribe(); this.networkSub?.unsubscribe(); }
 
-  ngOnDestroy(): void {
-    this.refreshSub?.unsubscribe();
-    this.networkSub?.unsubscribe();
-  }
+  @HostListener('document:click')
+  closeOverlays(): void { this.openMenu = null; this.profileOpen = false; }
 
-  /** Fast calls — license + system info + telemetry. */
   private async loadFastData(): Promise<void> {
-    const [licenseResult, sysResult, telResult] = await Promise.allSettled([
+    const [lic, sys, tel] = await Promise.allSettled([
       this.tauri.invokeSilent<License>('get_license'),
       this.tauri.invokeSilent<SystemInfo>('get_system_info'),
       this.tauri.invokeSilent<{ cpu_percent: number; ram_gb: number; disk_percent: number }>('get_telemetry_snapshot'),
     ]);
-
-    if (licenseResult.status === 'fulfilled' && licenseResult.value) {
-      this.license = licenseResult.value;
-      this.licenseStatus = getLicenseStatus(licenseResult.value);
-    }
-    if (sysResult.status === 'fulfilled') {
-      this.systemInfo = sysResult.value;
-    }
-    if (telResult.status === 'fulfilled') {
-      this.telemetry = telResult.value;
-    }
+    if (lic.status === 'fulfilled' && lic.value) this.license = lic.value;
+    if (sys.status === 'fulfilled') this.systemInfo = sys.value;
+    if (tel.status === 'fulfilled') this.telemetry = tel.value;
   }
 
-  /** Slow calls — Docker services + daemon probe + backup history. */
   private async loadSlowData(): Promise<void> {
-    const [servicesResult, daemonResult, backupResult] = await Promise.allSettled([
+    const [svc, dae, bak, alr] = await Promise.allSettled([
       this.tauri.invokeSilent<ServiceInfo[]>('get_services'),
       this.tauri.invokeSilent<DaemonStatus>('get_daemon_status'),
       this.tauri.invokeSilent<BackupRecord[]>('get_backup_history'),
+      this.tauri.invokeSilent<HospitalAlert[]>('get_alerts'),
     ]);
-
     this.servicesLoading = false;
-    if (servicesResult.status === 'fulfilled') {
-      this.services = servicesResult.value;
+    if (svc.status === 'fulfilled') this.services = svc.value;
+    if (dae.status === 'fulfilled') this.daemonRunning = dae.value.running;
+    if (bak.status === 'fulfilled' && bak.value) {
+      this.backupHistory = [...bak.value].sort((a, b) => this.toDate(b.created_at).getTime() - this.toDate(a.created_at).getTime());
+      const done = this.backupHistory.filter(b => b.status === 'completed');
+      this.lastBackupTime = done.length ? this.timeAgo(this.toDate(done[0].created_at)) : null;
     }
-    if (daemonResult.status === 'fulfilled') {
-      this.daemonRunning = daemonResult.value.running;
-    }
-    if (backupResult.status === 'fulfilled' && backupResult.value) {
-      const completed = backupResult.value
-        .filter(b => b.status === 'completed')
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      if (completed.length > 0) {
-        this.lastBackupTime = this.timeAgo(new Date(completed[0].created_at));
-      }
-    }
-  }
-
-  private timeAgo(date: Date): string {
-    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-    if (seconds < 60) return 'Just now';
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
-  }
-
-  async runBackup(): Promise<void> {
-    try {
-      await this.tauri.invoke('start_backup', { type: 'full' });
-    } catch (error) {
-      // Error handled by TauriService
-    }
-  }
-
-  async restartServices(): Promise<void> {
-    for (const service of this.services) {
-      try {
-        await this.tauri.invoke('restart_service', { name: service.name });
-      } catch (error) {
-        // Continue with other services
-      }
-    }
-    await this.loadSlowData();
-  }
-
-  async syncConfig(): Promise<void> {
-    try {
-      await this.tauri.invoke('sync_config_to_cloud');
-    } catch (error) {
-      // Error handled by TauriService
-    }
+    if (alr.status === 'fulfilled' && alr.value) this.alerts = alr.value;
   }
 
   private async checkNetwork(): Promise<void> {
-    try {
-      this.networkStatus = await this.tauri.invokeSilent<NetworkStatus>('check_network');
-    } catch {
-      // Silently ignore — will show as unknown
-    }
+    try { this.networkStatus = await this.tauri.invokeSilent<NetworkStatus>('check_network'); } catch { /* ignore */ }
   }
 
   async runSpeedTest(): Promise<void> {
     this.speedTestRunning = true;
     try {
       this.speedTestResult = await this.tauri.invoke<SpeedTestResult>('run_speed_test');
-      // Also update network status from speed test result
       if (this.speedTestResult) {
         this.networkStatus = {
           connected: this.speedTestResult.connected,
           latency_ms: this.speedTestResult.latency_ms,
           gcp_reachable: this.speedTestResult.gcp_reachable,
           gcp_latency_ms: this.speedTestResult.gcp_latency_ms,
-          checked_at: this.speedTestResult.tested_at
+          checked_at: this.speedTestResult.tested_at,
         };
       }
-    } catch {
-      // Error handled by TauriService
-    } finally {
-      this.speedTestRunning = false;
-    }
+    } catch { /* handled by TauriService */ }
+    finally { this.speedTestRunning = false; }
+  }
+
+  timeAgo(date: Date): string {
+    const s = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (s < 60) return 'Just now';
+    const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
+  // ── UI actions ───────────────────────────────────────────────────────────
+  goto(route: string): void { this.router.navigate([route]); }
+  toggleProfile(e: Event): void { e.stopPropagation(); this.profileOpen = !this.profileOpen; }
+  toggleMenu(name: string, e: Event): void { e.stopPropagation(); this.openMenu = this.openMenu === name ? null : name; }
+  openBackups(): void { this.backupsOpen = true; }
+
+  private setMsg(name: string, text: string, kind: 'busy' | 'ok' | 'error'): void {
+    this.actionMsg[name] = { text, kind };
+    if (kind !== 'busy') setTimeout(() => { if (this.actionMsg[name]?.text === text) delete this.actionMsg[name]; }, kind === 'error' ? 6000 : 3000);
+  }
+
+  /** Generic start/stop/restart. */
+  async act(s: ServiceInfo, cmd: string, busy: string, done: string): Promise<void> {
+    this.openMenu = null;
+    this.setMsg(s.name, busy, 'busy');
+    try { await this.tauri.invoke(cmd, { name: s.name }); this.setMsg(s.name, done, 'ok'); await this.loadSlowData(); }
+    catch { this.setMsg(s.name, 'Failed', 'error'); }
+  }
+
+  async rollback(s: ServiceInfo): Promise<void> {
+    this.openMenu = null;
+    if (!confirm(`Roll back ${this.displayName(s.name)} to the previous version?`)) return;
+    this.setMsg(s.name, 'Rolling back…', 'busy');
+    try { await this.tauri.invoke('rollback_native_service', { serviceName: s.name }); this.setMsg(s.name, 'Rolled back', 'ok'); await this.loadSlowData(); }
+    catch { this.setMsg(s.name, 'Rollback failed', 'error'); }
+  }
+
+  async kill(s: ServiceInfo): Promise<void> {
+    this.openMenu = null;
+    const pid = parseInt((s.container_name || '').replace(/[^0-9]/g, ''), 10);
+    if (!pid) { this.notify.error(`No process id for ${this.displayName(s.name)}.`); return; }
+    if (!confirm(`Kill ${this.displayName(s.name)} (PID ${pid})?\n\nThis sends SIGKILL — no graceful shutdown.`)) return;
+    this.setMsg(s.name, 'Killing…', 'busy');
+    try { await this.tauri.invoke('kill_process_by_pid', { pid }); this.setMsg(s.name, 'Killed', 'ok'); await this.loadSlowData(); }
+    catch { this.setMsg(s.name, 'Kill failed', 'error'); }
+  }
+
+  async copyLogs(s: ServiceInfo): Promise<void> {
+    this.openMenu = null;
+    this.setMsg(s.name, 'Copying logs…', 'busy');
+    try {
+      const logs = await this.tauri.invoke<string>('get_container_logs', { containerName: s.name, tail: 200 });
+      await navigator.clipboard.writeText(logs || '');
+      this.setMsg(s.name, 'Logs copied', 'ok');
+    } catch { this.setMsg(s.name, 'Copy failed', 'error'); }
+  }
+
+  viewLogs(s: ServiceInfo): void { this.openMenu = null; this.logService = s; }
+  checkUpdate(): void { this.openMenu = null; this.router.navigate(['/updates']); }
+
+  async backupNow(): Promise<void> {
+    this.busyBackup = true;
+    try { await this.tauri.invoke('start_backup', { type: 'full' }); this.notify.success('Backup started'); }
+    catch { /* handled by TauriService */ }
+    finally { this.busyBackup = false; }
+  }
+
+  async ack(a: HospitalAlert): Promise<void> {
+    try { await this.tauri.invoke('acknowledge_alert', { alertId: a.id }); a.acknowledged = true; }
+    catch { /* handled by TauriService */ }
   }
 }
