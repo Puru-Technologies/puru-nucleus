@@ -24,6 +24,20 @@ interface SystemClockStatus {
   message: string;
 }
 
+/** Machine currently registered against the hospital, surfaced by the redeem
+ *  Cloud Function when the machine-slot limit is hit. */
+interface ExistingMachine {
+  name: string;
+  activated_at: string | null;
+  last_seen_at: string | null;
+}
+
+/** Structured error the Rust `redeem_onboarding_code` command returns as a
+ *  JSON string in the Err channel — parse to dispatch on `kind`. */
+type RedeemErrorPayload =
+  | { kind: 'machine_limit_reached'; existing_machines: ExistingMachine[] }
+  | { kind: 'message'; message: string };
+
 @Component({
   selector: 'app-activation',
   standalone: true,
@@ -59,8 +73,57 @@ interface SystemClockStatus {
             </div>
           }
 
+          <!-- Machine-limit-reached — the code was valid, but every allowed slot
+               is already occupied. Ask an admin to reset one from oxygen, then
+               hit Refresh. -->
+          @if (machineLimitReached) {
+            <h2>Machine limit reached</h2>
+            <p class="subtitle">
+              This hospital has already registered the maximum number of machines.
+              Ask an admin to reset one from the Puru Oxygen admin panel, then refresh.
+            </p>
+
+            <div class="existing-machines">
+              <div class="existing-title">Currently registered</div>
+              @for (m of existingMachines; track m.name) {
+                <div class="existing-row">
+                  <span class="material-icons">computer</span>
+                  <div class="existing-text">
+                    <span class="existing-name">{{ m.name }}</span>
+                    @if (m.last_seen_at) {
+                      <span class="existing-hint">Last seen {{ m.last_seen_at | date:'medium' }}</span>
+                    } @else if (m.activated_at) {
+                      <span class="existing-hint">Registered {{ m.activated_at | date:'medium' }}</span>
+                    }
+                  </div>
+                </div>
+              }
+              @if (!existingMachines.length) {
+                <div class="existing-hint">No machine details available.</div>
+              }
+            </div>
+
+            <button class="btn btn-primary activate-btn"
+                    (click)="refreshAfterReset()"
+                    [disabled]="redeeming">
+              @if (redeeming) {
+                <span class="spinner"></span>
+                Checking…
+              } @else {
+                <span class="material-icons">refresh</span>
+                Refresh
+              }
+            </button>
+
+            <button class="btn btn-text advanced-toggle"
+                    (click)="resetCredentials()"
+                    [disabled]="redeeming">
+              Use a different code
+            </button>
+          }
+
           <!-- Step 1: GCS Credentials -->
-          @if (!credentialsReady) {
+          @if (!machineLimitReached && !credentialsReady) {
             <h2>Activate this machine</h2>
             <p class="subtitle">
               Enter the 10-character code from your email.
@@ -523,6 +586,58 @@ interface SystemClockStatus {
       }
     }
 
+    /* ── Existing machines (limit-reached screen) ─ */
+    .existing-machines {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px 14px;
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      text-align: left;
+    }
+
+    .existing-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #8d6e00;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .existing-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+
+      > .material-icons {
+        color: #8d6e00;
+        font-size: 20px;
+        margin-top: 2px;
+        flex-shrink: 0;
+      }
+    }
+
+    .existing-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .existing-name {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #333;
+    }
+
+    .existing-hint {
+      font-size: 0.75rem;
+      color: #6b5900;
+    }
+
     /* ── Activate button ───────────────────── */
     .activate-btn {
       width: 100%;
@@ -610,6 +725,12 @@ export class ActivationComponent {
   clock: SystemClockStatus | null = null;
   checkingClock = false;
 
+  // Machine-limit state — set when the redeem CF returns 403 with the list of
+  // machines currently occupying slots. The tech asks an admin to reset one
+  // from oxygen, then presses Refresh.
+  machineLimitReached = false;
+  existingMachines: ExistingMachine[] = [];
+
   constructor() {
     this.checkCredentials();
     this.checkClock();
@@ -652,6 +773,8 @@ export class ActivationComponent {
     if (!code) return;
 
     this.error = null;
+    this.machineLimitReached = false;
+    this.existingMachines = [];
     this.redeeming = true;
     try {
       const res = await this.tauri.invoke<{
@@ -675,10 +798,38 @@ export class ActivationComponent {
       this.loadFingerprint();
       this.notification.success(this.machineKnown ? 'Welcome back — machine recognised' : 'Code accepted');
     } catch (error) {
-      this.error = String(error);
+      this.handleRedeemError(error);
     } finally {
       this.redeeming = false;
     }
+  }
+
+  /** Parse structured errors from the redeem command. The Rust layer emits a
+   *  JSON string in the Err channel; anything not parseable falls back to the
+   *  plain text so pre-v0.9.2 backends still render sensibly. */
+  private handleRedeemError(err: unknown): void {
+    const raw = String(err);
+    let parsed: RedeemErrorPayload | null = null;
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === 'object' && typeof obj.kind === 'string') {
+        parsed = obj as RedeemErrorPayload;
+      }
+    } catch {
+      // not JSON — fall through
+    }
+
+    if (parsed?.kind === 'machine_limit_reached') {
+      this.machineLimitReached = true;
+      this.existingMachines = parsed.existing_machines || [];
+      return;
+    }
+    this.error = parsed?.kind === 'message' ? parsed.message : raw;
+  }
+
+  /** Retry the redeem after asking an admin to reset a machine in oxygen. */
+  async refreshAfterReset(): Promise<void> {
+    await this.redeemCode();
   }
 
   async browseFile(): Promise<void> {
@@ -737,6 +888,8 @@ export class ActivationComponent {
     this.hospitalName = '';
     this.hospitalCode = '';
     this.machineKnown = false;
+    this.machineLimitReached = false;
+    this.existingMachines = [];
     this.error = null;
   }
 

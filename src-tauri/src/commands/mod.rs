@@ -1211,6 +1211,28 @@ struct RedeemResponse {
     machine_name: String,
 }
 
+/// Machine currently occupying a slot on the hospital, returned by the cloud
+/// function when the redeem is rejected with 403 machine_limit_reached. The
+/// activation UI shows these so the operator knows which one to ask the admin
+/// to reset from the oxygen panel.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct ExistingMachine {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub activated_at: Option<String>,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RedeemErrorBody {
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    existing_machines: Vec<ExistingMachine>,
+}
+
 /// Returned to the activation UI so the operator can confirm the hospital and
 /// so the UI can skip the machine-name prompt for an already-registered machine.
 #[derive(serde::Serialize)]
@@ -1222,6 +1244,39 @@ pub struct RedeemResult {
     pub machine_name: String,
 }
 
+/// Structured error the activation UI matches on to render the "machine limit
+/// reached" screen instead of a raw error string. Tag on `kind`, so the
+/// frontend can dispatch — plain error strings from other paths keep working.
+#[derive(serde::Serialize, Debug)]
+#[serde(tag = "kind")]
+pub enum RedeemError {
+    #[serde(rename = "machine_limit_reached")]
+    MachineLimitReached {
+        existing_machines: Vec<ExistingMachine>,
+    },
+    #[serde(rename = "message")]
+    Message { message: String },
+}
+
+impl RedeemError {
+    fn message(msg: impl Into<String>) -> Self {
+        RedeemError::Message {
+            message: msg.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for RedeemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Serialise as JSON so the frontend can JSON.parse a structured error.
+        // Tauri surfaces command Err(String) verbatim to the JS layer.
+        match serde_json::to_string(self) {
+            Ok(s) => f.write_str(&s),
+            Err(_) => f.write_str("{\"kind\":\"message\",\"message\":\"Activation failed.\"}"),
+        }
+    }
+}
+
 /// Redeem a one-time onboarding code: POST it (with this machine's hardware
 /// fingerprint) to the cloud function, receive the SA key + hospital info,
 /// store the key encrypted at rest, and return the hospital email/name for the
@@ -1230,11 +1285,12 @@ pub struct RedeemResult {
 pub async fn redeem_onboarding_code(code: String) -> Result<RedeemResult, String> {
     let code = code.trim().to_uppercase();
     if code.is_empty() {
-        return Err("Enter the onboarding code.".into());
+        return Err(RedeemError::message("Enter the onboarding code.").to_string());
     }
 
-    let fingerprint = crate::licensing::fingerprint::get_cached_fingerprint()
-        .map_err(|e| format!("Could not read hardware fingerprint: {}", e))?;
+    let fingerprint = crate::licensing::fingerprint::get_cached_fingerprint().map_err(|e| {
+        RedeemError::message(format!("Could not read hardware fingerprint: {}", e)).to_string()
+    })?;
 
     let resp = reqwest::Client::new()
         .post(ONBOARD_REDEEM_URL)
@@ -1244,32 +1300,49 @@ pub async fn redeem_onboarding_code(code: String) -> Result<RedeemResult, String
         })
         .send()
         .await
-        .map_err(|e| format!("Could not reach the activation server: {}", e))?;
+        .map_err(|e| {
+            RedeemError::message(format!("Could not reach the activation server: {}", e))
+                .to_string()
+        })?;
 
     let status = resp.status();
     if !status.is_success() {
+        // For 403 machine_limit_reached, parse the body and return a structured
+        // error the UI dispatches on. All other statuses collapse to a plain
+        // message.
+        if status.as_u16() == 403 {
+            let body: RedeemErrorBody = resp.json().await.unwrap_or_default();
+            if body.error == "machine_limit_reached" {
+                return Err(RedeemError::MachineLimitReached {
+                    existing_machines: body.existing_machines,
+                }
+                .to_string());
+            }
+        }
         let msg = match status.as_u16() {
             404 => "Invalid code — check it and try again.",
             410 => "This code has expired or was already used. Ask for a new one.",
             409 => "Cloud credentials aren't ready for this hospital yet.",
-            403 => "You have a single-machine license — this machine can't be activated. Contact Puru customer care.",
+            403 => "This machine can't be activated for this hospital. Contact Puru customer care.",
             _ => "Activation failed. Please try again.",
         };
-        return Err(msg.to_string());
+        return Err(RedeemError::message(msg).to_string());
     }
 
-    let data: RedeemResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Unexpected response from activation server: {}", e))?;
+    let data: RedeemResponse = resp.json().await.map_err(|e| {
+        RedeemError::message(format!("Unexpected response from activation server: {}", e))
+            .to_string()
+    })?;
 
     // Store the SA key encrypted at rest and point config at it.
     let dest = credentials_path();
     crate::secret::write_encrypted(&dest.to_string_lossy(), data.sa_key.as_bytes())
-        .map_err(|e| format!("Failed to store credentials: {}", e))?;
-    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+        .map_err(|e| RedeemError::message(format!("Failed to store credentials: {}", e)).to_string())?;
+    let mut config = crate::config::load_config()
+        .map_err(|e| RedeemError::message(e.user_message()).to_string())?;
     config.gcs_credentials_path = Some(dest.display().to_string());
-    crate::config::save_config(&config).map_err(|e| e.user_message())?;
+    crate::config::save_config(&config)
+        .map_err(|e| RedeemError::message(e.user_message()).to_string())?;
 
     tracing::info!(
         "Redeemed onboarding code for hospital {}",
