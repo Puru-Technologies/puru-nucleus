@@ -12,6 +12,7 @@ use tokio::process::Command;
 /// `PathBuf`, `&Path`, `&OsStr`, … — so callers can pass a resolved executable
 /// path without stringifying it.
 pub fn silent_cmd<S: AsRef<OsStr>>(program: S) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(program);
 
     #[cfg(target_os = "windows")]
@@ -29,6 +30,7 @@ pub fn silent_cmd<S: AsRef<OsStr>>(program: S) -> Command {
 /// those calls flash a console window on Windows — and the installer/watchdog
 /// each fire dozens of these per run.
 pub fn silent_std_cmd<S: AsRef<OsStr>>(program: S) -> std::process::Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = std::process::Command::new(program);
 
     #[cfg(target_os = "windows")]

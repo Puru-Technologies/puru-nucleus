@@ -486,7 +486,7 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
 
     // Spawn process from the config dir — services resolve relative paths
     // (e.g. credential files) against their working directory
-    let child = crate::process::silent_cmd(&java_bin.to_string_lossy())
+    let child = crate::process::silent_cmd(&java_bin)
         .args(&vm_args)
         .args(["-jar", &jar.to_string_lossy()])
         .envs(env_vars)

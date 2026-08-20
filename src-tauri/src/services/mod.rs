@@ -629,6 +629,7 @@ pub async fn docker_boot_start() {
     //    to ~3 minutes so we don't give up too early.
     let docker = {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        #[allow(unused_assignments)]
         let mut last_err: Option<String> = None;
         loop {
             match Docker::connect_with_local_defaults() {

@@ -346,7 +346,7 @@ pub async fn start(config: &NucleusConfig) -> Result<(), NucleusError> {
 
     // If already running, reload the (possibly updated) config in place.
     if is_running() {
-        let out = crate::process::silent_cmd(&exe.to_string_lossy())
+        let out = crate::process::silent_cmd(&exe)
             .current_dir(&dir)
             .args(["-p", &fwd(&dir), "-c", &fwd(&conf), "-s", "reload"])
             .output()
@@ -359,7 +359,7 @@ pub async fn start(config: &NucleusConfig) -> Result<(), NucleusError> {
     }
 
     // Validate config before starting, for a clear error instead of a silent exit.
-    let test = crate::process::silent_cmd(&exe.to_string_lossy())
+    let test = crate::process::silent_cmd(&exe)
         .current_dir(&dir)
         .args(["-p", &fwd(&dir), "-c", &fwd(&conf), "-t"])
         .output()
@@ -371,7 +371,7 @@ pub async fn start(config: &NucleusConfig) -> Result<(), NucleusError> {
         )));
     }
 
-    crate::process::silent_cmd(&exe.to_string_lossy())
+    crate::process::silent_cmd(&exe)
         .current_dir(&dir)
         .args(["-p", &fwd(&dir), "-c", &fwd(&conf)])
         .spawn()
@@ -391,7 +391,7 @@ pub async fn stop(config: &NucleusConfig) -> Result<(), NucleusError> {
     let conf = config_path(config);
 
     if exe.exists() {
-        let _ = crate::process::silent_cmd(&exe.to_string_lossy())
+        let _ = crate::process::silent_cmd(&exe)
             .current_dir(&dir)
             .args(["-p", &fwd(&dir), "-c", &fwd(&conf), "-s", "quit"])
             .output()
