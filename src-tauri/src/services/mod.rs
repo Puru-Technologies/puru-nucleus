@@ -613,6 +613,109 @@ pub async fn rollback_native_service(name: &str) -> Result<(), crate::error::Nuc
 
 // ── Docker implementation ───────────────────────────────────────────────────
 
+/// Wait for the Docker daemon to become reachable, then ensure every Puru
+/// container that isn't running gets a `docker start`. Belt-and-suspenders on
+/// top of the compose file's `restart: always`: covers containers that exited
+/// zero (which `always` respects but `unless-stopped` doesn't restart), a
+/// compose accidentally set to `restart: no`, or a container added while
+/// dockerd was down. Called by the daemon on boot in Docker mode. Never errs
+/// out — every step logs and continues so a partial failure still starts what
+/// it can.
+pub async fn docker_boot_start() {
+    use bollard::container::ListContainersOptions;
+
+    // 1. Wait for Docker daemon. Docker Desktop can take 30–60 s to come up
+    //    after Windows boot, and the daemon may start before it — poll for up
+    //    to ~3 minutes so we don't give up too early.
+    let docker = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut last_err: Option<String> = None;
+        loop {
+            match Docker::connect_with_local_defaults() {
+                Ok(d) => match d.ping().await {
+                    Ok(_) => break d,
+                    Err(e) => last_err = Some(e.to_string()),
+                },
+                Err(e) => last_err = Some(e.to_string()),
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::error!(
+                    "Daemon (docker): Docker daemon not reachable after 180s ({}). Aborting boot start — the watchdog will retry.",
+                    last_err.unwrap_or_default()
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+    };
+    tracing::info!("Daemon (docker): Docker daemon reachable");
+
+    // 2. List all containers (running + stopped) and filter to Puru services.
+    let containers = match docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Daemon (docker): could not list containers: {}", e);
+            return;
+        }
+    };
+
+    let mut started = 0usize;
+    let mut already = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+
+    for container in &containers {
+        let image = container.image.as_deref().unwrap_or("");
+        let raw_name = container
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|n| n.trim_start_matches('/'))
+            .unwrap_or("");
+
+        // Only touch containers this deployment owns.
+        if match_puru_service(image, raw_name).is_none() {
+            continue;
+        }
+
+        // Respect operator intent — services explicitly stopped from the UI/CLI
+        // must stay stopped, matching the watchdog's rule. `state == "running"`
+        // = leave it. Anything else (`created`, `exited`, `dead`, `paused`,
+        // `restarting`) → try to start.
+        let state = container.state.as_deref().unwrap_or("");
+        if state == "running" {
+            already += 1;
+            continue;
+        }
+        if is_manually_stopped(raw_name) {
+            skipped += 1;
+            continue;
+        }
+
+        match start_docker_service(raw_name).await {
+            Ok(()) => {
+                tracing::info!("Daemon (docker): started container {} (was '{}')", raw_name, state);
+                started += 1;
+            }
+            Err(e) => {
+                tracing::warn!("Daemon (docker): failed to start {}: {}", raw_name, e);
+                failed += 1;
+            }
+        }
+    }
+
+    tracing::info!(
+        "Daemon (docker): boot start complete — {} started, {} already running, {} skipped (manual stop), {} failed",
+        started, already, skipped, failed
+    );
+}
+
 /// Get list of Puru services from Docker
 async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusError> {
     // Gracefully handle Docker unavailable — return empty list, not an error

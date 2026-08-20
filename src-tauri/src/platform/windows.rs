@@ -269,6 +269,19 @@ pub async fn stop() -> Result<ServiceResult, String> {
     })
 }
 
+/// True if the SYSTEM boot task (`PuruDC`) is registered with Task Scheduler.
+/// Cheap synchronous probe used at GUI startup to decide whether we need to
+/// reinstall the boot task (e.g. after a fresh MSI reinstall wiped it).
+pub fn boot_task_installed() -> bool {
+    let output = crate::process::silent_std_cmd("schtasks")
+        .args(["/Query", "/TN", TASK_NAME])
+        .output();
+    match output {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
+}
+
 /// Query the daemon status by checking the scheduled task and process.
 pub async fn status() -> Result<ServiceStatus, String> {
     // Check if the task exists

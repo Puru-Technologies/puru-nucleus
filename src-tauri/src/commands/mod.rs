@@ -1598,6 +1598,195 @@ pub async fn install_prerequisites(
     Ok(crate::installer::install_missing(&app, &software).await)
 }
 
+/// One artifact downloaded to the operator's OS Downloads folder by
+/// [`download_prerequisites_to_downloads`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualDownloadResult {
+    pub software: String,
+    pub file: String,
+    pub path: String,
+    pub size_mb: f64,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Download infra installers (MySQL, Erlang, RabbitMQ, delayed-exchange plugin)
+/// straight to the operator's OS Downloads folder so they can install them by
+/// hand — useful when silent installers can't run (locked-down machines, no
+/// admin rights, air-gapped copy-to-USB flows). No install, no elevation, no
+/// side effects: just files on disk. Emits `manual-infra-download-progress`
+/// events per artifact so the UI can show a bar.
+#[tauri::command]
+pub async fn download_prerequisites_to_downloads(
+    app: tauri::AppHandle,
+    software: Vec<String>,
+) -> Result<Vec<ManualDownloadResult>, String> {
+    use tauri::Emitter;
+
+    // Resolve the OS Downloads folder up front — if we can't find it, refuse
+    // rather than silently dumping files into some fallback path.
+    let dest_dir = directories::UserDirs::new()
+        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
+        .ok_or_else(|| "Could not locate the OS Downloads folder on this machine.".to_string())?;
+    if !dest_dir.exists() {
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| format!("Could not create {}: {}", dest_dir.display(), e))?;
+    }
+
+    // Which components to fetch. Empty request → the full default infra set.
+    let mut components: Vec<String> = if software.is_empty() {
+        vec!["mysql".into(), "erlang".into(), "rabbitmq".into(), "rabbitmq-delayed-message-exchange".into()]
+    } else {
+        // Map friendly names ("MySQL", "RabbitMQ", …) to the manifest component
+        // ids used by oxygen. RabbitMQ implicitly pulls Erlang + the delayed
+        // exchange plugin — same rule the auto-installer uses.
+        let mut out: Vec<String> = Vec::new();
+        for s in &software {
+            match s.to_ascii_lowercase().as_str() {
+                "mysql" => out.push("mysql".into()),
+                "rabbitmq" => {
+                    out.push("erlang".into());
+                    out.push("rabbitmq".into());
+                    out.push("rabbitmq-delayed-message-exchange".into());
+                }
+                "erlang" => out.push("erlang".into()),
+                other => out.push(other.to_string()),
+            }
+        }
+        out
+    };
+    components.dedup();
+
+    // Build a GCS client + fetch the manifest once, then resolve every artifact.
+    let cred = crate::releases::get_credentials_path().map_err(|e| e.user_message())?;
+    let client = crate::releases::create_gcs_client(&cred)
+        .await
+        .map_err(|e| e.user_message())?;
+    let manifest = crate::releases::fetch_infra_manifest(&client)
+        .await
+        .map_err(|e| e.user_message())?;
+
+    let mut results: Vec<ManualDownloadResult> = Vec::new();
+
+    for component in &components {
+        let artifact = match crate::releases::resolve_infra_artifact(&manifest, component) {
+            Some(a) => a,
+            None => {
+                results.push(ManualDownloadResult {
+                    software: component.clone(),
+                    file: String::new(),
+                    path: String::new(),
+                    size_mb: 0.0,
+                    success: false,
+                    error: Some(format!(
+                        "'{}' is not in the infra manifest for this platform ({})",
+                        component,
+                        crate::releases::infra_platform_key()
+                    )),
+                });
+                continue;
+            }
+        };
+
+        let dest = dest_dir.join(&artifact.file);
+        let _ = app.emit(
+            "manual-infra-download-progress",
+            serde_json::json!({
+                "software": component,
+                "file": artifact.file,
+                "stage": "start",
+                "percent": 0u8,
+                "bytes_downloaded": 0u64,
+                "bytes_total": 0u64,
+            }),
+        );
+
+        // Throttle progress emits so we don't flood the UI on fast links —
+        // fire every ~2 % or on completion, whichever comes first.
+        let last = std::sync::atomic::AtomicU8::new(0);
+        let app_evt = app.clone();
+        let comp_evt = component.clone();
+        let file_evt = artifact.file.clone();
+        let dl = crate::releases::download_infra_artifact(
+            &client,
+            &artifact,
+            &dest,
+            move |done, total| {
+                let percent = if total > 0 {
+                    ((done as f64 / total as f64) * 100.0) as u8
+                } else {
+                    0
+                };
+                let prev = last.load(std::sync::atomic::Ordering::Relaxed);
+                if percent >= prev.saturating_add(2) || (total > 0 && done >= total) {
+                    last.store(percent, std::sync::atomic::Ordering::Relaxed);
+                    let _ = app_evt.emit(
+                        "manual-infra-download-progress",
+                        serde_json::json!({
+                            "software": comp_evt,
+                            "file": file_evt,
+                            "stage": "downloading",
+                            "percent": percent,
+                            "bytes_downloaded": done,
+                            "bytes_total": total,
+                        }),
+                    );
+                }
+            },
+        )
+        .await;
+
+        match dl {
+            Ok(()) => {
+                let size_mb = std::fs::metadata(&dest)
+                    .map(|m| m.len() as f64 / 1_048_576.0)
+                    .unwrap_or(0.0);
+                let path_str = dest.display().to_string();
+                let _ = app.emit(
+                    "manual-infra-download-progress",
+                    serde_json::json!({
+                        "software": component,
+                        "file": artifact.file,
+                        "stage": "completed",
+                        "percent": 100u8,
+                        "path": path_str,
+                    }),
+                );
+                results.push(ManualDownloadResult {
+                    software: component.clone(),
+                    file: artifact.file,
+                    path: path_str,
+                    size_mb,
+                    success: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = app.emit(
+                    "manual-infra-download-progress",
+                    serde_json::json!({
+                        "software": component,
+                        "file": artifact.file,
+                        "stage": "failed",
+                        "message": msg.clone(),
+                    }),
+                );
+                results.push(ManualDownloadResult {
+                    software: component.clone(),
+                    file: artifact.file,
+                    path: String::new(),
+                    size_mb: 0.0,
+                    success: false,
+                    error: Some(msg),
+                });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Step 2: Create MySQL databases for all Puru services
 #[tauri::command]
 pub async fn setup_create_databases() -> Result<(), String> {
@@ -1959,7 +2148,7 @@ fn rabbitmq_delayed_ez_present() -> bool {
 /// Version-agnostic — matches `RabbitMQ`, `RabbitMQ Server`, etc.
 #[cfg(target_os = "windows")]
 pub(crate) fn rabbitmq_service_name() -> Option<String> {
-    let out = std::process::Command::new("sc")
+    let out = crate::process::silent_std_cmd("sc")
         .args(["query", "state=", "all"])
         .output()
         .ok()?;
@@ -1978,6 +2167,77 @@ pub(crate) fn rabbitmq_service_name() -> Option<String> {
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn rabbitmq_service_name() -> Option<String> {
     None
+}
+
+/// Ensure the MySQL Windows service is running, waiting until the server
+/// accepts TCP on `mysql_host:mysql_port` (default 127.0.0.1:3306). Used both
+/// by setup steps and by the daemon's boot-time native startup — Puru services
+/// abort during init if MySQL isn't up. No-op if MySQL is already reachable.
+#[cfg(target_os = "windows")]
+pub(crate) async fn ensure_mysql_running() -> Result<(), String> {
+    // Read the configured host/port so we probe the *right* endpoint (a fleet
+    // machine might have MySQL on a non-default port).
+    let cfg = crate::config::load_config().ok();
+    let host = cfg
+        .as_ref()
+        .map(|c| c.mysql_host.clone())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = cfg.as_ref().map(|c| c.mysql_port).unwrap_or(3306);
+
+    fn tcp_up(host: &str, port: u16) -> bool {
+        use std::net::ToSocketAddrs;
+        (host, port)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .map(|addr| {
+                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(600))
+                    .is_ok()
+            })
+            .unwrap_or(false)
+    }
+
+    if tcp_up(&host, port) {
+        return Ok(());
+    }
+
+    // Discover the MySQL Windows service (name varies: MySQL, MySQL80, MySQL84…).
+    let svc = crate::installer::mysql_service_name().unwrap_or_else(|| "MySQL".to_string());
+    let _ = crate::process::silent_cmd("net")
+        .args(["start", &svc])
+        .output()
+        .await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if tcp_up(&host, port) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "MySQL did not accept connections on {}:{} within 60s (service '{}')",
+                host, port, svc
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) async fn ensure_mysql_running() -> Result<(), String> {
+    // On Unix, MySQL is under systemd/launchd and outside our control here.
+    // The caller can treat a Docker/container MySQL as always up.
+    Ok(())
+}
+
+/// Public wrapper so the daemon can call the Windows `ensure_rabbitmq_running`
+/// (which is defined below for target_os = "windows" only) uniformly.
+pub(crate) async fn ensure_rabbitmq_running_public() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    return ensure_rabbitmq_running().await;
+
+    #[cfg(not(target_os = "windows"))]
+    Ok(())
 }
 
 /// Start the RabbitMQ Windows service if it isn't running and wait for the node

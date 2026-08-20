@@ -829,12 +829,11 @@ pub async fn install_nucleus_update(file_path: &str) -> Result<String, NucleusEr
         "msi" => {
             // Spawn the MSI installer as a detached process so it can replace our binary
             // after we exit. Using cmd /c with a small delay to let us exit first.
-            use std::process::Command;
             let script = format!(
                 "timeout /t 3 /nobreak >nul & msiexec /i \"{}\" /quiet /norestart",
                 file_path
             );
-            Command::new("cmd")
+            crate::process::silent_std_cmd("cmd")
                 .args(["/C", &script])
                 .spawn()
                 .map_err(|e| NucleusError::Internal(format!("Failed to spawn installer: {}", e)))?;

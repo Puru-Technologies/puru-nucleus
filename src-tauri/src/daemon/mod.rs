@@ -25,10 +25,45 @@ pub async fn run_daemon() {
 
     tracing::info!("Daemon mode: port={}, auth={}", port, !daemon_cfg.api_key.is_empty());
 
+    // Single-instance guard #1 — OS-level lock. On Windows this is a *global*
+    // named mutex (`Global\PuruDCDaemon`) that survives across session/user
+    // boundaries, so a per-user `puru daemon` and the SYSTEM scheduled task
+    // can't both run. On Unix it's an flock on a lock file. Held for the whole
+    // process lifetime via the returned guard.
+    let _instance_lock = match single_instance::acquire() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!(
+                "Another puru-dc daemon is already running ({}). Exiting without starting background tasks.",
+                e
+            );
+            return;
+        }
+    };
+
+    // Single-instance guard #2 — bind the port BEFORE launching background
+    // tasks. Redundant with the OS lock but catches the case where a stale
+    // process still holds the port (e.g. crashed before releasing the mutex).
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(
+                "Daemon port {} already in use ({}). Another puru-dc daemon is running — exiting without starting background tasks.",
+                port, e
+            );
+            return;
+        }
+    };
+
     // Ensure the tray/GUI logon task exists (the daemon runs as SYSTEM and can
     // create it; a normal user can't). This is what makes the tray reliably
     // appear after a reboot instead of the daemon running "without a trace."
     crate::platform::ensure_gui_logon_task();
+
+    // Plant / refresh the operator's emergency stop-all script. Cheap; lets
+    // an operator kill every Puru JVM by hand if puru-dc itself is broken.
+    crate::emergency::ensure_emergency_stop_script(&config);
 
     // 2. Build shared state
     let state = Arc::new(AppState {
@@ -38,8 +73,62 @@ pub async fn run_daemon() {
         started_at_utc: chrono::Utc::now(),
     });
 
-    // 3. Start background tasks
+    // 3. Start background tasks (safe now — we own the port)
     let _handles = scheduler::start_all(&daemon_cfg, config.telemetry_enabled);
+
+    // 3a. Proactive boot pass — bring services up NOW instead of waiting for
+    // the watchdog's first 60-second tick. Spawned so the HTTP server can
+    // start serving immediately (a full boot start can take minutes:
+    // infra warm-up, then per-service startup).
+    //
+    // - **Docker mode**: wait for the Docker daemon, then `docker start` any
+    //   Puru container that isn't running. Docker's `restart: always` handles
+    //   the common case; this is a safety net for containers that exited
+    //   cleanly or a compose set to `restart: no`.
+    // - **Native mode**: ensure MySQL + RabbitMQ, then `sync_native_services`
+    //   (auth first, then everything else).
+    if config.deployment_mode == crate::config::DeploymentMode::Docker {
+        tokio::spawn(async {
+            tracing::info!("Daemon (docker): running proactive boot start");
+            crate::services::docker_boot_start().await;
+        });
+    } else if config.deployment_mode == crate::config::DeploymentMode::Native {
+        tokio::spawn(async move {
+            tracing::info!("Daemon (native): running proactive boot start");
+            match crate::commands::ensure_mysql_running().await {
+                Ok(_) => tracing::info!("Daemon (native): MySQL reachable"),
+                Err(e) => {
+                    tracing::error!(
+                        "Daemon (native): MySQL not reachable ({}). Aborting boot start — the watchdog will retry once MySQL is up.",
+                        e
+                    );
+                    return;
+                }
+            }
+            match crate::commands::ensure_rabbitmq_running_public().await {
+                Ok(_) => tracing::info!("Daemon (native): RabbitMQ reachable"),
+                Err(e) => {
+                    tracing::error!(
+                        "Daemon (native): RabbitMQ not reachable ({}). Aborting boot start — the watchdog will retry once RabbitMQ is up.",
+                        e
+                    );
+                    return;
+                }
+            }
+            match crate::commands::sync_native_services(None).await {
+                Ok(actions) => {
+                    let started = actions.iter().filter(|a| a.action == "started").count();
+                    let already = actions.iter().filter(|a| a.action == "already-running").count();
+                    let failed = actions.iter().filter(|a| a.action == "failed").count();
+                    tracing::info!(
+                        "Daemon (native): boot start complete — {} started, {} already running, {} failed",
+                        started, already, failed
+                    );
+                }
+                Err(e) => tracing::error!("Daemon (native): boot start failed: {}", e),
+            }
+        });
+    }
 
     // 4. Build router
     let app = Router::new()
@@ -136,17 +225,8 @@ pub async fn run_daemon() {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    // 5. Bind and serve
-    let addr = format!("0.0.0.0:{}", port);
+    // 5. Serve on the listener bound earlier (before scheduler start-up).
     tracing::info!("Daemon listening on http://{}", addr);
-
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("Failed to bind to port {}: {}. Is it already in use?", port, e);
-            return;
-        }
-    };
 
     // On Windows, spawned service processes (java -jar with redirected stdio)
     // inherit every inheritable handle — including this listening socket.
@@ -210,5 +290,128 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => tracing::info!("Received Ctrl-C, shutting down..."),
         _ = terminate => tracing::info!("Received SIGTERM, shutting down..."),
+    }
+}
+
+/// OS-level single-instance lock for the daemon. Held for the process lifetime
+/// via an RAII guard — dropping the guard releases the lock.
+///
+/// - **Windows**: a `Global\`-prefixed named mutex, so it's shared across
+///   session/user boundaries (the SYSTEM scheduled task and a per-user
+///   `puru daemon` share the same mutex namespace).
+/// - **Unix**: an exclusive flock on `<config_dir>/daemon.lock`.
+mod single_instance {
+    /// RAII guard — holds the underlying OS resource until dropped.
+    pub struct Guard {
+        #[cfg(windows)]
+        _handle: WindowsMutexGuard,
+        #[cfg(unix)]
+        _fd: UnixFlockGuard,
+    }
+
+    #[cfg(windows)]
+    pub fn acquire() -> Result<Guard, String> {
+        Ok(Guard { _handle: WindowsMutexGuard::acquire()? })
+    }
+
+    #[cfg(unix)]
+    pub fn acquire() -> Result<Guard, String> {
+        Ok(Guard { _fd: UnixFlockGuard::acquire()? })
+    }
+
+    // ── Windows named mutex ─────────────────────────────────────────────────
+    #[cfg(windows)]
+    pub struct WindowsMutexGuard {
+        handle: windows_sys::Win32::Foundation::HANDLE,
+    }
+
+    #[cfg(windows)]
+    impl WindowsMutexGuard {
+        fn acquire() -> Result<Self, String> {
+            use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+            use windows_sys::Win32::System::Threading::CreateMutexW;
+
+            // Try `Global\` first (visible across sessions + SYSTEM). If the
+            // caller lacks SeCreateGlobalPrivilege — a non-elevated user — we
+            // fall back to a Local mutex (session-scoped). Local still catches
+            // the common case of the same user launching the daemon twice; the
+            // port bind check catches cross-session conflicts we can't see.
+            for name_str in ["Global\\PuruDCDaemon\0", "Local\\PuruDCDaemon\0"] {
+                let name: Vec<u16> = name_str.encode_utf16().collect();
+                let handle = unsafe { CreateMutexW(std::ptr::null(), 1, name.as_ptr()) };
+                if handle.is_null() {
+                    // Access denied on Global — try Local. If Local also fails,
+                    // we surface the error.
+                    continue;
+                }
+                let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+                if already {
+                    unsafe { CloseHandle(handle) };
+                    return Err(format!("{} mutex already held", name_str.trim_end_matches('\0')));
+                }
+                return Ok(WindowsMutexGuard { handle });
+            }
+            Err("CreateMutexW failed for both Global and Local namespaces".to_string())
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for WindowsMutexGuard {
+        fn drop(&mut self) {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::ReleaseMutex;
+            unsafe {
+                let _ = ReleaseMutex(self.handle);
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+
+    // ── Unix flock ──────────────────────────────────────────────────────────
+    #[cfg(unix)]
+    pub struct UnixFlockGuard {
+        fd: std::os::unix::io::RawFd,
+    }
+
+    #[cfg(unix)]
+    impl UnixFlockGuard {
+        fn acquire() -> Result<Self, String> {
+            use std::os::unix::io::AsRawFd;
+
+            let dir = crate::config::config_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let lock_path = dir.join("daemon.lock");
+
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&lock_path)
+                .map_err(|e| format!("open {}: {}", lock_path.display(), e))?;
+            let fd = file.as_raw_fd();
+
+            // Non-blocking exclusive lock. Held for the process lifetime; the
+            // kernel releases it automatically on exit even if we crash before
+            // the Drop runs, which makes stale locks a non-issue.
+            let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+            if rc != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(format!("flock {}: {}", lock_path.display(), err));
+            }
+
+            // Leak the file so its fd stays open (and the lock stays held) for
+            // the rest of the process; we track the raw fd in the guard.
+            std::mem::forget(file);
+            Ok(UnixFlockGuard { fd })
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UnixFlockGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = libc::flock(self.fd, libc::LOCK_UN);
+                libc::close(self.fd);
+            }
+        }
     }
 }

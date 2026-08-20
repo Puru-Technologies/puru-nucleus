@@ -15,7 +15,7 @@ use crate::error::NucleusError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+use crate::process::silent_cmd;
 
 /// Where Nginx expects certs
 const NGINX_CERT_DIR: &str = "/etc/nginx/certs";
@@ -54,7 +54,7 @@ async fn find_mkcert() -> Result<String, NucleusError> {
     ];
 
     for path in &candidates {
-        let result = Command::new(path).arg("-version").output().await;
+        let result = silent_cmd(path).arg("-version").output().await;
         if result.is_ok() {
             return Ok(path.clone());
         }
@@ -77,7 +77,7 @@ pub async fn setup_tls(config: &NucleusConfig) -> Result<TlsSetupResult, Nucleus
     }
 
     // 1. Install local CA (creates rootCA.pem + rootCA-key.pem)
-    let output = Command::new(&mkcert)
+    let output = silent_cmd(&mkcert)
         .arg("-install")
         .output()
         .await
@@ -92,7 +92,7 @@ pub async fn setup_tls(config: &NucleusConfig) -> Result<TlsSetupResult, Nucleus
     }
 
     // 2. Find the CA root directory
-    let ca_root_output = Command::new(&mkcert)
+    let ca_root_output = silent_cmd(&mkcert)
         .arg("-CAROOT")
         .output()
         .await
@@ -113,7 +113,7 @@ pub async fn setup_tls(config: &NucleusConfig) -> Result<TlsSetupResult, Nucleus
     let temp_dir = std::env::temp_dir().join("puru-tls-gen");
     tokio::fs::create_dir_all(&temp_dir).await.ok();
 
-    let output = Command::new(&mkcert)
+    let output = silent_cmd(&mkcert)
         .current_dir(&temp_dir)
         .arg(server_ip)
         .arg("localhost")

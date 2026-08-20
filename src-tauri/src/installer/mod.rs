@@ -564,7 +564,7 @@ async fn do_install_mysql(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResu
             let svc = existing_service.unwrap_or_else(|| "MySQL".to_string());
             emit_progress(app, "MySQL", InstallStage::Installing, 40,
                 &format!("Starting existing MySQL service '{}'…", svc), 0, 0);
-            let _ = std::process::Command::new("net").args(["start", &svc]).output();
+            let _ = crate::process::silent_std_cmd("net").args(["start", &svc]).output();
             if wait_tcp(3306, 40) {
                 emit_progress(app, "MySQL", InstallStage::Completed, 100,
                     "Started existing MySQL (data + password left untouched)", 0, 0);
@@ -723,9 +723,9 @@ fn finalize_mysql_service(install_dir: &PathBuf, root_pw: &str) -> Result<(), St
     }
 
     // (Re)install and start the service. --remove/start may fail harmlessly.
-    let _ = std::process::Command::new(&mysqld).args(["--remove", "MySQL"]).output();
+    let _ = crate::process::silent_std_cmd(&mysqld).args(["--remove", "MySQL"]).output();
     run_ok(&mysqld, &["--install", "MySQL", &defaults], "mysqld --install")?;
-    let _ = std::process::Command::new("net").args(["start", "MySQL"]).output();
+    let _ = crate::process::silent_std_cmd("net").args(["start", "MySQL"]).output();
 
     // Wait for the server to actually accept connections (a fixed sleep is too
     // fragile on slow / AV-scanned machines).
@@ -852,7 +852,7 @@ fn extract_zip_stripped(zip_path: &PathBuf, dest: &PathBuf) -> Result<(), String
 /// Run a command, returning a rich error on non-zero exit.
 #[cfg(target_os = "windows")]
 fn run_ok<P: AsRef<std::ffi::OsStr>>(program: P, args: &[&str], label: &str) -> Result<(), String> {
-    let out = std::process::Command::new(program)
+    let out = crate::process::silent_std_cmd(program)
         .args(args)
         .output()
         .map_err(|e| format!("{}: could not run: {}", label, e))?;
@@ -964,7 +964,7 @@ fn verify_install_windows(software: &str) -> Option<String> {
         "MySQL" => {
             let dir = find_mysql_install_dir()?;
             let mysql_bin = dir.join("bin").join("mysql.exe");
-            let output = std::process::Command::new(&mysql_bin)
+            let output = crate::process::silent_std_cmd(&mysql_bin)
                 .arg("--version")
                 .output()
                 .ok()?;
@@ -978,7 +978,7 @@ fn verify_install_windows(software: &str) -> Option<String> {
             let erl = format!(r"{}\bin\erl.exe", ERLANG_INSTALL_DIR);
             if std::path::Path::new(&erl).exists() {
                 // Try to get actual version
-                let output = std::process::Command::new(&erl)
+                let output = crate::process::silent_std_cmd(&erl)
                     .args(["-eval", "erlang:display(erlang:system_info(otp_release)), halt().", "-noshell"])
                     .output()
                     .ok();
@@ -1000,7 +1000,7 @@ fn verify_install_windows(software: &str) -> Option<String> {
                     let name = entry.file_name().to_string_lossy().to_string();
                     if name.starts_with("rabbitmq_server-") {
                         let ctl = format!(r"{}\{}\sbin\rabbitmqctl.bat", rabbitmq_base, name);
-                        if let Ok(output) = std::process::Command::new(&ctl).arg("version").output() {
+                        if let Ok(output) = crate::process::silent_std_cmd(&ctl).arg("version").output() {
                             if output.status.success() {
                                 return extract_version(&String::from_utf8_lossy(&output.stdout));
                             }
@@ -1141,18 +1141,125 @@ async fn download_with_progress(
 
 #[cfg(target_os = "windows")]
 fn install_mysql_silent(installer_path: &PathBuf) -> Result<(), String> {
-    let output = std::process::Command::new("msiexec")
-        .args(["/i", installer_path.to_str().unwrap_or(""), "/quiet", "/norestart"])
+    // Ask msiexec to write a verbose log — without it, msiexec exit codes like
+    // 1603 ("Fatal error during installation") are opaque and give no clue what
+    // actually broke. We surface the log path (and a snippet) in the error.
+    let log_path = std::env::temp_dir().join(format!(
+        "puru-mysql-install-{}.log",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    ));
+
+    let output = crate::process::silent_std_cmd("msiexec")
+        .args([
+            "/i",
+            installer_path.to_str().unwrap_or(""),
+            "/qn",
+            "/norestart",
+            "/l*v",
+            log_path.to_str().unwrap_or(""),
+        ])
         .output()
         .map_err(|e| format!("Failed to run msiexec: {}", e))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("MySQL installer exited with code {:?}: {}", output.status.code(), stderr));
+        let code = output.status.code().unwrap_or_default();
+        return Err(explain_mysql_msi_error(code, &log_path));
     }
 
     // PATH is added by the caller after discovering the real install dir.
     Ok(())
+}
+
+/// Turn an msiexec exit code + verbose log into an actionable error message.
+/// 1603 ("Fatal error during installation") is the common one — the msi log's
+/// `Return value 3` marker is the *only* useful hint about which custom action
+/// or file operation actually failed, so we pull the surrounding lines into the
+/// error text and offer the operator two escape hatches (Install Manually, run
+/// the MSI by hand). Also names common root causes (missing VC++ runtime, no
+/// admin, previous partial uninstall).
+#[cfg(target_os = "windows")]
+fn explain_mysql_msi_error(exit_code: i32, log_path: &std::path::Path) -> String {
+    let snippet = read_msi_log_tail(log_path).unwrap_or_default();
+
+    let base = match exit_code {
+        1603 => "MySQL installer failed with error 1603 (\"Fatal error during installation\"). \
+                 Common causes: (a) the Microsoft Visual C++ 2019 x64 Redistributable is not installed \
+                 (grab it from https://aka.ms/vs/17/release/vc_redist.x64.exe and re-run); \
+                 (b) a previous MySQL install left leftovers in the registry / Program Files — \
+                 uninstall MySQL from Windows \"Apps & features\" and delete C:\\Program Files\\MySQL; \
+                 (c) msiexec isn't running elevated even though we thought it was.".to_string(),
+        1618 => "Another MSI install is already running on this machine. Wait for it to finish \
+                 (or reboot) and retry.".to_string(),
+        1619 => "msiexec could not open the downloaded MSI. Re-run \"Install Manually\" to fetch a \
+                 fresh copy to your Downloads folder and run it by hand.".to_string(),
+        1625 | 1638 => "Windows policy blocks this MSI, or a conflicting version is already \
+                        installed. Uninstall the existing MySQL and retry.".to_string(),
+        other => format!(
+            "MySQL installer exited with code {}. Fix: use the Setup screen's \"Install Manually\" \
+             button to save the MSI to your Downloads folder, then run it by hand — the interactive \
+             installer will show the real error dialog.",
+            other
+        ),
+    };
+
+    let mut msg = format!(
+        "{}\n\nAs a workaround, click \"Install Manually\" on the Setup screen — it downloads the MSI \
+         to your Downloads folder so you can run the interactive installer yourself.",
+        base
+    );
+    msg.push_str(&format!("\n\nFull msiexec log: {}", log_path.display()));
+    if !snippet.is_empty() {
+        msg.push_str("\n\nRelevant log lines:\n");
+        msg.push_str(&snippet);
+    }
+    msg
+}
+
+/// Extract the failing action from an msiexec verbose log. The convention is
+/// that MSI writes `Action ended <time>: <name>. Return value 3.` right after
+/// the CustomAction / file op that failed — that's the actual root cause. Grab
+/// ~20 lines of context around the first such marker, bounded so the error
+/// stays readable in a notification.
+#[cfg(target_os = "windows")]
+fn read_msi_log_tail(log_path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(log_path).ok()?;
+    // MSI logs are UTF-16 LE by default → try that if UTF-8 read yielded nulls.
+    let content = if content.contains('\0') {
+        let bytes = std::fs::read(log_path).ok()?;
+        if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+            let u16s: Vec<u16> = bytes[2..]
+                .chunks(2)
+                .filter(|c| c.len() == 2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            String::from_utf16_lossy(&u16s)
+        } else {
+            content
+        }
+    } else {
+        content
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let marker_idx = lines.iter().position(|l| l.contains("Return value 3"))?;
+    let start = marker_idx.saturating_sub(15);
+    let end = (marker_idx + 3).min(lines.len());
+    let mut out = String::new();
+    for line in &lines[start..end] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Cap each line so the message doesn't blow up.
+        if trimmed.len() > 240 {
+            out.push_str(&trimmed[..240]);
+            out.push('…');
+        } else {
+            out.push_str(trimmed);
+        }
+        out.push('\n');
+    }
+    Some(out)
 }
 
 /// Locate an existing MySQL install under `C:\Program Files\MySQL` by finding a
@@ -1199,7 +1306,7 @@ fn wait_tcp(port: u16, max_secs: u64) -> bool {
 /// via `sc query`. None if there is no MySQL service registered.
 #[cfg(target_os = "windows")]
 pub(crate) fn mysql_service_name() -> Option<String> {
-    let out = std::process::Command::new("sc")
+    let out = crate::process::silent_std_cmd("sc")
         .args(["query", "state=", "all"])
         .output()
         .ok()?;
@@ -1222,7 +1329,7 @@ pub(crate) fn mysql_service_name() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn install_erlang_silent(installer_path: &PathBuf) -> Result<(), String> {
-    let output = std::process::Command::new(installer_path)
+    let output = crate::process::silent_std_cmd(installer_path)
         .args(["/S", &format!("/D={}", ERLANG_INSTALL_DIR)])
         .output()
         .map_err(|e| format!("Failed to run Erlang installer: {}", e))?;
@@ -1238,7 +1345,7 @@ fn install_erlang_silent(installer_path: &PathBuf) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn install_rabbitmq_silent(installer_path: &PathBuf) -> Result<(), String> {
-    let output = std::process::Command::new(installer_path)
+    let output = crate::process::silent_std_cmd(installer_path)
         .args(["/S"])
         .output()
         .map_err(|e| format!("Failed to run RabbitMQ installer: {}", e))?;
@@ -1261,7 +1368,7 @@ fn install_rabbitmq_silent(installer_path: &PathBuf) -> Result<(), String> {
     }
 
     // Enable management plugin
-    let _ = std::process::Command::new("rabbitmq-plugins")
+    let _ = crate::process::silent_std_cmd("rabbitmq-plugins")
         .args(["enable", "rabbitmq_management"])
         .output();
 
@@ -1277,7 +1384,7 @@ fn add_to_system_path(new_path: &str) {
     // Read the *machine* PATH from the registry — NOT std::env PATH, which is the
     // process-merged system+user+session value; writing that back would promote
     // user/session entries into the system PATH.
-    let current = std::process::Command::new("reg")
+    let current = crate::process::silent_std_cmd("reg")
         .args(["query", KEY, "/v", "Path"])
         .output()
         .ok()
@@ -1307,14 +1414,14 @@ fn add_to_system_path(new_path: &str) {
     };
 
     // Write via `reg add` (REG_EXPAND_SZ) — no 1024-char truncation like setx /M.
-    let _ = std::process::Command::new("reg")
+    let _ = crate::process::silent_std_cmd("reg")
         .args(["add", KEY, "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", &newval, "/f"])
         .output();
 }
 
 #[cfg(target_os = "windows")]
 fn set_system_env(key: &str, value: &str) {
-    let _ = std::process::Command::new("setx")
+    let _ = crate::process::silent_std_cmd("setx")
         .args(["/M", key, value])
         .output();
 }

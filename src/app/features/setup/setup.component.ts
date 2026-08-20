@@ -2,7 +2,7 @@ import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult, InstallProgress, InstallResult } from '../../core/services/tauri.service';
+import { TauriService, NucleusConfig, PrerequisiteStatus, DetectionResult, InstallProgress, InstallResult, ManualDownloadProgress, ManualDownloadResult } from '../../core/services/tauri.service';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { NotificationService } from '../../core/services/notification.service';
 import { ConnectionService } from '../../core/services/connection.service';
@@ -270,20 +270,64 @@ interface SetupStep {
 
               <!-- Re-check / Install Missing Buttons -->
               <div class="prereq-actions">
-                @if (!installing) {
+                @if (!installing && !manualDownloading) {
                   <button class="btn btn-stroked" (click)="recheckPrerequisites()" [disabled]="recheckingPrereqs">
                     <span class="material-icons">{{ recheckingPrereqs ? 'hourglass_empty' : 'refresh' }}</span>
                     {{ recheckingPrereqs ? 'Checking...' : 'Re-check' }}
                   </button>
                 }
-                @if (installablePrereqs.length > 0 && !installing) {
+                @if (installablePrereqs.length > 0 && !installing && !manualDownloading) {
                   <button class="btn btn-primary" (click)="installMissing()">
                     <span class="material-icons">download</span>
                     Install {{ installableNames }}
                   </button>
-                  <span class="install-hint">Downloads and installs automatically.</span>
+                  <button class="btn btn-stroked" (click)="downloadInfraManually()"
+                          title="Save the installers to this machine's Downloads folder — run them yourself instead of the automated flow.">
+                    <span class="material-icons">save_alt</span>
+                    Install Manually
+                  </button>
+                  <span class="install-hint">Automated install, or download to Downloads folder.</span>
                 }
               </div>
+
+              <!-- Manual download progress -->
+              @if (manualDownloading && manualDownloadProgress) {
+                <div class="install-progress-card">
+                  <div class="install-progress-header">
+                    <span class="material-icons">{{ manualDownloadProgress.stage === 'completed' ? 'check_circle' : manualDownloadProgress.stage === 'failed' ? 'error' : 'downloading' }}</span>
+                    <span>
+                      <strong>{{ manualDownloadProgress.software }}:</strong>
+                      {{ manualDownloadProgress.file }}
+                      @if (manualDownloadProgress.bytes_total) {
+                        — {{ manualDownloadProgress.percent }}%
+                      }
+                    </span>
+                  </div>
+                  <div class="pbar"
+                    [class.indeterminate]="manualDownloadProgress.stage === 'start' || !manualDownloadProgress.bytes_total">
+                    <div class="pbar-fill" [style.width.%]="manualDownloadProgress.percent || 0"></div>
+                  </div>
+                </div>
+              }
+
+              <!-- Manual download results -->
+              @if (manualDownloadResults.length > 0 && !manualDownloading) {
+                <div class="install-results">
+                  @for (r of manualDownloadResults; track r.software) {
+                    <div class="install-result" [class.success]="r.success" [class.failure]="!r.success">
+                      <span class="material-icons">{{ r.success ? 'check_circle' : 'cancel' }}</span>
+                      <span>
+                        {{ r.software }}:
+                        @if (r.success) {
+                          Saved to {{ r.path }} ({{ r.size_mb.toFixed(1) }} MB)
+                        } @else {
+                          {{ r.error }}
+                        }
+                      </span>
+                    </div>
+                  }
+                </div>
+              }
 
               <!-- Install Progress -->
               @if (installing && installProgress) {
@@ -1277,6 +1321,9 @@ export class SetupComponent implements OnInit {
   recheckingPrereqs = false;
   installProgress: InstallProgress | null = null;
   installResults: InstallResult[] = [];
+  manualDownloading = false;
+  manualDownloadProgress: ManualDownloadProgress | null = null;
+  manualDownloadResults: ManualDownloadResult[] = [];
   detectionResult: DetectionResult | null = null;
   setupInProgress = false;
   setupComplete = false;
@@ -1627,6 +1674,48 @@ export class SetupComponent implements OnInit {
     } finally {
       if (unlisten) unlisten();
       this.installing = false;
+    }
+  }
+
+  /**
+   * Download the missing infra installers straight to the OS Downloads folder
+   * so the operator can run them by hand — useful when the automated silent
+   * install can't run (no admin, locked-down policy, air-gapped copy flows).
+   * No install happens here: it's just files on disk.
+   */
+  async downloadInfraManually(): Promise<void> {
+    const names = this.installablePrereqs.map(p => p.name);
+    if (names.length === 0) return;
+
+    this.manualDownloading = true;
+    this.manualDownloadProgress = null;
+    this.manualDownloadResults = [];
+
+    let unlisten: UnlistenFn | null = null;
+    try {
+      unlisten = await listen<ManualDownloadProgress>('manual-infra-download-progress', (event) => {
+        this.manualDownloadProgress = event.payload;
+      });
+
+      const results = await this.tauri.invoke<ManualDownloadResult[]>(
+        'download_prerequisites_to_downloads',
+        { software: names }
+      );
+      this.manualDownloadResults = results;
+
+      const okCount = results.filter(r => r.success).length;
+      if (okCount === results.length) {
+        this.notification.success(`Downloaded ${okCount} installer(s) to your Downloads folder`);
+      } else if (okCount > 0) {
+        this.notification.warning(`Downloaded ${okCount}/${results.length} installer(s); check errors below`);
+      } else {
+        this.notification.error('Manual download failed');
+      }
+    } catch (err: any) {
+      this.notification.error(String(err?.message || err || 'Manual download failed'));
+    } finally {
+      if (unlisten) unlisten();
+      this.manualDownloading = false;
     }
   }
 

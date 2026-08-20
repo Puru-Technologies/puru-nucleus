@@ -43,6 +43,17 @@ pub fn ensure_gui_logon_task() {
     windows::ensure_gui_logon_task();
 }
 
+/// True if the SYSTEM daemon boot task is currently registered with the
+/// platform's service manager. Cheap probe used at GUI startup to decide
+/// whether to reinstall a missing boot task.
+pub fn boot_task_installed() -> bool {
+    #[cfg(target_os = "windows")]
+    return windows::boot_task_installed();
+
+    #[cfg(not(target_os = "windows"))]
+    return true;
+}
+
 /// Install puru-dc as a system service (platform-specific).
 pub async fn install_service() -> Result<ServiceResult, String> {
     #[cfg(target_os = "linux")]

@@ -189,6 +189,28 @@ export interface InstallResult {
   error?: string;
 }
 
+/** One artifact downloaded by `download_prerequisites_to_downloads`. */
+export interface ManualDownloadResult {
+  software: string;
+  file: string;
+  path: string;
+  size_mb: number;
+  success: boolean;
+  error?: string;
+}
+
+/** Payload of the `manual-infra-download-progress` event. */
+export interface ManualDownloadProgress {
+  software: string;
+  file: string;
+  stage: 'start' | 'downloading' | 'completed' | 'failed';
+  percent?: number;
+  bytes_downloaded?: number;
+  bytes_total?: number;
+  path?: string;
+  message?: string;
+}
+
 export interface ServiceInfo {
   name: string;
   container_name: string;

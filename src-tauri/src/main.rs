@@ -25,6 +25,7 @@ mod services;
 mod releases;
 mod telemetry;
 mod docker_update;
+mod emergency;
 mod messaging;
 mod network;
 mod file_lock;
@@ -251,14 +252,21 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Register (idempotently) a per-user login autostart so the GUI — and thus the
 /// tray health indicator — comes back after a reboot, started minimized to the
-/// tray. Runs in the operator's user context (HKCU), which is where the tray
-/// must live; the daemon's boot task (SYSTEM) is separate and headless.
+/// tray. Runs in the operator's user context; the daemon's boot task (SYSTEM)
+/// is separate and headless.
+///
+/// Also self-heals two things on GUI startup so a fresh MSI install "just works"
+/// after reboot:
+///   1. **GUI logon task** — normally created by the SYSTEM daemon; created here
+///      too so the tray reappears at next login even if the daemon has never run.
+///   2. **Daemon boot task** — reinstalled if the setup wizard has completed but
+///      the task is missing (setup wiped, MSI reinstalled, admin unregistered
+///      it, …). Requires elevation; silently skipped otherwise (the operator
+///      will see the daemon-down badge in the tray and can re-run setup).
 #[cfg(target_os = "windows")]
 fn ensure_login_autostart() {
-    // Autostart is now a delayed logon scheduled task (PuruDCGui) created by the
-    // SYSTEM daemon — the HKCU Run key fired too early at boot for the tray to
-    // register, so the GUI exited and left no tray. Remove any legacy Run-key
-    // entry so we don't double-launch.
+    // Remove any legacy HKCU Run entry from earlier releases so we don't
+    // double-launch the tray (the current autostart is a scheduled task).
     let _ = crate::process::silent_std_cmd("reg")
         .args([
             "delete",
@@ -268,12 +276,61 @@ fn ensure_login_autostart() {
             "/f",
         ])
         .output();
+
+    // Always try to plant the per-user tray/GUI logon task — cheap, idempotent,
+    // and the whole reason the tray comes back after login. If the daemon has
+    // been running as SYSTEM it will already exist; this covers the "daemon
+    // never ran" case so operators are never left without a tray.
+    crate::platform::ensure_gui_logon_task();
+
+    // (Re)write the emergency stop-all script alongside the config, so an
+    // operator can kill every Puru JVM by hand if puru-dc itself is broken.
+    // The daemon also does this on boot; the GUI covers the "daemon never
+    // ran" case (first launch, or daemon crashed on startup).
+    if let Ok(cfg) = crate::config::load_config() {
+        crate::emergency::ensure_emergency_stop_script(&cfg);
+    }
+
+    // Self-heal the daemon boot task if setup has completed but the task is
+    // gone. Only attempt when elevated — otherwise `schtasks /Create` for a
+    // SYSTEM principal is denied, which would just produce noisy failures.
+    let setup_done = crate::config::load_config()
+        .map(|c| c.setup_completed)
+        .unwrap_or(false);
+    if setup_done
+        && !crate::platform::boot_task_installed()
+        && crate::commands::is_elevated()
+    {
+        tracing::info!("Daemon boot task missing after setup — reinstalling");
+        // `platform::install_service` is async; spin a short-lived runtime
+        // rather than blocking Tauri's main setup callback. Failure is logged
+        // and shrugged off; the operator can re-run Setup manually.
+        std::thread::spawn(|| {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            match rt.block_on(crate::platform::install_service()) {
+                Ok(r) => tracing::info!("Boot task self-heal: {}", r.message),
+                Err(e) => tracing::warn!("Boot task self-heal failed: {}", e),
+            }
+        });
+    }
 }
 #[cfg(not(target_os = "windows"))]
 fn ensure_login_autostart() {}
 
 fn run_gui(minimized: bool) {
     tauri::Builder::default()
+        // Single-instance: if the operator (or an autostart chain) launches
+        // puru-dc a second time, hand its args to the already-running instance
+        // and exit this one. The `_argv` / `_cwd` callback fires *inside the
+        // first* process, so we take that as our cue to reveal the existing
+        // window instead of quietly ignoring it.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tracing::info!("Second instance blocked — focusing the running window");
+            show_main(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
@@ -369,6 +426,7 @@ fn run_gui(minimized: bool) {
             commands::log_error,
             // Setup
             commands::install_prerequisites,
+            commands::download_prerequisites_to_downloads,
             commands::setup_check_prerequisites,
             commands::setup_create_databases,
             commands::setup_configure_rabbitmq,
