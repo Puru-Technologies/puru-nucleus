@@ -1,6 +1,6 @@
 {
   "name": "puru-dc",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "Control center for Puru hospital deployments",
   "author": "Puru Labs Private Limited",
   "license": "Proprietary",
