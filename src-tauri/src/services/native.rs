@@ -541,6 +541,12 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
 
     // Write PID file
     if let Some(pid) = child.id() {
+        // Bind the JVM to our lifetime before anything else. If puru-dc is
+        // force-killed or quarantined, this JVM goes with it instead of
+        // lingering as an orphan that holds the port and answers health checks
+        // with nothing supervising it.
+        crate::process::tie_to_supervisor_lifetime(pid);
+
         let pid_file = pid_path(config, name);
         std::fs::write(&pid_file, pid.to_string())?;
         tracing::info!("Started {} (PID {})", name, pid);

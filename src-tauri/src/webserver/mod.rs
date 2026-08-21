@@ -371,11 +371,18 @@ pub async fn start(config: &NucleusConfig) -> Result<(), NucleusError> {
         )));
     }
 
-    crate::process::silent_cmd(&exe)
+    let child = crate::process::silent_cmd(&exe)
         .current_dir(&dir)
         .args(["-p", &fwd(&dir), "-c", &fwd(&conf)])
         .spawn()
         .map_err(|e| NucleusError::Internal(format!("Failed to start nginx: {}", e)))?;
+
+    // nginx forks worker processes; the master is what we assign, and the
+    // workers inherit the job, so the whole web tier dies with puru-dc rather
+    // than holding port 80 against the next start.
+    if let Some(pid) = child.id() {
+        crate::process::tie_to_supervisor_lifetime(pid);
+    }
 
     tracing::info!("nginx started on port {}", HTTP_PORT);
     Ok(())
