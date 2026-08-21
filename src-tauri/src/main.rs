@@ -320,7 +320,104 @@ fn ensure_login_autostart() {
 #[cfg(not(target_os = "windows"))]
 fn ensure_login_autostart() {}
 
+/// Holds the GUI single-instance mutex for the life of the process. Windows
+/// releases the handle on process teardown regardless, so even a hard kill frees
+/// the lock — the explicit release just makes a clean exit deterministic.
+#[cfg(target_os = "windows")]
+struct GuiInstanceLock(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for GuiInstanceLock {
+    fn drop(&mut self) {
+        // Null means we never actually got a mutex (CreateMutexW failed and we
+        // chose to start anyway) — closing a null handle raises under a debugger.
+        if self.0.is_null() {
+            return;
+        }
+        unsafe {
+            windows_sys::Win32::System::Threading::ReleaseMutex(self.0);
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// Claim the "one GUI at a time" lock, or `None` if another GUI genuinely holds it.
+///
+/// Why a mutex and not just the single-instance plugin: the plugin finds the
+/// first instance through a hidden window and `SendMessage`, and **UIPI blocks
+/// window messages from a lower to a higher integrity process**. So after
+/// `restart_as_admin` relaunches us elevated, the new instance cannot see the
+/// old medium-integrity one and both keep running. Kernel objects aren't subject
+/// to UIPI, so a named mutex sees across the boundary the plugin can't.
+///
+/// `Local\` (session) namespace, not `Global\`: the broken case is two instances
+/// in the *same* session at different integrity levels, which `Local\` covers,
+/// while `Global\` needs `SeCreateGlobalPrivilege` — which standard users don't
+/// hold, so it would fail exactly where it's needed.
+///
+/// On contention we **wait** instead of exiting at once. `restart_as_admin`
+/// spawns the elevated copy and only then exits the old one, so the two overlap
+/// by design; a fail-fast lock would make the elevated instance give up
+/// mid-handoff and the app would appear to just close. A bounded wait rides out
+/// the handoff while still refusing a real duplicate.
+#[cfg(target_os = "windows")]
+fn acquire_gui_instance_lock() -> Option<GuiInstanceLock> {
+    use windows_sys::Win32::Foundation::{
+        GetLastError, CloseHandle, ERROR_ALREADY_EXISTS, WAIT_ABANDONED, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+
+    /// How long to let an in-flight elevation handoff finish before calling it a
+    /// duplicate.
+    const HANDOFF_WAIT_MS: u32 = 15_000;
+
+    // UTF-16, NUL-terminated.
+    let name: Vec<u16> = "Local\\PuruDC-GUI\0".encode_utf16().collect();
+
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 1 /* take ownership */, name.as_ptr());
+        if handle.is_null() {
+            // Can't create the lock at all — don't punish the user by refusing to
+            // start; fall back to the plugin's guard alone.
+            tracing::warn!("GUI instance lock: CreateMutexW failed ({}), continuing", GetLastError());
+            return Some(GuiInstanceLock(handle));
+        }
+
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return Some(GuiInstanceLock(handle)); // uncontended — we own it
+        }
+
+        // Someone else holds it. Wait for them to go away (elevation handoff), or
+        // conclude this really is a second GUI.
+        tracing::info!("GUI instance lock held — waiting up to {}ms for handoff", HANDOFF_WAIT_MS);
+        match WaitForSingleObject(handle, HANDOFF_WAIT_MS) {
+            // WAIT_ABANDONED is the *normal* outcome here: the previous owner was
+            // terminated rather than releasing cleanly, which is exactly what
+            // `app.exit(0)` looks like. It still transfers ownership to us.
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(GuiInstanceLock(handle)),
+            _ => {
+                CloseHandle(handle);
+                None
+            }
+        }
+    }
+}
+
 fn run_gui(minimized: bool) {
+    // One GUI per session. Bound to a named local so it lives until the process
+    // exits — `let _ = ...` would drop it immediately and release the lock.
+    #[cfg(target_os = "windows")]
+    let _instance_lock = match acquire_gui_instance_lock() {
+        Some(lock) => lock,
+        None => {
+            // Nothing to focus from here: UIPI blocks us from raising a window
+            // owned by a higher-integrity instance, which is the case that got us
+            // here. Exiting quietly still beats a duplicate tray icon.
+            tracing::warn!("Another puru-dc GUI is already running — exiting this instance");
+            return;
+        }
+    };
+
     tauri::Builder::default()
         // Single-instance: if the operator (or an autostart chain) launches
         // puru-dc a second time, hand its args to the already-running instance
