@@ -30,6 +30,21 @@ fn xml_escape(s: &str) -> String {
 pub async fn install() -> Result<ServiceResult, String> {
     let exe_path = get_exe_path()?;
 
+    // Register Defender exclusions FIRST. Creating a SYSTEM boot task and then
+    // spawning JVMs is exactly the behaviour `Behavior:Win32/Persistence.A!ml`
+    // looks for, and an unsigned binary has no reputation to offset it — on
+    // 2026-08-21 Defender quarantined puru-dc.exe, both shortcuts and this very
+    // task on a live hospital box. The exclusion must be in place *before* the
+    // persistence write below, or Defender is already watching when it happens.
+    // A refusal is surfaced, never swallowed: an install that silently lacks the
+    // exclusion is one that disappears a few minutes after the next reboot.
+    let exclusions = super::defender::ensure_exclusions().await;
+    if exclusions.needs_operator_action() {
+        tracing::warn!("Defender exclusion not registered: {}", exclusions.summary());
+    } else {
+        tracing::info!("{}", exclusions.summary());
+    }
+
     // Full task definition (Task Scheduler 1.2 schema). S-1-5-18 = LocalSystem.
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
@@ -117,8 +132,9 @@ pub async fn install() -> Result<ServiceResult, String> {
     Ok(ServiceResult {
         success: true,
         message: format!(
-            "{} installed — starts at boot as SYSTEM and auto-restarts on failure.",
-            DISPLAY_NAME
+            "{} installed — starts at boot as SYSTEM and auto-restarts on failure. {}",
+            DISPLAY_NAME,
+            exclusions.summary()
         ),
     })
 }
@@ -294,12 +310,20 @@ pub async fn status() -> Result<ServiceStatus, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
     if !output.status.success() || stdout.contains("does not exist") || stdout.contains("cannot find") {
+        // A missing boot task is ambiguous: never installed, or Defender removed
+        // it. Those need opposite responses, and the second leaves nothing in our
+        // own logs — the daemon is simply gone. Ask Defender directly so the
+        // operator gets the real reason instead of "not installed".
+        let detail = match super::defender::recent_detection().await {
+            Some(diagnosis) => diagnosis,
+            None => "Daemon not installed.".to_string(),
+        };
         return Ok(ServiceStatus {
             installed: false,
             running: false,
             enabled: false,
             pid: None,
-            detail: "Daemon not installed.".to_string(),
+            detail,
         });
     }
 

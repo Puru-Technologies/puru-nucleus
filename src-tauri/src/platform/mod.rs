@@ -5,11 +5,14 @@
 //! - **macOS**: launchd plist
 //! - **Windows**: Windows Service via sc.exe
 
+pub mod defender;
 mod linux;
 mod macos;
 mod windows;
 
 use serde::{Deserialize, Serialize};
+
+pub use defender::ExclusionOutcome;
 
 /// Service installation/management result
 #[derive(Debug, Clone, Serialize, Deserialize)]

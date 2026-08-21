@@ -561,6 +561,7 @@ async fn watchdog_loop() {
     let mut alerted_services: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut disk_alerted = false;
     let mut ram_alerted = false;
+    let mut boot_task_alerted = false;
 
     let mut tick = tokio::time::interval(interval);
     // Skip the first immediate tick
@@ -591,6 +592,39 @@ async fn watchdog_loop() {
                 }
                 Err(e) => tracing::debug!("Heartbeat: Firestore unavailable: {}", e),
             }
+        }
+
+        // ── Boot task still there? ──────────────────────────────────────
+        // We are running, so the task that starts us was registered at some
+        // point. If it has since vanished, something external deleted it —
+        // in practice Defender quarantining puru-dc for Persistence.A!ml. The
+        // damage is invisible until the next reboot, when nothing starts at
+        // all, so this is the one chance to report it while we can still
+        // reach Firestore. Alert once; re-arm if it comes back.
+        if !crate::platform::boot_task_installed() {
+            if !boot_task_alerted {
+                let detail = crate::platform::defender::recent_detection()
+                    .await
+                    .unwrap_or_else(|| {
+                        "The PuruDC boot task is no longer registered. The daemon will \
+                         not start after the next reboot. Re-run `puru service install` \
+                         from an elevated prompt."
+                            .to_string()
+                    });
+                push_watchdog_alert(
+                    &config.hospital_code,
+                    "critical",
+                    "boot_task_missing",
+                    "Daemon boot task disappeared",
+                    &detail,
+                )
+                .await;
+                tracing::error!("Watchdog: boot task missing — {}", detail);
+                boot_task_alerted = true;
+            }
+        } else if boot_task_alerted {
+            boot_task_alerted = false;
+            tracing::info!("Watchdog: boot task is registered again");
         }
 
         // ── Service health check & auto-restart ─────────────────────────
