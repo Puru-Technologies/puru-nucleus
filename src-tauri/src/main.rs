@@ -560,6 +560,10 @@ fn run_gui(minimized: bool, elevated_restart: bool) {
             commands::download_service_update,
             commands::apply_service_update,
             commands::discard_service_update,
+            commands::get_jar_manifest,
+            commands::list_locking_processes,
+            commands::force_free_and_restart,
+            commands::rollback_native_service_to,
             commands::control_infra_service,
             commands::get_infra_log,
             // Native Setup Steps

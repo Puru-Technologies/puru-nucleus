@@ -1,7 +1,7 @@
 //! CLI command execution — dispatches clap commands to service/backup/detection functions
 //! and renders output with colored tables.
 
-use crate::cli::{BackupArgs, BackupCommands, BinlogArgs, BinlogCommands, Commands, LogFileArgs, LogFileCommands, RestoreArgs, ServiceArgs, ServiceCommands};
+use crate::cli::{BackupArgs, BackupCommands, BinlogArgs, BinlogCommands, Commands, JarsArgs, JarsCommands, LogFileArgs, LogFileCommands, RestoreArgs, ServiceArgs, ServiceCommands};
 use crate::releases;
 use crate::network;
 use crate::config;
@@ -30,7 +30,8 @@ pub async fn run(command: Commands) {
         Commands::PullJars { services } => cmd_pull_jars(&services).await,
         Commands::JarUpdates => cmd_jar_updates().await,
         Commands::Update { service } => cmd_update(&service).await,
-        Commands::Rollback { service } => cmd_rollback(&service).await,
+        Commands::Rollback { service, to } => cmd_rollback(&service, to.as_deref()).await,
+        Commands::Jars(args) => cmd_jars(args).await,
         Commands::Seed { db, queues, templates } => cmd_seed(db, queues, templates).await,
         Commands::SeedMasterData { radiology } => cmd_seed_master_data(radiology).await,
         Commands::Version => cmd_version(),
@@ -1488,15 +1489,128 @@ async fn cmd_update(service: &str) {
     }
 }
 
-async fn cmd_rollback(service: &str) {
+async fn cmd_rollback(service: &str, to: Option<&str>) {
     println!();
-    println!("  Rolling back {} ...", service.cyan().bold());
+    match to {
+        Some(target) => {
+            println!(
+                "  Rolling back {} to {} ...",
+                service.cyan().bold(),
+                target.cyan()
+            );
+            match services::rollback_native_service_to(service, target).await {
+                Ok(()) => println!(
+                    "\n  {} Rolled back {} to {}\n",
+                    "✓".green().bold(),
+                    service,
+                    target
+                ),
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => {
+            println!("  Rolling back {} ...", service.cyan().bold());
+            match services::rollback_native_service(service).await {
+                Ok(()) => println!(
+                    "\n  {} Rolled back {} to previous JAR\n",
+                    "✓".green().bold(),
+                    service
+                ),
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
 
-    match services::rollback_native_service(service).await {
-        Ok(()) => {
-            println!();
-            println!("  {} Rolled back {} to previous JAR", "✓".green().bold(), service);
-            println!();
+// ── Jars (manifest info + GC) ───────────────────────────────────────────────
+
+async fn cmd_jars(args: JarsArgs) {
+    match args.command {
+        JarsCommands::Info { service } => cmd_jars_info(&service).await,
+        JarsCommands::Gc { service } => cmd_jars_gc(&service).await,
+    }
+}
+
+async fn cmd_jars_info(service: &str) {
+    let cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+    let manifest = crate::services::jar_manifest::JarManifest::read(&cfg.jars_dir(), service);
+
+    println!();
+    println!("{}", format!("JAR manifest — {}", service).green().bold());
+    println!("{}", "=".repeat(60));
+    println!("Updated: {}", manifest.updated_at);
+    println!();
+
+    let render = |label: &str, e: Option<&crate::services::jar_manifest::JarEntry>| {
+        print!("  {:<10}", label);
+        match e {
+            Some(e) => println!(
+                "{}  sha={}  java={}  {:.1} MB",
+                e.file.cyan(),
+                e.short_sha,
+                e.java_version,
+                e.size_mb
+            ),
+            None => println!("{}", "(none)".dimmed()),
+        }
+    };
+    render("Active:", manifest.active.as_ref());
+    render("Pending:", manifest.pending.as_ref());
+    if manifest.pending.is_some() {
+        println!(
+            "  {}",
+            "→ pending entry present — will be promoted on next start".yellow()
+        );
+    }
+    println!();
+    println!("  History ({}):", manifest.history.len());
+    if manifest.history.is_empty() {
+        println!("    {}", "(no previous versions)".dimmed());
+    } else {
+        for (i, e) in manifest.history.iter().enumerate() {
+            println!(
+                "    {:>2}. {}  sha={}  {:.1} MB",
+                i + 1,
+                e.file.cyan(),
+                e.short_sha,
+                e.size_mb
+            );
+        }
+    }
+    println!();
+}
+
+async fn cmd_jars_gc(service: &str) {
+    let cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+    let jars_dir = cfg.jars_dir();
+    let mut manifest = crate::services::jar_manifest::JarManifest::read(&jars_dir, service);
+    match manifest.gc(&jars_dir, cfg.jar_history_keep).await {
+        Ok(n) => {
+            println!(
+                "\n  {} Removed {} old JAR(s) for {} (kept last {})\n",
+                "✓".green().bold(),
+                n,
+                service,
+                cfg.jar_history_keep
+            );
         }
         Err(e) => {
             eprintln!("{} {}", "Error:".red().bold(), e);
@@ -1528,6 +1642,7 @@ async fn cmd_info() {
     } else {
         table.add_row(vec!["JARs Dir", &cfg.jars_dir().display().to_string()]);
         table.add_row(vec!["JREs Dir", &cfg.jres_dir().display().to_string()]);
+        table.add_row(vec!["JAR History Keep", &cfg.jar_history_keep.to_string()]);
         table.add_row(vec!["Native Logs", &cfg.native_logs_dir().display().to_string()]);
     }
     table.add_row(vec![

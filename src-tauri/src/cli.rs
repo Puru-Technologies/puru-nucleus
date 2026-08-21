@@ -136,11 +136,19 @@ pub enum Commands {
         service: String,
     },
 
-    /// Rollback a native service to its previous JAR
+    /// Rollback a native service one step in its manifest history (or to a
+    /// specific historical JAR file with `--to`)
     Rollback {
         /// Service name (e.g. puru-has)
         service: String,
+        /// Optional: roll back to this specific historical JAR filename
+        /// (must appear in `manifest.history` — use `puru info <svc>` to list)
+        #[arg(long)]
+        to: Option<String>,
     },
+
+    /// Manage the per-service JAR history (list, prune)
+    Jars(JarsArgs),
 
     /// Seed databases, RabbitMQ queues, and report templates for a fresh install
     Seed {
@@ -167,6 +175,27 @@ pub enum Commands {
 
     /// Run in daemon mode (background service)
     Daemon,
+}
+
+#[derive(Args)]
+pub struct JarsArgs {
+    #[command(subcommand)]
+    pub command: JarsCommands,
+}
+
+#[derive(Subcommand)]
+pub enum JarsCommands {
+    /// Show the JAR manifest for a service (active + pending + history)
+    Info {
+        /// Service name (e.g. puru-has)
+        service: String,
+    },
+    /// Prune old JAR versions per `jar_history_keep` (defaults to 3).
+    /// Never removes the currently-active or pending JAR.
+    Gc {
+        /// Service name (e.g. puru-has)
+        service: String,
+    },
 }
 
 #[derive(Args)]

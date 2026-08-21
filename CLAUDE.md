@@ -78,9 +78,11 @@ platform/                   System service management
   linux.rs                  systemd unit file management
   macos.rs                  launchd plist management
   windows.rs                Windows Service via sc.exe
-releases/mod.rs             Version checking and update downloads
+releases/mod.rs             Version checking, JAR download to versioned filenames, GCS/JRE management
 remote_shell/mod.rs         Audited command execution with allowlist
-services/mod.rs             Docker service management via bollard
+services/mod.rs             Service management (Docker + native dispatchers)
+  services/native.rs        Native JAR process management (start/stop/update/rollback/GC)
+  services/jar_manifest.rs  Per-service JAR manifest — fail-safe journal for native-mode updates
 telemetry/mod.rs            System metrics (CPU, RAM, disk, services)
 daemon/
   mod.rs                    Axum HTTP server setup with graceful shutdown
@@ -88,7 +90,9 @@ daemon/
   routes.rs                 REST API route handlers
   scheduler.rs              Background tasks (backup, telemetry, commands, messages, watchdog, LAN binlog)
   commands.rs               Command queue processor
-commands/mod.rs             ~45 Tauri IPC command handlers
+commands/mod.rs             ~50 Tauri IPC command handlers (includes get_jar_manifest,
+                            list_locking_processes, force_free_and_restart,
+                            rollback_native_service_to for the manifest-driven update flow)
 ```
 
 ### Angular Frontend (src/app/)
@@ -110,7 +114,9 @@ core/
 features/
   activation/               License activation (Firestore email lookup)
   dashboard/                Hospital overview (license status, system stats)
-  services/                 Docker service management (start/stop/restart)
+  services/                 Service management (start/stop/restart + native JAR update/apply/rollback,
+                            with manifest-driven pending/history hooks: loadManifest,
+                            loadLockingProcesses, forceFreeAndRestart, rollbackToVersion)
   backups/                  Backup management + history
   alerts/                   Alert display + acknowledgment
   inbox/                    Hospital inbox (messages from admin)
@@ -120,6 +126,45 @@ features/
   setup/                    9-step installation wizard
   remote-shell/             Remote command execution with audit log
 ```
+
+### Native-Mode JAR Management (fail-safe manifest)
+
+Native mode (`deployment_mode = "native"`) runs Spring Boot services as `java -jar` child processes instead of Docker containers. JAR updates use a **versioned-filename + manifest** scheme so that a mid-update crash never leaves disk state broken — the next `start_service` reconciles and completes any in-flight promotion automatically. This solves the Windows "JAR is busy" class of failures (JVM keeps the JAR memory-mapped after `taskkill /F`, blocking rename).
+
+**On-disk layout** (per service, under `jars_dir` — default `C:\PuruNucleus\jars`):
+```
+puru-auth_20260822-143022-abc1234.jar   # active (currently launched)
+puru-auth_20260821-091510-def4567.jar   # previous (history[0], for rollback)
+puru-auth_20260820-100000-ghi7890.jar   # older (pruned by jar_history_keep)
+puru-auth_20260822-143022-abc1234.jar.meta.json  # GCS build metadata sidecar
+puru-auth.manifest.json                  # source of truth — read on every start
+```
+
+**Manifest fields:**
+- `active` — the JAR `start_service()` launches (immutable pointer between promotions).
+- `pending` — a downloaded-but-not-yet-promoted JAR. Set at end of download BEFORE any process is stopped. Its presence is the durable intent that survives a crash.
+- `history` — newest-first list of prior actives; feeds the rollback picker.
+
+**Recovery table** (`JarManifest::recover_on_start`, called on every start):
+| manifest.active | manifest.pending | on-disk pending | action |
+|-----------------|------------------|-----------------|--------|
+| set, file OK | none | — | launch active (normal) |
+| set | set, file exists | present | promote → launch (crashed mid-apply) |
+| set | set | missing | clear pending, launch active (crashed mid-download) |
+| missing, history OK | — | — | rollback to history[0], launch |
+| missing, no history | none | — | Err "no active JAR — re-pull" |
+
+**Key files:**
+- `src-tauri/src/services/jar_manifest.rs` — `JarManifest`, `JarEntry`, `make_versioned_filename`, `recover_on_start`, `promote_pending`, `rollback_one`/`rollback_to`, `gc`. 10 unit tests.
+- `src-tauri/src/releases/mod.rs` — `pull_jar_progress` writes to fresh timestamped filename + sets `pending` in manifest. `stage_jar_progress` is an alias.
+- `src-tauri/src/services/native.rs` — `start_service` runs `recover_on_start` before launching; `update_service_progress` does download → stop → best-effort `free_file` → start (start does the promotion); `rollback_service` and `rollback_service_to` are pure manifest pointer swaps (no file rename).
+- `src-tauri/src/file_lock/mod.rs` — Windows Restart Manager wrapper (`processes_locking`, `free_file`); no-op on non-Windows.
+
+**Config knobs:**
+- `jar_history_keep` (default 3) — how many previous JAR versions to retain per service for rollback. Older files are GC'd after each successful update.
+
+**Config gotcha:**
+- `jars_dir` layout is service-namespaced by filename prefix (`{service}_...jar`). The prefix scan in `JarManifest::gc` uses `{service}_` — safe today because no two service names share a prefix ending at `_`.
 
 ### Daemon REST API (port 9090)
 
@@ -140,8 +185,10 @@ features/
 | GET | `/api/backup/schedule` | Get backup schedule |
 | PUT | `/api/backup/schedule` | Update backup schedule |
 | GET | `/api/updates/check` | Check for updates |
-| POST | `/api/updates/:service` | Update a service |
-| POST | `/api/rollback/:service` | Rollback a service |
+| POST | `/api/updates/:service` | Update a service (native: manifest-driven, fail-safe) |
+| POST | `/api/rollback/:service` | Rollback a service (native: pointer swap in manifest) |
+| POST | `/api/jars/update/:service` | Native JAR update (versioned filename + manifest.pending) |
+| POST | `/api/jars/rollback/:service` | Native JAR rollback |
 | POST | `/api/exec` | Execute shell command |
 | GET | `/api/exec/history` | Shell audit log |
 | GET | `/api/exec/allowed` | Allowed shell commands |
@@ -173,9 +220,18 @@ puru service uninstall      Remove system service
 puru service start          Start system service
 puru service stop           Stop system service
 puru service status         Show system service status
-puru info                   Show configuration
+puru info                   Show configuration (surfaces jar_history_keep in native mode)
 puru version                Show version
 puru daemon                 Run daemon mode
+
+# Native-mode JAR management (available only when deployment_mode = "native")
+puru pull-jars [all|<svc>]         Download JARs from GCS (writes to versioned filename + manifest.pending)
+puru jar-updates                   Check for newer builds vs current manifest.active
+puru update <service>              Download → stop → start (one-shot; fail-safe via manifest.pending)
+puru rollback <service>            Roll back one step in manifest history (pointer swap, no file rename)
+puru rollback <service> --to <file>  Roll back to a specific historical JAR (must appear in manifest.history)
+puru jars info <service>           Show manifest (active + pending + history) for a service
+puru jars gc <service>             Prune old JAR versions to jar_history_keep (never removes active/pending)
 ```
 
 ### Daemon Background Tasks (scheduler.rs)
@@ -229,6 +285,11 @@ mysql_password = ""
 auto_update_enabled = true
 release_channel = "stable"
 
+# Native-mode: how many previous JAR versions to retain per service for rollback.
+# Older versioned JARs are deleted by the manifest GC after each successful update.
+# `0` still keeps the currently-active JAR; only history is trimmed.
+jar_history_keep = 3
+
 [daemon]
 port = 9090
 api_key = "secret"
@@ -251,6 +312,45 @@ auto_tune = true
 exit_on_oom = false
 ```
 
+## Windows Build & Deploy Notes
+
+The Windows `.exe` (Tauri bundle + Wix MSI) is the primary shipping target. Build steps:
+
+```powershell
+# Prerequisites (one-time, on the Windows build box):
+#   - Rust 1.70+ (rustup)
+#   - Node.js 18+
+#   - WebView2 runtime (comes with Windows 11; auto-installed by MSI on older)
+#   - Wix Toolset v3 (Tauri MSI packager depends on it)
+
+npm install
+npm run tauri:build                      # produces src-tauri/target/release/bundle/msi/*.msi
+                                         # + src-tauri/target/release/bundle/nsis/*.exe
+```
+
+**Signing** (release only): sign the MSI and the inner `.exe` with your Authenticode cert BEFORE distributing — unsigned builds trigger SmartScreen on end-user boxes. Configure via `tauri.conf.json > bundle.windows.certificateThumbprint` or sign post-build with `signtool`.
+
+**Deploying a fresh install on a Windows target box:**
+1. Run the MSI as Administrator (nucleus needs elevation to write to `C:\PuruNucleus\`, create Windows Services, and register Defender exclusions).
+2. First launch runs the setup wizard — pick **native** deployment mode, walk through env-file generation and pull-JARs steps.
+3. JARs land in `C:\PuruNucleus\jars\{service}_{ts}-{sha}.jar` alongside a per-service `{service}.manifest.json`. This is the manifest-driven layout — do NOT expect the old `{service}.jar` filename.
+
+**Upgrading nucleus on a box that already has native JARs installed under the OLD (pre-manifest) scheme:**
+Nucleus is not in production. The manifest scheme has **no back-compat migration**. On a fresh nucleus build against an old `jars/` dir:
+- `start_service` will error with "No active JAR" because `{service}.jar` isn't in a manifest.
+- **Fix**: wipe `C:\PuruNucleus\jars\` (or delete only the old `{service}.jar` / `.bak` / `.staged` files) and re-run the setup wizard's Pull JARs step. JARs will re-download under the versioned scheme and everything works.
+
+**Windows-specific behaviours to remember:**
+- Windows Restart Manager (`file_lock::processes_locking`) is the authoritative "what has this file open?" query — same mechanism Windows installers use. The manifest scheme sidesteps it for the JAR itself (new download = new filename = no lock conflict), but nucleus still uses `free_file` as a best-effort cleanup for orphan JVMs so GC can delete the old JAR.
+- `taskkill /F /T /PID` is the only reliable stop path — headless `java.exe` (spawned with `CREATE_NO_WINDOW`) has no console window, so a graceful `taskkill` without `/F` dispatches `WM_CLOSE` to a nonexistent receiver.
+- Port release is racy on Windows — `start_service` polls `wait_for_port_free` for up to 15s after a stop before spawning the new JVM.
+- Manifest JSON is written via tmp+rename with retry against ACCESS_DENIED (5) and SHARING_VIOLATION (32) — the same lock window that would block a JAR swap also briefly hits the tiny JSON under AV scanners.
+
+**Testing the fail-safe recovery on Windows:**
+1. Trigger an update from the UI, then kill nucleus from Task Manager mid-apply.
+2. Restart nucleus. On the next `start_service` for that service, `JarManifest::recover_on_start` should complete the promotion automatically and launch the new JAR. No manual intervention.
+3. Verify with `puru jars info <service>` — the pending should have been consumed into active, and the old active pushed to history[0].
+
 ## Documentation
 
 - `TUTORIALS.md` — User tutorials (setup, CLI, backup/restore, LAN, binlog, updates, etc.)
@@ -266,8 +366,9 @@ exit_on_oom = false
 ## Testing
 
 ```bash
-# Rust tests (70 tests covering config, detection, docker_update, licensing, messaging,
-# performance, releases, remote_shell)
+# Rust tests (~80 tests: config, detection, docker_update, licensing, messaging,
+# performance, releases, remote_shell, and jar_manifest — the manifest module has
+# 10 tests covering the full state table for recover_on_start + rollback + GC)
 cargo test
 
 # Angular tests

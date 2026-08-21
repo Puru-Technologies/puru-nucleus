@@ -1044,7 +1044,13 @@ fn resolve_jre_platform() -> String {
 // ── Native JAR pull functions ───────────────────────────────────────────────
 
 /// Pull latest JAR for a single service from GCS.
-/// Downloads to jars_dir, backs up existing JAR as .bak.
+///
+/// Downloads to a fresh timestamped filename in `jars_dir` and records it as
+/// `pending` in the per-service manifest. The live process is untouched — the
+/// promotion happens on the next `start_service()` (via `recover_on_start`),
+/// so this same call is used for both "stage now, apply later" and the direct
+/// "update service" flow. On Windows, writing to a new filename means the JVM's
+/// memory-mapped lock on the current JAR can never block the download.
 pub async fn pull_jar(service_name: &str) -> Result<JarPullResult, NucleusError> {
     pull_jar_progress(service_name, |_, _| {}).await
 }
@@ -1075,42 +1081,66 @@ where
     let cred_path = get_credentials_path()?;
     let client = create_gcs_client(&cred_path).await?;
 
-    // Check if this is an Angular build (puru-hydrogen)
+    // Static bundles (hydrogen / dviewer) don't use the manifest scheme —
+    // they're directory swaps, not JAR loads. Handled by their own pullers.
     if service_name == "puru-hydrogen" {
         return pull_hydrogen_inner(&client, &cfg).await;
     }
-    // dviewer — static OHIF bundle served by the bundled nginx on :3000.
     if service_name == "dviewer" {
         return pull_dviewer_inner(&client, &cfg).await;
     }
 
     let jars_dir = cfg.jars_dir();
 
-    // Download meta.json first
+    // Fetch build metadata from `latest/` — we need the short_sha to name the
+    // downloaded file and to record in the manifest.
     let meta_path = format!("jars/{}/latest/meta.json", service_name);
     let meta_bytes = download_gcs_bytes(&client, &meta_path).await?;
     let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
 
-    // Download JAR
+    // Download the JAR under a fresh timestamped filename. On Windows this
+    // sidesteps the "live JAR is memory-mapped" problem entirely — we're
+    // writing to a filename nothing has open.
+    let new_file = crate::services::jar_manifest::make_versioned_filename(
+        service_name,
+        &meta.short_sha,
+    );
+    let new_jar_path = jars_dir.join(&new_file);
     let jar_gcs_path = format!("jars/{}/latest/{}.jar", service_name, service_name);
-    let local_jar = jars_dir.join(format!("{}.jar", service_name));
+    let size_mb = download_gcs_to_file_progress(
+        &client,
+        &jar_gcs_path,
+        &new_jar_path,
+        &on_progress,
+    )
+    .await?;
 
-    // Backup existing JAR
-    if local_jar.exists() {
-        let bak = jars_dir.join(format!("{}.jar.bak", service_name));
-        let _ = tokio::fs::rename(&local_jar, &bak).await;
-    }
+    // Persist the GCS build metadata as a sidecar next to the versioned JAR.
+    // `read_local_jar_meta` reads this to answer "which build is currently
+    // running?" without duplicating the whole meta into the manifest.
+    let sidecar_meta = jars_dir.join(format!("{}.meta.json", new_file));
+    tokio::fs::write(&sidecar_meta, &meta_bytes).await?;
 
-    let size_mb =
-        download_gcs_to_file_progress(&client, &jar_gcs_path, &local_jar, &on_progress).await?;
-
-    // Save meta locally
-    let local_meta = jars_dir.join(format!("{}.meta.json", service_name));
-    tokio::fs::write(&local_meta, &meta_bytes).await?;
+    // Record in the manifest as the new pending JAR. This is the durable
+    // intent — if we crash after this line, `recover_on_start` will complete
+    // the promotion on next launch. Downloading BEFORE writing pending means
+    // a partial download never leaves a dangling pending pointer.
+    let mut manifest =
+        crate::services::jar_manifest::JarManifest::read(&jars_dir, service_name);
+    manifest.set_pending(crate::services::jar_manifest::JarEntry {
+        file: new_file.clone(),
+        short_sha: meta.short_sha.clone(),
+        built_at: meta.built_at.clone(),
+        java_version: meta.java_version.clone(),
+        size_mb,
+        downloaded_at: chrono::Utc::now().to_rfc3339(),
+    });
+    manifest.write_atomic(&jars_dir).await?;
 
     tracing::info!(
-        "Pulled {} (sha: {}, {:.1} MB)",
+        "Pulled {} → pending {} (sha: {}, {:.1} MB)",
         service_name,
+        new_file,
         meta.short_sha,
         size_mb
     );
@@ -1118,7 +1148,7 @@ where
     Ok(JarPullResult {
         service: service_name.to_string(),
         success: true,
-        local_path: local_jar.to_string_lossy().to_string(),
+        local_path: new_jar_path.to_string_lossy().to_string(),
         short_sha: meta.short_sha,
         size_mb,
         message: "OK".to_string(),
@@ -1126,17 +1156,15 @@ where
 }
 
 // ── Staged updates (download now, apply later) ──────────────────────────────
+//
+// Under the manifest scheme, "staging" and "pulling" are the same operation:
+// both write a fresh timestamped JAR and record it as the manifest's
+// `pending` entry. What distinguishes them is *when* the caller stops/starts
+// the service. The Angular UI keeps the split so operators can download in
+// bulk during business hours and apply at a quiet moment.
 
-fn staged_jar_path(jars_dir: &std::path::Path, service: &str) -> PathBuf {
-    jars_dir.join(format!("{}.jar.staged", service))
-}
-fn staged_meta_path(jars_dir: &std::path::Path, service: &str) -> PathBuf {
-    jars_dir.join(format!("{}.staged.meta.json", service))
-}
-
-/// Download the latest JAR for `service` to a STAGING file next to the live JAR,
-/// **without touching the running service**. Reports byte progress. Apply it
-/// later with [`apply_staged_jar`]. JAR services only (not the hydrogen bundle).
+/// Alias for [`pull_jar_progress`] — kept for API compatibility with the
+/// Tauri `download_service_update` command and the UI's stage/apply split.
 pub async fn stage_jar_progress<F>(
     service_name: &str,
     on_progress: F,
@@ -1152,147 +1180,66 @@ where
         )));
     }
 
+    let pulled = pull_jar_progress(service_name, on_progress).await?;
+
+    // Convert to the UI's StagedUpdate shape.
     let cfg = config::load_config()?;
-    let cred_path = get_credentials_path()?;
-    let client = create_gcs_client(&cred_path).await?;
-    let jars_dir = cfg.jars_dir();
+    let manifest = crate::services::jar_manifest::JarManifest::read(&cfg.jars_dir(), service_name);
+    let pending = manifest.pending.ok_or_else(|| {
+        NucleusError::Internal(format!(
+            "pull_jar completed but manifest has no pending entry for {}",
+            service_name
+        ))
+    })?;
 
-    // meta.json first (for the sha/built-at)
-    let meta_path = format!("jars/{}/latest/meta.json", service_name);
-    let meta_bytes = download_gcs_bytes(&client, &meta_path).await?;
-    let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
-
-    // Download the JAR to the staging file (live JAR + running process untouched).
-    let jar_gcs_path = format!("jars/{}/latest/{}.jar", service_name, service_name);
-    let staged = staged_jar_path(&jars_dir, service_name);
-    let size_mb =
-        download_gcs_to_file_progress(&client, &jar_gcs_path, &staged, &on_progress).await?;
-
-    // Persist the staged meta alongside it.
-    tokio::fs::write(staged_meta_path(&jars_dir, service_name), &meta_bytes).await?;
-
-    tracing::info!(
-        "Staged update for {} (sha {}, {:.1} MB) — not yet applied",
-        service_name,
-        meta.short_sha,
-        size_mb
-    );
     Ok(StagedUpdate {
         service: service_name.to_string(),
-        short_sha: meta.short_sha,
-        built_at: meta.built_at,
-        size_mb,
-        staged_path: staged.to_string_lossy().to_string(),
+        short_sha: pulled.short_sha,
+        built_at: pending.built_at,
+        size_mb: pulled.size_mb,
+        staged_path: pulled.local_path,
     })
 }
 
-/// Info about a staged (downloaded, not-yet-applied) update, if one exists.
+/// Info about a downloaded-but-not-yet-promoted update, if one exists. Reads
+/// from the manifest (`pending` entry) — no on-disk sniffing.
 pub fn staged_update_info(service_name: &str) -> Option<StagedUpdate> {
     let cfg = config::load_config().ok()?;
     let jars_dir = cfg.jars_dir();
-    let staged = staged_jar_path(&jars_dir, service_name);
-    let meta_p = staged_meta_path(&jars_dir, service_name);
-    if !staged.exists() || !meta_p.exists() {
-        return None;
-    }
-    let meta: JarBuildMeta = serde_json::from_slice(&std::fs::read(&meta_p).ok()?).ok()?;
-    let size_mb = std::fs::metadata(&staged)
-        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
-        .unwrap_or(0.0);
+    let manifest = crate::services::jar_manifest::JarManifest::read(&jars_dir, service_name);
+    let pending = manifest.pending?;
+    let staged_path = jars_dir.join(&pending.file);
     Some(StagedUpdate {
         service: service_name.to_string(),
-        short_sha: meta.short_sha,
-        built_at: meta.built_at,
-        size_mb,
-        staged_path: staged.to_string_lossy().to_string(),
+        short_sha: pending.short_sha,
+        built_at: pending.built_at,
+        size_mb: pending.size_mb,
+        staged_path: staged_path.to_string_lossy().to_string(),
     })
 }
 
-/// Rename with retry. On Windows the JVM keeps the JAR memory-mapped, and the
-/// lock lingers for a moment after `taskkill /F`, so `rename` can briefly fail
-/// with ACCESS_DENIED (os error 5) or SHARING_VIOLATION (32). Retry with a short
-/// backoff (~8s total) so the swap succeeds as soon as the OS releases the file.
-async fn rename_with_retry(
-    from: &std::path::Path,
-    to: &std::path::Path,
-) -> Result<(), NucleusError> {
-    let mut last: Option<std::io::Error> = None;
-    for _ in 0..20 {
-        match tokio::fs::rename(from, to).await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                let code = e.raw_os_error().unwrap_or(0);
-                if code == 5 || code == 32 {
-                    last = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    continue;
-                }
-                return Err(NucleusError::Io(e));
-            }
-        }
-    }
-    Err(NucleusError::Io(last.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "rename failed")
-    })))
-}
-
-/// Promote a staged JAR into place (backing up the current one as `.bak`) and
-/// promote its meta. The caller MUST have stopped the service first. Returns the
-/// newly-applied short sha.
-pub async fn apply_staged_jar(service_name: &str) -> Result<String, NucleusError> {
-    let cfg = config::load_config()?;
-    let jars_dir = cfg.jars_dir();
-    let staged = staged_jar_path(&jars_dir, service_name);
-    let staged_meta = staged_meta_path(&jars_dir, service_name);
-    if !staged.exists() {
-        return Err(NucleusError::Validation(format!(
-            "No staged update to apply for '{}'.",
-            service_name
-        )));
-    }
-
-    let live_jar = jars_dir.join(format!("{}.jar", service_name));
-    let live_meta = jars_dir.join(format!("{}.meta.json", service_name));
-
-    // Move the (now-stopped) live JAR aside, then swap the staged one in. The
-    // rename is retried because Windows may still hold the just-killed JVM's
-    // file lock for a second or two — otherwise this fails with os error 5.
-    if live_jar.exists() {
-        let bak = jars_dir.join(format!("{}.jar.bak", service_name));
-        let _ = tokio::fs::remove_file(&bak).await; // clear any previous backup
-        rename_with_retry(&live_jar, &bak).await.map_err(|e| {
-            NucleusError::Internal(format!(
-                "Could not replace {}.jar — it's still locked (the service may not have fully stopped): {}",
-                service_name, e
-            ))
-        })?;
-    }
-    rename_with_retry(&staged, &live_jar).await?;
-
-    let short_sha = if staged_meta.exists() {
-        let meta_bytes = tokio::fs::read(&staged_meta).await.unwrap_or_default();
-        let _ = tokio::fs::rename(&staged_meta, &live_meta).await;
-        serde_json::from_slice::<JarBuildMeta>(&meta_bytes)
-            .map(|m| m.short_sha)
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    tracing::info!("Applied staged update for {} (sha {})", service_name, short_sha);
-    Ok(short_sha)
-}
-
-/// Discard a staged (downloaded, not-applied) update.
+/// Discard a downloaded-but-not-promoted update. Clears the manifest's
+/// `pending` entry and deletes the pending JAR + its meta sidecar. Does NOT
+/// touch the active JAR — this is the "cancel this update" button.
 pub async fn discard_staged_jar(service_name: &str) -> Result<(), NucleusError> {
     let cfg = config::load_config()?;
     let jars_dir = cfg.jars_dir();
-    let _ = tokio::fs::remove_file(staged_jar_path(&jars_dir, service_name)).await;
-    let _ = tokio::fs::remove_file(staged_meta_path(&jars_dir, service_name)).await;
+    let mut manifest = crate::services::jar_manifest::JarManifest::read(&jars_dir, service_name);
+    if let Some(pending) = manifest.pending.take() {
+        let jar_path = jars_dir.join(&pending.file);
+        let meta_path = jars_dir.join(format!("{}.meta.json", &pending.file));
+        let _ = tokio::fs::remove_file(&jar_path).await;
+        let _ = tokio::fs::remove_file(&meta_path).await;
+        manifest.write_atomic(&jars_dir).await?;
+    }
     Ok(())
 }
 
 /// Pull a specific build by short SHA (for rollback).
+///
+/// Downloads under a fresh timestamped filename and sets it as pending — same
+/// as [`pull_jar`], just sourced from `builds/{sha}/` instead of `latest/`.
+/// The caller triggers the restart to promote the pending entry.
 pub async fn pull_jar_by_sha(service_name: &str, sha: &str) -> Result<JarPullResult, NucleusError> {
     if !UPDATABLE_SERVICES.contains(&service_name) {
         return Err(NucleusError::Validation(format!(
@@ -1306,30 +1253,37 @@ pub async fn pull_jar_by_sha(service_name: &str, sha: &str) -> Result<JarPullRes
     let client = create_gcs_client(&cred_path).await?;
     let jars_dir = cfg.jars_dir();
 
-    // Download meta.json from builds/{sha}/
     let meta_path = format!("jars/{}/builds/{}/meta.json", service_name, sha);
     let meta_bytes = download_gcs_bytes(&client, &meta_path).await?;
     let meta: JarBuildMeta = serde_json::from_slice(&meta_bytes)?;
 
-    // Download JAR from builds/{sha}/
+    let new_file = crate::services::jar_manifest::make_versioned_filename(
+        service_name,
+        &meta.short_sha,
+    );
+    let new_jar_path = jars_dir.join(&new_file);
     let jar_gcs_path = format!("jars/{}/builds/{}/{}.jar", service_name, sha, service_name);
-    let local_jar = jars_dir.join(format!("{}.jar", service_name));
+    let size_mb = download_gcs_to_file(&client, &jar_gcs_path, &new_jar_path).await?;
 
-    // Backup existing
-    if local_jar.exists() {
-        let bak = jars_dir.join(format!("{}.jar.bak", service_name));
-        let _ = tokio::fs::rename(&local_jar, &bak).await;
-    }
+    let sidecar_meta = jars_dir.join(format!("{}.meta.json", new_file));
+    tokio::fs::write(&sidecar_meta, &meta_bytes).await?;
 
-    let size_mb = download_gcs_to_file(&client, &jar_gcs_path, &local_jar).await?;
-
-    // Save meta locally
-    let local_meta = jars_dir.join(format!("{}.meta.json", service_name));
-    tokio::fs::write(&local_meta, &meta_bytes).await?;
+    let mut manifest =
+        crate::services::jar_manifest::JarManifest::read(&jars_dir, service_name);
+    manifest.set_pending(crate::services::jar_manifest::JarEntry {
+        file: new_file.clone(),
+        short_sha: meta.short_sha.clone(),
+        built_at: meta.built_at.clone(),
+        java_version: meta.java_version.clone(),
+        size_mb,
+        downloaded_at: chrono::Utc::now().to_rfc3339(),
+    });
+    manifest.write_atomic(&jars_dir).await?;
 
     tracing::info!(
-        "Pulled {} (sha: {}, {:.1} MB) [specific build]",
+        "Pulled {} → pending {} (sha: {}, {:.1} MB) [specific build]",
         service_name,
+        new_file,
         meta.short_sha,
         size_mb
     );
@@ -1337,7 +1291,7 @@ pub async fn pull_jar_by_sha(service_name: &str, sha: &str) -> Result<JarPullRes
     Ok(JarPullResult {
         service: service_name.to_string(),
         success: true,
-        local_path: local_jar.to_string_lossy().to_string(),
+        local_path: new_jar_path.to_string_lossy().to_string(),
         short_sha: meta.short_sha,
         size_mb,
         message: format!("Rolled back to build {}", sha),
@@ -1388,7 +1342,8 @@ where
     })
 }
 
-/// Check which services have newer JARs available.
+/// Check which services have newer JARs available. `current_sha` comes from
+/// the manifest's active entry (falls back to empty if never pulled).
 pub async fn check_jar_updates_available(
     services: &[String],
 ) -> Result<Vec<JarUpdateCheck>, NucleusError> {
@@ -1400,20 +1355,26 @@ pub async fn check_jar_updates_available(
     let mut checks = Vec::new();
 
     for svc in services {
-        // Read local meta
-        let local_meta_path = jars_dir.join(format!("{}.meta.json", svc));
-        let current_sha = if local_meta_path.exists() {
-            match tokio::fs::read_to_string(&local_meta_path).await {
-                Ok(content) => serde_json::from_str::<JarBuildMeta>(&content)
+        // Manifest → current build (empty string when nothing is active yet).
+        // For hydrogen/dviewer (no manifest) we fall back to their legacy
+        // `{svc}.meta.json` sidecar written by the tarball pullers.
+        let current_sha = if svc == "puru-hydrogen" || svc == "dviewer" {
+            let legacy = jars_dir.join(format!("{}.meta.json", svc));
+            if legacy.exists() {
+                tokio::fs::read_to_string(&legacy)
+                    .await
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<JarBuildMeta>(&s).ok())
                     .map(|m| m.short_sha)
-                    .unwrap_or_default(),
-                Err(_) => String::new(),
+                    .unwrap_or_default()
+            } else {
+                String::new()
             }
         } else {
-            String::new()
+            let manifest = crate::services::jar_manifest::JarManifest::read(&jars_dir, svc);
+            manifest.active.map(|e| e.short_sha).unwrap_or_default()
         };
 
-        // Fetch remote meta
         let remote_meta_path = format!("jars/{}/latest/meta.json", svc);
         match download_gcs_bytes(&client, &remote_meta_path).await {
             Ok(bytes) => match serde_json::from_slice::<JarBuildMeta>(&bytes) {
@@ -1440,16 +1401,49 @@ pub async fn check_jar_updates_available(
     Ok(checks)
 }
 
-/// Read local meta.json to get current build info.
+/// Read local meta for the currently-active JAR (for the UI's "image" column
+/// and setup's Java-version resolution). For JAR services this looks up
+/// `manifest.active.file` and reads its sidecar meta. For hydrogen/dviewer
+/// (still directory-swap based), reads the legacy `{svc}.meta.json`.
 pub fn read_local_jar_meta(service_name: &str) -> Result<Option<JarBuildMeta>, NucleusError> {
     let cfg = config::load_config()?;
-    let meta_path = cfg.jars_dir().join(format!("{}.meta.json", service_name));
+    let jars_dir = cfg.jars_dir();
 
-    if !meta_path.exists() {
-        return Ok(None);
+    // Static bundles keep their legacy sidecar location.
+    if service_name == "puru-hydrogen" || service_name == "dviewer" {
+        let p = jars_dir.join(format!("{}.meta.json", service_name));
+        if !p.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&p)?;
+        let meta: JarBuildMeta = serde_json::from_str(&content)?;
+        return Ok(Some(meta));
     }
 
-    let content = std::fs::read_to_string(&meta_path)?;
+    let manifest = crate::services::jar_manifest::JarManifest::read(&jars_dir, service_name);
+    let Some(active) = manifest.active else {
+        return Ok(None);
+    };
+
+    let sidecar = jars_dir.join(format!("{}.meta.json", active.file));
+    if !sidecar.exists() {
+        // Missing sidecar (older download or manual copy) — synthesize enough
+        // from the manifest entry for callers that only need short_sha / java.
+        return Ok(Some(JarBuildMeta {
+            service: service_name.to_string(),
+            short_sha: active.short_sha,
+            commit_sha: String::new(),
+            build_id: String::new(),
+            built_at: active.built_at,
+            jar_file: active.file,
+            original_jar: String::new(),
+            java_version: active.java_version,
+            artifact: None,
+            build_type: None,
+        }));
+    }
+
+    let content = std::fs::read_to_string(&sidecar)?;
     let meta: JarBuildMeta = serde_json::from_str(&content)?;
     Ok(Some(meta))
 }

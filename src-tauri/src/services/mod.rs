@@ -1,5 +1,6 @@
 //! Service management — dispatches between Docker and Native mode
 
+pub mod jar_manifest;
 pub mod native;
 
 use bollard::container::{
@@ -599,14 +600,29 @@ where
     }
 }
 
-/// Rollback a native service to its previous JAR (.bak).
-/// Only available in native mode.
+/// Rollback a native service one step back in its manifest history (the
+/// most-recent previous JAR). Only available in native mode.
 pub async fn rollback_native_service(name: &str) -> Result<(), crate::error::NucleusError> {
     let config = crate::config::load_config()?;
     match config.deployment_mode {
         DeploymentMode::Native => native::rollback_service(name, &config).await,
         DeploymentMode::Docker => Err(crate::error::NucleusError::Validation(
             "rollback_native_service is only available in native deployment mode".into(),
+        )),
+    }
+}
+
+/// Rollback a native service to a specific historical JAR file (must appear
+/// in `manifest.history`). Only available in native mode.
+pub async fn rollback_native_service_to(
+    name: &str,
+    file: &str,
+) -> Result<(), crate::error::NucleusError> {
+    let config = crate::config::load_config()?;
+    match config.deployment_mode {
+        DeploymentMode::Native => native::rollback_service_to(name, file, &config).await,
+        DeploymentMode::Docker => Err(crate::error::NucleusError::Validation(
+            "rollback_native_service_to is only available in native deployment mode".into(),
         )),
     }
 }

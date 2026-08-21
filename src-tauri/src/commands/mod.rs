@@ -4133,6 +4133,113 @@ pub async fn discard_service_update(service_name: String) -> Result<(), String> 
         .map_err(|e| e.to_string())
 }
 
+/// A snapshot of a service's JAR manifest — active + pending + history — for
+/// the services page. Feeds the "restart to activate" warning banner, the
+/// version dropdown for arbitrary-generation rollback, and diagnostics.
+#[derive(Debug, Clone, Serialize)]
+pub struct JarManifestView {
+    pub service: String,
+    pub active: Option<crate::services::jar_manifest::JarEntry>,
+    pub pending: Option<crate::services::jar_manifest::JarEntry>,
+    pub history: Vec<crate::services::jar_manifest::JarEntry>,
+    pub updated_at: String,
+}
+
+/// Read the JAR manifest for a native-mode service. Returns the empty shape
+/// (no active, no pending, no history) when the service has never been pulled.
+#[tauri::command]
+pub async fn get_jar_manifest(service_name: String) -> Result<JarManifestView, String> {
+    let config = crate::config::load_config().map_err(|e| e.to_string())?;
+    let manifest =
+        crate::services::jar_manifest::JarManifest::read(&config.jars_dir(), &service_name);
+    Ok(JarManifestView {
+        service: manifest.service,
+        active: manifest.active,
+        pending: manifest.pending,
+        history: manifest.history,
+        updated_at: manifest.updated_at,
+    })
+}
+
+/// A process still holding a service's active JAR — surfaced when apply or
+/// GC couldn't free the file. Empty on non-Windows (Restart Manager API is
+/// Windows-only).
+#[derive(Debug, Clone, Serialize)]
+pub struct LockingProcess {
+    pub pid: u32,
+    pub name: String,
+}
+
+/// List processes currently holding the service's active JAR open. Used by
+/// the "stuck update" recovery panel — after an apply times out, the UI shows
+/// this list so the operator knows what's wedged before deciding to force-kill.
+#[tauri::command]
+pub async fn list_locking_processes(service_name: String) -> Result<Vec<LockingProcess>, String> {
+    let config = crate::config::load_config().map_err(|e| e.to_string())?;
+    let jars_dir = config.jars_dir();
+    let manifest =
+        crate::services::jar_manifest::JarManifest::read(&jars_dir, &service_name);
+    let Some(active) = manifest.active else {
+        return Ok(Vec::new());
+    };
+    let path = jars_dir.join(&active.file);
+    let pids = crate::file_lock::processes_locking(&path);
+    let self_pid = std::process::id();
+    let out = pids
+        .into_iter()
+        .filter(|p| *p != 0 && *p != self_pid)
+        .map(|pid| LockingProcess {
+            pid,
+            name: process_name_for_pid(pid).unwrap_or_default(),
+        })
+        .collect();
+    Ok(out)
+}
+
+fn process_name_for_pid(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, PidExt, ProcessExt, System, SystemExt};
+    let mut sys = System::new();
+    let spid = Pid::from_u32(pid);
+    sys.refresh_process(spid);
+    sys.process(spid).map(|p| p.name().to_string())
+}
+
+/// Force-free the active JAR (kill every holder via Windows Restart Manager),
+/// then complete any pending promotion by stop → start. Used by the "Force
+/// kill and restart" button in the stuck-update UI.
+#[tauri::command]
+pub async fn force_free_and_restart(service_name: String) -> Result<(), String> {
+    let config = crate::config::load_config().map_err(|e| e.to_string())?;
+    let jars_dir = config.jars_dir();
+    let manifest =
+        crate::services::jar_manifest::JarManifest::read(&jars_dir, &service_name);
+    if let Some(active) = manifest.active {
+        let path = jars_dir.join(&active.file);
+        if path.exists() {
+            let _killed = crate::file_lock::free_file(&path, 30).await?;
+        }
+    }
+    // Cycle the service so start_service re-reads the manifest and applies
+    // any pending promotion via recover_on_start.
+    let _ = crate::services::native::stop_service(&service_name, &config).await;
+    crate::services::native::start_service(&service_name, &config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Rollback a native service to a specific historical JAR (by filename, from
+/// `manifest.history`). Feeds the version dropdown for arbitrary-generation
+/// rollback.
+#[tauri::command]
+pub async fn rollback_native_service_to(
+    service_name: String,
+    file: String,
+) -> Result<(), String> {
+    crate::services::rollback_native_service_to(&service_name, &file)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Infra (MySQL / RabbitMQ) control + logs ──────────────────────────────────
 
 /// Start / stop / restart the Windows service backing an infra component

@@ -39,6 +39,12 @@ pub struct NucleusConfig {
     pub jres_dir: Option<String>,
     pub native_logs_dir: Option<String>,
     pub dviewer_dir: Option<String>,
+    /// Native-mode: how many previous JAR versions to retain per service (in
+    /// addition to `active` and `pending`) for rollback. Older files are
+    /// deleted by the manifest GC after a successful update. `0` still keeps
+    /// the currently-active JAR; only history is trimmed.
+    #[serde(default = "default_jar_history_keep")]
+    pub jar_history_keep: usize,
     pub puru_data_path: Option<String>,
     pub daemon: Option<DaemonConfig>,
     pub lan: LanConfig,
@@ -137,6 +143,7 @@ impl Default for NucleusConfig {
             jres_dir: None,
             native_logs_dir: None,
             dviewer_dir: None,
+            jar_history_keep: default_jar_history_keep(),
             puru_data_path: None,
             daemon: None,
             lan: LanConfig::default(),
@@ -216,6 +223,10 @@ impl NucleusConfig {
                 { PathBuf::from("/opt/puru/dviewer") }
             })
     }
+}
+
+fn default_jar_history_keep() -> usize {
+    3
 }
 
 /// Get default config directory path

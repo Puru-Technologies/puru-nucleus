@@ -135,8 +135,15 @@ fn log_path(config: &NucleusConfig, service: &str) -> PathBuf {
     config.native_logs_dir().join(format!("{}.log", service))
 }
 
-fn jar_path(config: &NucleusConfig, service: &str) -> PathBuf {
-    config.jars_dir().join(format!("{}.jar", service))
+/// Full path to the currently-active JAR for `service` as recorded in the
+/// per-service manifest. Returns None if the manifest has no active entry
+/// (fresh install with nothing pulled, or a service that only ever downloaded
+/// but never promoted). Callers that need to know "is a JAR installed?" should
+/// use [`is_installed`] instead — it also handles hydrogen/dviewer.
+fn active_jar_path(config: &NucleusConfig, service: &str) -> Option<PathBuf> {
+    let jars_dir = config.jars_dir();
+    let manifest = super::jar_manifest::JarManifest::read(&jars_dir, service);
+    manifest.active.map(|e| jars_dir.join(e.file))
 }
 
 /// Services with an installed artifact on this box — a JAR present, or the
@@ -144,9 +151,27 @@ fn jar_path(config: &NucleusConfig, service: &str) -> PathBuf {
 /// when the hospital's Firestore module selection can't be fetched, so the UI
 /// never shows the entire catalog as "Not installed" rows.
 fn installed_service_names(config: &NucleusConfig) -> Vec<String> {
+    let jars_dir = config.jars_dir();
     let mut names: Vec<String> = releases::all_updatable_services()
         .into_iter()
-        .filter(|s| s != "puru-hydrogen" && s != "dviewer" && jar_path(config, s).exists())
+        .filter(|s| s != "puru-hydrogen" && s != "dviewer")
+        .filter(|s| {
+            // Installed = manifest has an active entry whose file is on disk,
+            // OR (for freshly-downloaded services) a pending entry — either way
+            // the service is ready to (be) launched.
+            let manifest = super::jar_manifest::JarManifest::read(&jars_dir, s);
+            let has_active = manifest
+                .active
+                .as_ref()
+                .map(|e| jars_dir.join(&e.file).exists())
+                .unwrap_or(false);
+            let has_pending = manifest
+                .pending
+                .as_ref()
+                .map(|e| jars_dir.join(&e.file).exists())
+                .unwrap_or(false);
+            has_active || has_pending
+        })
         .collect();
     if config.nginx_html_dir().join("index.html").exists() {
         names.push("puru-hydrogen".into());
@@ -182,16 +207,20 @@ fn db_for_service(service: &str) -> Option<&'static str> {
 }
 
 /// Whether a service's build is present on disk. For JAR services that means
-/// the `.jar` exists; for puru-hydrogen it means the nginx html root is laid
-/// down. Used by the setup re-run to decide what needs pulling.
+/// the manifest has an `active` or `pending` entry with the file present on
+/// disk; for puru-hydrogen/dviewer it means the static bundle is laid down.
+/// Used by the setup re-run to decide what needs pulling.
 pub(crate) fn is_installed(config: &NucleusConfig, service: &str) -> bool {
     if service == "puru-hydrogen" {
-        config.nginx_html_dir().join("index.html").exists()
-    } else if service == "dviewer" {
-        config.dviewer_dir().join("index.html").exists()
-    } else {
-        jar_path(config, service).exists()
+        return config.nginx_html_dir().join("index.html").exists();
     }
+    if service == "dviewer" {
+        return config.dviewer_dir().join("index.html").exists();
+    }
+    let jars_dir = config.jars_dir();
+    let manifest = super::jar_manifest::JarManifest::read(&jars_dir, service);
+    let has = |e: &super::jar_manifest::JarEntry| jars_dir.join(&e.file).exists();
+    manifest.active.as_ref().map_or(false, has) || manifest.pending.as_ref().map_or(false, has)
 }
 
 /// Whether a JAR service's process is currently alive (by its PID file).
@@ -422,11 +451,25 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
         )));
     }
 
-    // Check JAR exists
-    let jar = jar_path(config, name);
+    // Reconcile the manifest with disk before we launch. If an update was
+    // interrupted mid-apply (nucleus crash, power cut), this promotes the
+    // pending JAR to active so the operator's intent is honoured on this
+    // start. Also validates the recorded active file actually exists,
+    // falling back to history if not. See `JarManifest::recover_on_start`.
+    let jars_dir = config.jars_dir();
+    let mut manifest = super::jar_manifest::JarManifest::read(&jars_dir, name);
+    let active_entry = manifest.recover_on_start(&jars_dir).await.map_err(|e| {
+        NucleusError::NotFound(format!(
+            "No JAR available to start {}: {}. Run `puru pull-jars` first.",
+            name, e
+        ))
+    })?;
+    let jar = jars_dir.join(&active_entry.file);
     if !jar.exists() {
+        // recover_on_start already tried to fall back; if we're still pointing
+        // at a missing file, disk state is broken.
         return Err(NucleusError::NotFound(format!(
-            "JAR for {} not found at {}. Run `puru pull-jars` first.",
+            "Active JAR for {} at {} is missing on disk. Run `puru pull-jars` to redownload.",
             name,
             jar.display()
         )));
@@ -636,7 +679,7 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
             }
         } else if alive {
             ServiceStatus::Running
-        } else if jar_path(config, svc_name).exists() {
+        } else if is_installed(config, svc_name) {
             ServiceStatus::Stopped
         } else {
             ServiceStatus::NotInstalled // enabled but JAR not pulled yet
@@ -802,16 +845,24 @@ pub async fn get_logs(
     Ok(lines[start..].join("\n"))
 }
 
-/// Update a service: stop → pull new JAR → start.
-/// Returns the pull result with new SHA info.
+/// Update a service in one shot: download the new JAR → stop old → start new.
+/// The download step records the new JAR as `pending` in the manifest before
+/// touching any process, so a crash between download and restart still leaves
+/// disk state consistent — the next `start_service` promotes it automatically.
 pub async fn update_service(name: &str, config: &NucleusConfig) -> Result<releases::JarPullResult, NucleusError> {
     update_service_progress(name, config, |_, _, _| {}).await
 }
 
 /// Like [`update_service`], but reports progress through `on(phase, downloaded,
 /// total)` so the UI can show a proper progress bar. `phase` is one of
-/// `"stopping"`, `"downloading"`, `"starting"`; `downloaded`/`total` are bytes
+/// `"downloading"`, `"stopping"`, `"starting"`; `downloaded`/`total` are bytes
 /// during the download phase (0 otherwise).
+///
+/// Ordering: **download first, then swap.** The download writes to a fresh
+/// timestamped file and updates the manifest with `pending_jar` BEFORE any
+/// process is stopped. That way, if the runtime hand-off fails at any point
+/// (kill hangs, restart fails, machine loses power), the operator's intent to
+/// upgrade is durable — the next `start_service` picks up the pending entry.
 pub async fn update_service_progress<F>(
     name: &str,
     config: &NucleusConfig,
@@ -822,7 +873,16 @@ where
 {
     tracing::info!("Updating {} ...", name);
 
-    // Stop if running (ignore errors — might already be stopped)
+    // Phase 1 (safe, no process impact): download to a new timestamped file
+    // and record it as pending in the manifest.
+    on("downloading", 0, 0);
+    let pull_result =
+        releases::pull_jar_progress(name, |d, t| on("downloading", d, t)).await?;
+
+    // Phase 2 (runtime hand-off, best-effort): stop old, free its lock, start
+    // new. start_service's recover_on_start does the manifest promotion. If any
+    // of these steps fails, the pending manifest entry survives — the next
+    // start-up promotes.
     let was_running = read_pid(config, name)
         .map(is_process_alive)
         .unwrap_or(false);
@@ -830,28 +890,37 @@ where
     if was_running {
         on("stopping", 0, 0);
         stop_service(name, config).await?;
-        // Brief pause to ensure port is released
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    }
-
-    // Pull new JAR (old one is backed up as .bak automatically), streaming
-    // byte progress up to the caller.
-    let pull_result =
-        releases::pull_jar_progress(name, |d, t| on("downloading", d, t)).await?;
-
-    // Restart if it was running before
-    if was_running {
+        // Free the now-superseded JAR so any zombie holder is cleared. This is
+        // best-effort: even if it times out the old JAR is just orphaned, not
+        // an obstacle — the new JAR lives under a different filename.
+        if let Some(old_active) = active_jar_path(config, name) {
+            if old_active.exists() {
+                if let Err(e) = crate::file_lock::free_file(&old_active, 20).await {
+                    tracing::warn!(
+                        "update {}: could not fully clear old JAR holders ({}); \
+                         leaving as orphan for GC",
+                        name,
+                        e
+                    );
+                }
+            }
+        }
         on("starting", 0, 0);
         start_service(name, config).await?;
     }
+
+    // GC old versions once we're on the new one — keeps disk from growing
+    // unboundedly across many updates. Non-fatal if it fails.
+    prune_old_jars(name, config).await;
 
     tracing::info!("Updated {} to build {}", name, pull_result.short_sha);
     Ok(pull_result)
 }
 
-/// Rollback a service to the previous JAR (.bak file).
-/// Apply a previously staged (downloaded) update: stop → swap the staged JAR in
-/// → start. Reports phase progress via `on(phase, 0, 0)` ("stopping"/"starting").
+/// Apply a previously downloaded update: stop → free old JAR (best-effort) →
+/// start new (start_service promotes pending → active via recovery). Reports
+/// phase progress via `on(phase, 0, 0)` ("stopping"/"starting"). Returns the
+/// build info of the just-promoted JAR.
 pub async fn apply_update_progress<F>(
     name: &str,
     config: &NucleusConfig,
@@ -874,94 +943,178 @@ where
         stop_service(name, config).await?;
     }
 
-    // Fail-safe before the swap: guarantee NOTHING holds <name>.jar — not a
-    // stale-PID orphan, not a duplicate JVM that escaped stop_service. The
-    // Restart Manager names the exact lockers regardless of how they were
-    // started; we kill them and confirm the file is actually free before
-    // renaming, so the apply can no longer fail with "still locked (os error
-    // 32)".
-    let live = jar_path(config, name);
-    crate::file_lock::free_file(&live, 20)
-        .await
-        .map_err(NucleusError::Internal)?;
-
-    let short_sha = releases::apply_staged_jar(name).await?;
-
-    if was_running {
-        on("starting", 0, 0);
-        start_service(name, config).await?;
+    // Fail-safe: kill any process still holding the *old* active JAR so it
+    // becomes deletable by GC. Best-effort — the swap itself no longer depends
+    // on this because we're not renaming the old file, just leaving the new
+    // one as the new active.
+    if let Some(old_active) = active_jar_path(config, name) {
+        if old_active.exists() {
+            if let Err(e) = crate::file_lock::free_file(&old_active, 20).await {
+                tracing::warn!(
+                    "apply {}: could not fully clear old JAR holders ({}); \
+                     leaving as orphan for GC",
+                    name,
+                    e
+                );
+            }
+        }
     }
 
-    tracing::info!("Applied update for {} → build {}", name, short_sha);
+    // start_service's recover_on_start sees `pending` in the manifest and
+    // promotes it → active before spawning the JVM.
+    on("starting", 0, 0);
+    start_service(name, config).await?;
+
+    // Post-promote GC.
+    prune_old_jars(name, config).await;
+
+    // Resolve the now-active entry for the return value.
+    let jars_dir = config.jars_dir();
+    let manifest = super::jar_manifest::JarManifest::read(&jars_dir, name);
+    let active = manifest.active.unwrap_or_else(|| super::jar_manifest::JarEntry {
+        file: String::new(),
+        short_sha: staged.short_sha.clone(),
+        built_at: staged.built_at.clone(),
+        java_version: String::new(),
+        size_mb: staged.size_mb,
+        downloaded_at: String::new(),
+    });
+
+    tracing::info!("Applied update for {} → build {}", name, active.short_sha);
     Ok(releases::JarPullResult {
         service: name.to_string(),
         success: true,
-        local_path: jar_path(config, name).to_string_lossy().to_string(),
-        short_sha,
-        size_mb: staged.size_mb,
+        local_path: jars_dir.join(&active.file).to_string_lossy().to_string(),
+        short_sha: active.short_sha,
+        size_mb: active.size_mb,
         message: "Applied".to_string(),
     })
 }
 
+/// Rollback to the immediately-previous JAR in the manifest history. Returns
+/// an error if there is no history. Under the manifest scheme this is a pure
+/// pointer swap: no file rename, no chance of a "JAR is busy" failure. The
+/// caller can then rollback again (further back in history) if needed.
 pub async fn rollback_service(name: &str, config: &NucleusConfig) -> Result<(), NucleusError> {
     let jars_dir = config.jars_dir();
-    let jar = jars_dir.join(format!("{}.jar", name));
-    let bak = jars_dir.join(format!("{}.jar.bak", name));
+    let mut manifest = super::jar_manifest::JarManifest::read(&jars_dir, name);
 
-    if !bak.exists() {
+    if !manifest.rollback_one() {
         return Err(NucleusError::NotFound(format!(
-            "No backup JAR found for {}. Cannot rollback.",
+            "No previous JAR recorded for {}. Cannot rollback.",
             name
         )));
     }
+    manifest.write_atomic(&jars_dir).await?;
 
-    let was_running = read_pid(config, name)
-        .map(is_process_alive)
-        .unwrap_or(false);
-
+    let was_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
     if was_running {
         stop_service(name, config).await?;
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    }
-
-    // Swap: current → .bad, .bak → current
-    let bad = jars_dir.join(format!("{}.jar.bad", name));
-    if jar.exists() {
-        std::fs::rename(&jar, &bad)?;
-    }
-    std::fs::rename(&bak, &jar)?;
-    // Remove the bad version
-    let _ = std::fs::remove_file(&bad);
-
-    if was_running {
         start_service(name, config).await?;
     }
 
-    tracing::info!("Rolled back {} to previous JAR", name);
+    tracing::info!(
+        "Rolled back {} to previous JAR ({})",
+        name,
+        manifest.active.as_ref().map(|e| e.file.as_str()).unwrap_or("?")
+    );
     Ok(())
 }
 
+/// Rollback to a specific JAR file (must appear in the manifest's history).
+/// Used by the UI's "rollback to version N" picker. Same pointer-swap
+/// mechanics as [`rollback_service`], different target.
+pub async fn rollback_service_to(
+    name: &str,
+    file: &str,
+    config: &NucleusConfig,
+) -> Result<(), NucleusError> {
+    let jars_dir = config.jars_dir();
+    let mut manifest = super::jar_manifest::JarManifest::read(&jars_dir, name);
+
+    if !manifest.rollback_to(file) {
+        return Err(NucleusError::NotFound(format!(
+            "No history entry '{}' for {}.",
+            file, name
+        )));
+    }
+    manifest.write_atomic(&jars_dir).await?;
+
+    let was_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
+    if was_running {
+        stop_service(name, config).await?;
+        start_service(name, config).await?;
+    }
+
+    tracing::info!("Rolled back {} to {}", name, file);
+    Ok(())
+}
+
+/// Best-effort GC: trim per-service JAR history to `config.jar_history_keep`
+/// and delete any versioned JARs (and their meta sidecars) that fall outside
+/// the retention window. Never fails the caller.
+async fn prune_old_jars(name: &str, config: &NucleusConfig) {
+    let jars_dir = config.jars_dir();
+    let mut manifest = super::jar_manifest::JarManifest::read(&jars_dir, name);
+    match manifest.gc(&jars_dir, config.jar_history_keep).await {
+        Ok(n) if n > 0 => tracing::debug!("gc {}: removed {} old JAR(s)", name, n),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("gc {}: failed: {}", name, e),
+    }
+    // Also delete orphan `.meta.json` sidecars whose JAR is gone.
+    let prefix = format!("{}_", name);
+    if let Ok(mut rd) = tokio::fs::read_dir(&jars_dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let n = entry.file_name().to_string_lossy().to_string();
+            if !n.starts_with(&prefix) || !n.ends_with(".jar.meta.json") {
+                continue;
+            }
+            let jar_name = n.trim_end_matches(".meta.json").to_string();
+            if !jars_dir.join(&jar_name).exists() {
+                let _ = tokio::fs::remove_file(entry.path()).await;
+            }
+        }
+    }
+}
+
 /// Tear a service down: stop the process (if running) and delete its on-disk
-/// artifacts (jar, backup jar, build meta, pid file). The .log file is kept for
-/// audit. Used when a service has been de-selected in the cloud config.
+/// artifacts (all versioned JARs + meta sidecars, manifest, pid file). The
+/// .log file is kept for audit. Used when a service has been de-selected in
+/// the cloud config.
 pub(crate) async fn remove_service(config: &NucleusConfig, name: &str) -> Result<(), NucleusError> {
     // Stop first — ignore "not running" errors, we just want it down.
     let _ = stop_service(name, config).await;
 
     let jars = config.jars_dir();
-    let targets = [
-        jars.join(format!("{}.jar", name)),
-        jars.join(format!("{}.jar.bak", name)),
-        jars.join(format!("{}.jar.bad", name)),
-        jars.join(format!("{}.meta.json", name)),
-        pid_path(config, name),
-    ];
-    for f in targets {
-        if f.exists() {
-            if let Err(e) = std::fs::remove_file(&f) {
-                tracing::warn!("Failed to remove {}: {}", f.display(), e);
+
+    // Delete every file for this service under jars_dir:
+    //   - versioned JARs `{name}_...jar` and their `.meta.json` sidecars
+    //   - the manifest `{name}.manifest.json`
+    //   - legacy `{name}.meta.json` (hydrogen/dviewer only, but harmless to try)
+    let prefix = format!("{}_", name);
+    if let Ok(mut rd) = tokio::fs::read_dir(&jars).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let n = entry.file_name().to_string_lossy().to_string();
+            if n.starts_with(&prefix)
+                && (n.ends_with(".jar") || n.ends_with(".jar.meta.json"))
+            {
+                let _ = tokio::fs::remove_file(entry.path()).await;
             }
         }
+    }
+    let manifest_path = super::jar_manifest::JarManifest::path(&jars, name);
+    if manifest_path.exists() {
+        if let Err(e) = tokio::fs::remove_file(&manifest_path).await {
+            tracing::warn!("Failed to remove {}: {}", manifest_path.display(), e);
+        }
+    }
+    let legacy_meta = jars.join(format!("{}.meta.json", name));
+    if legacy_meta.exists() {
+        let _ = tokio::fs::remove_file(&legacy_meta).await;
+    }
+    let pid = pid_path(config, name);
+    if pid.exists() {
+        let _ = tokio::fs::remove_file(&pid).await;
     }
 
     tracing::info!("Removed native service {}", name);

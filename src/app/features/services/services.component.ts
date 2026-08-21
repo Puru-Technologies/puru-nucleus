@@ -37,6 +37,33 @@ interface StagedUpdate {
   staged_path: string;
 }
 
+/** A single JAR recorded in the manifest — currently-active, pending, or a
+ *  previous version retained for rollback. */
+interface JarEntry {
+  file: string;
+  short_sha: string;
+  built_at: string;
+  java_version: string;
+  size_mb: number;
+  downloaded_at: string;
+}
+
+/** Per-service JAR manifest snapshot returned by `get_jar_manifest`. */
+interface JarManifestView {
+  service: string;
+  active: JarEntry | null;
+  pending: JarEntry | null;
+  history: JarEntry[];
+  updated_at: string;
+}
+
+/** A process still holding a service's active JAR (Restart Manager output).
+ *  Empty on non-Windows platforms. */
+interface LockingProcess {
+  pid: number;
+  name: string;
+}
+
 /** Per-service state for the split update flow: identify → download → apply. */
 type UpdatePhase =
   | 'checking' | 'up-to-date' | 'available'
@@ -1276,6 +1303,99 @@ export class ServicesComponent implements OnInit, OnDestroy {
     } catch {
       this.setMsg(name, 'Rollback failed', 'error');
     }
+  }
+
+  // ── Manifest-driven recovery: pending/history + stuck-update surfacing ─────
+
+  /** Per-service manifest snapshot (active + pending + history). Populated
+   *  lazily by loadManifest(); consumed by the rollback picker and the
+   *  "pending — restart to activate" banner. */
+  manifestByService: Record<string, JarManifestView> = {};
+
+  /** Locking-PID panel state, populated on demand by loadLockingProcesses().
+   *  Empty array = "we checked and found none"; missing key = "not checked
+   *  yet". Restart Manager is Windows-only; on other platforms this is always
+   *  empty even when a JAR is locked. */
+  lockingByService: Record<string, LockingProcess[]> = {};
+
+  /** Fetch the full JAR manifest for a service — used by the rollback picker
+   *  (needs history[]) and to detect the "crashed apply → pending set" case
+   *  when the operator opens the UI cold. */
+  async loadManifest(name: string): Promise<JarManifestView | null> {
+    try {
+      const m = await this.tauri.invoke<JarManifestView>('get_jar_manifest', { serviceName: name });
+      this.manifestByService[name] = m;
+      // If the manifest carries a pending entry but the update flow is idle,
+      // surface it as "staged — restart to activate" (same shape the split
+      // update flow uses on happy path). Keeps recovery one click away.
+      if (m.pending && !this.updateFlow[name]) {
+        this.updateFlow[name] = {
+          phase: 'staged', percent: 100, progressState: 'complete',
+          latestSha: m.pending.short_sha,
+          message: 'Ready to install',
+        };
+      }
+      return m;
+    } catch {
+      return null;
+    }
+  }
+
+  /** List processes still holding the service's active JAR. Called by the
+   *  "stuck update" panel after an apply times out. Cache in
+   *  lockingByService[name] so the template can render without re-invoking. */
+  async loadLockingProcesses(name: string): Promise<LockingProcess[]> {
+    try {
+      const list = await this.tauri.invoke<LockingProcess[]>('list_locking_processes', { serviceName: name });
+      this.lockingByService[name] = list;
+      return list;
+    } catch {
+      this.lockingByService[name] = [];
+      return [];
+    }
+  }
+
+  /** Force-kill every process holding the service's active JAR (Windows
+   *  Restart Manager), then cycle the service so start_service's recovery
+   *  logic promotes any pending JAR. Used by the "Force kill & restart"
+   *  action in the stuck-update panel. */
+  async forceFreeAndRestart(service: ServiceInfo): Promise<void> {
+    const name = service.name;
+    if (!confirm(`Force-kill every process holding ${this.displayName(name)}'s JAR and restart the service?`)) return;
+    this.setMsg(name, 'Force killing…', 'busy');
+    try {
+      await this.tauri.invoke('force_free_and_restart', { serviceName: name });
+      this.setMsg(name, 'Restarted', 'ok');
+      delete this.lockingByService[name];
+      delete this.updateFlow[name];
+      await this.loadServicesSilent();
+      await this.loadManifest(name);
+    } catch {
+      this.setMsg(name, 'Force restart failed', 'error');
+    }
+  }
+
+  /** Roll back to a specific historical JAR (by filename, from
+   *  manifest.history). The plain "Rollback" button walks back one step;
+   *  this one lets the operator pick a specific target. */
+  async rollbackToVersion(service: ServiceInfo, file: string): Promise<void> {
+    if (!confirm(`Roll back ${this.displayName(service.name)} to ${file}?`)) return;
+    const name = service.name;
+    this.setMsg(name, 'Rolling back…', 'busy');
+    try {
+      await this.tauri.invoke('rollback_native_service_to', { serviceName: name, file });
+      this.setMsg(name, 'Rolled back', 'ok');
+      await this.loadServicesSilent();
+      await this.loadManifest(name);
+    } catch {
+      this.setMsg(name, 'Rollback failed', 'error');
+    }
+  }
+
+  /** Convenience for the template: history entries available as rollback
+   *  targets, empty when the service was just installed. */
+  rollbackTargets(name: string): JarEntry[] {
+    return this.manifestByService[name]?.history ?? [];
   }
 
   // ── Initialize roles & permissions (auth bootstrap) ────────────────────
