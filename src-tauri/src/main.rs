@@ -69,7 +69,7 @@ fn main() {
             // GUI mode — launch Tauri window (default when no subcommand)
             init_logging();
             tracing::info!("Starting puru-dc");
-            run_gui(cli_args.minimized);
+            run_gui(cli_args.minimized, cli_args.elevated_restart);
         }
     }
 }
@@ -355,13 +355,19 @@ impl Drop for GuiInstanceLock {
 /// while `Global\` needs `SeCreateGlobalPrivilege` — which standard users don't
 /// hold, so it would fail exactly where it's needed.
 ///
-/// On contention we **wait** instead of exiting at once. `restart_as_admin`
-/// spawns the elevated copy and only then exits the old one, so the two overlap
-/// by design; a fail-fast lock would make the elevated instance give up
-/// mid-handoff and the app would appear to just close. A bounded wait rides out
-/// the handoff while still refusing a real duplicate.
+/// On contention we wait **only during an elevation handoff**, which `handoff`
+/// marks (it is `--elevated-restart`, set solely by `restart_as_admin`).
+/// `restart_as_admin` spawns the elevated copy and only then exits the old one,
+/// so those two overlap by design; a fail-fast lock would make the elevated
+/// instance give up mid-handoff and the app would appear to just close.
+///
+/// Every other launch must *not* wait. An operator double-clicking the tray
+/// app's shortcut while it is already running is the common case, and blocking
+/// there for 15s before giving up reads as "the app didn't start" — the second
+/// process has to reach the Tauri builder promptly so the single-instance
+/// plugin can raise the window that already exists.
 #[cfg(target_os = "windows")]
-fn acquire_gui_instance_lock() -> Option<GuiInstanceLock> {
+fn acquire_gui_instance_lock(handoff: bool) -> Option<GuiInstanceLock> {
     use windows_sys::Win32::Foundation::{
         GetLastError, CloseHandle, ERROR_ALREADY_EXISTS, WAIT_ABANDONED, WAIT_OBJECT_0,
     };
@@ -389,8 +395,9 @@ fn acquire_gui_instance_lock() -> Option<GuiInstanceLock> {
 
         // Someone else holds it. Wait for them to go away (elevation handoff), or
         // conclude this really is a second GUI.
-        tracing::info!("GUI instance lock held — waiting up to {}ms for handoff", HANDOFF_WAIT_MS);
-        match WaitForSingleObject(handle, HANDOFF_WAIT_MS) {
+        let wait_ms = if handoff { HANDOFF_WAIT_MS } else { 0 };
+        tracing::info!("GUI instance lock held — waiting up to {}ms for handoff", wait_ms);
+        match WaitForSingleObject(handle, wait_ms) {
             // WAIT_ABANDONED is the *normal* outcome here: the previous owner was
             // terminated rather than releasing cleanly, which is exactly what
             // `app.exit(0)` looks like. It still transfers ownership to us.
@@ -403,20 +410,26 @@ fn acquire_gui_instance_lock() -> Option<GuiInstanceLock> {
     }
 }
 
-fn run_gui(minimized: bool) {
+fn run_gui(minimized: bool, elevated_restart: bool) {
     // One GUI per session. Bound to a named local so it lives until the process
     // exits — `let _ = ...` would drop it immediately and release the lock.
+    //
+    // Losing the race is not fatal: we deliberately fall through to the builder
+    // without a lock so the single-instance plugin runs, raises the window that
+    // already exists, and exits this process itself. Returning here instead
+    // would make a second launch look like a silent no-op. The plugin exits on
+    // `ERROR_ALREADY_EXISTS` whether or not its `SendMessage` lands, so a
+    // duplicate GUI still cannot survive even across an integrity boundary.
     #[cfg(target_os = "windows")]
-    let _instance_lock = match acquire_gui_instance_lock() {
-        Some(lock) => lock,
+    let _instance_lock = match acquire_gui_instance_lock(elevated_restart) {
+        Some(lock) => Some(lock),
         None => {
-            // Nothing to focus from here: UIPI blocks us from raising a window
-            // owned by a higher-integrity instance, which is the case that got us
-            // here. Exiting quietly still beats a duplicate tray icon.
-            tracing::warn!("Another puru-dc GUI is already running — exiting this instance");
-            return;
+            tracing::warn!("Another puru-dc GUI holds the instance lock — deferring to it");
+            None
         }
     };
+    #[cfg(not(target_os = "windows"))]
+    let _ = elevated_restart;
 
     tauri::Builder::default()
         // Single-instance: if the operator (or an autostart chain) launches

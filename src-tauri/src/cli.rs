@@ -21,6 +21,14 @@ pub struct Cli {
     /// entry so the tray health indicator appears at boot without a window).
     #[arg(long, global = true)]
     pub minimized: bool,
+
+    /// Internal: set only on the elevated copy that `restart_as_admin` spawns.
+    /// It tells the GUI single-instance lock that the process it is contending
+    /// with is the *outgoing* one and will exit shortly, so it should wait for
+    /// the handoff instead of treating it as a duplicate. Hidden because it is
+    /// never meaningful to pass by hand.
+    #[arg(long, global = true, hide = true)]
+    pub elevated_restart: bool,
 }
 
 #[derive(Subcommand)]
