@@ -1863,6 +1863,12 @@ pub async fn setup_create_databases() -> Result<(), String> {
 /// `administrator`, and enables the management + delayed-message-exchange
 /// plugins. On the host path we first repair the Erlang cookie so `rabbitmqctl`
 /// can authenticate against the node.
+///
+/// Two transports, deliberately: `rabbitmqctl` needs a matching Erlang cookie,
+/// which is the single most common thing to break on Windows. When it can't
+/// reach the node we fall back to the Management API (cookie-free) and only fail
+/// the step if *both* are unusable — a cookie problem alone should never block an
+/// install whose goal is already achievable over HTTP.
 #[tauri::command]
 pub async fn setup_configure_rabbitmq() -> Result<(), String> {
     tracing::info!("Setup: configuring RabbitMQ (default vhost \"/\")");
@@ -1893,9 +1899,19 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         //     delayed-exchange is enabled ONLY when its .ez is actually present
         //     (otherwise explicitly disabled to clear any stale entry),
         //  3. start the node.
+
+        // Whether the node's own cookie file changed — decides below whether the
+        // service has to be bounced for the repair to actually take effect.
+        #[allow(unused_mut, unused_variables, unused_assignments)]
+        let mut restart_for_cookie = false;
+
         #[cfg(target_os = "windows")]
-        if let Err(e) = ensure_erlang_cookie() {
-            cookie_note = format!(" (Erlang cookie: {} — run as administrator)", e);
+        match ensure_erlang_cookie() {
+            Ok(repair) => restart_for_cookie = repair.node_cookie_changed,
+            Err(e) => {
+                tracing::warn!("RabbitMQ: {}", e);
+                cookie_note = format!(" (Erlang cookie: {})", e);
+            }
         }
 
         let rabbitmqctl = find_rabbitmqctl().await.ok_or_else(|| {
@@ -1937,7 +1953,7 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
 
         // (3) Now the node can boot cleanly.
         #[cfg(target_os = "windows")]
-        if let Err(e) = ensure_rabbitmq_running().await {
+        if let Err(e) = ensure_rabbitmq_running(restart_for_cookie).await {
             cookie_note = format!("{} ({})", cookie_note, e);
         }
 
@@ -1975,6 +1991,26 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
         return Ok(());
     }
 
+    // rabbitmqctl couldn't confirm it — but that is very often a *transport*
+    // failure (Erlang cookie mismatch) rather than a broker failure: the node
+    // itself is healthy and answering on HTTP. Converge and verify over the
+    // Management API, which needs no cookie, before calling this step failed.
+    // Configuring the broker is the goal; rabbitmqctl is just one way to do it.
+    if let Err(e) = crate::infra::ensure_rabbitmq_user().await {
+        tracing::warn!("RabbitMQ: management-API fallback unavailable: {}", e);
+    }
+    if crate::infra::verify_rabbitmq_app_user().await {
+        tracing::info!(
+            "Setup: RabbitMQ configured via the management API — rabbitmqctl was unreachable{}",
+            if cookie_note.is_empty() {
+                String::new()
+            } else {
+                format!(" —{}", cookie_note)
+            }
+        );
+        return Ok(());
+    }
+
     // Distinguish "node unreachable" from "user/password problem": `list_users`
     // fails with a connection/cookie error when the node is down, but succeeds
     // when it's up — so it tells the two cases apart.
@@ -1990,10 +2026,11 @@ pub async fn setup_configure_rabbitmq() -> Result<(), String> {
             )
         } else {
             format!(
-                "RabbitMQ configuration failed: rabbitmqctl could not connect to the RabbitMQ node. \
-                 The RabbitMQ Windows service is most likely stopped, or the Erlang cookie doesn't match \
-                 between the service (runs as SYSTEM) and your user account — so commands can't \
-                 authenticate to the node.{}\n\nrabbitmqctl said: {}",
+                "RabbitMQ configuration failed: neither rabbitmqctl nor the management API on \
+                 http://127.0.0.1:15672 could configure the broker. The RabbitMQ Windows service is \
+                 most likely stopped; if it is running, the Erlang cookie doesn't match between the \
+                 service (runs as SYSTEM) and your user account AND the management plugin is off, so \
+                 there is no way left to reach the node.{}\n\nrabbitmqctl said: {}",
                 cookie_note, detail
             )
         });
@@ -2056,12 +2093,30 @@ async fn enable_rabbitmq_plugins_docker() {
     }
 }
 
-/// Repair the Erlang cookie on Windows: the RabbitMQ node runs as LocalSystem
-/// while `rabbitmqctl` runs as the invoking (admin) user. Erlang authenticates
-/// the two by a shared `.erlang.cookie`; a mismatch causes "Could not connect /
-/// auth failed". Copy the node's cookie into the user's home so they match.
+/// Outcome of a cookie repair — tells the caller whether the *node's* own cookie
+/// file changed, because a node that is already running keeps the cookie it read
+/// at boot and only adopts the new one after a service restart.
 #[cfg(target_os = "windows")]
-fn ensure_erlang_cookie() -> Result<(), String> {
+struct CookieRepair {
+    node_cookie_changed: bool,
+}
+
+/// Repair the Erlang cookie on Windows: the RabbitMQ node runs as LocalSystem
+/// while `rabbitmqctl` runs as the invoking user. Erlang authenticates the two by
+/// a shared `.erlang.cookie`; a mismatch causes "TCP connection succeeded but
+/// Erlang distribution failed".
+///
+/// Two rules make this actually converge:
+///
+/// 1. **The running node wins.** Its VM loaded a cookie at boot and cannot adopt
+///    a different one without a restart, so when the broker is up we treat the
+///    SYSTEM cookie as authoritative and align the user's copy to it — no
+///    downtime. Only when the node is down are we free to pick (or generate) one.
+/// 2. **Both homes must agree.** Writing one of the two leaves exactly the
+///    mismatch this function exists to remove, so a partial repair is an error,
+///    not a success.
+#[cfg(target_os = "windows")]
+fn ensure_erlang_cookie() -> Result<CookieRepair, String> {
     use std::path::PathBuf;
 
     let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
@@ -2074,39 +2129,105 @@ fn ensure_erlang_cookie() -> Result<(), String> {
         .ok()
         .map(|u| PathBuf::from(u).join(".erlang.cookie"));
 
-    // Canonical value: an existing user cookie, else the systemprofile cookie,
-    // else a freshly generated one. Whatever it is, we write it to BOTH homes so
-    // the node (SYSTEM) and rabbitmqctl (user) share a cookie and can authenticate.
-    let value: Vec<u8> = user
-        .as_ref()
-        .and_then(|p| std::fs::read(p).ok())
-        .filter(|v| !v.is_empty())
-        .or_else(|| std::fs::read(&systemprofile).ok().filter(|v| !v.is_empty()))
-        .unwrap_or_else(|| generate_erlang_cookie().into_bytes());
+    let sys_cookie = read_cookie(&systemprofile);
+    let user_cookie = user.as_deref().and_then(read_cookie);
+
+    let node_up = rabbitmq_node_up();
+    let value: Vec<u8> = if node_up {
+        // Rule 1 — never hand a live node a cookie it can't be holding.
+        sys_cookie.clone().or_else(|| user_cookie.clone()).ok_or_else(|| {
+            "the RabbitMQ node is running but no Erlang cookie could be read from either home — \
+             re-run Nucleus as administrator so the SYSTEM cookie is readable"
+                .to_string()
+        })?
+    } else {
+        user_cookie
+            .clone()
+            .or_else(|| sys_cookie.clone())
+            .unwrap_or_else(|| generate_erlang_cookie().into_bytes())
+    };
+
+    let node_cookie_changed = sys_cookie.as_deref() != Some(value.as_slice());
 
     let mut dests: Vec<PathBuf> = vec![systemprofile];
     if let Some(u) = user {
         dests.push(u);
     }
 
-    let mut wrote = false;
-    for dest in dests {
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    let mut failures: Vec<String> = Vec::new();
+    for dest in &dests {
+        if read_cookie(dest).as_deref() == Some(value.as_slice()) {
+            continue; // already correct — leave it alone
         }
-        match std::fs::write(&dest, &value) {
-            Ok(_) => {
-                tracing::info!("RabbitMQ: Erlang cookie set at {}", dest.display());
-                wrote = true;
-            }
-            Err(e) => tracing::warn!("RabbitMQ: could not write cookie to {}: {}", dest.display(), e),
+        match write_cookie(dest, &value) {
+            Ok(_) => tracing::info!("RabbitMQ: Erlang cookie aligned at {}", dest.display()),
+            Err(e) => failures.push(format!("{} ({})", dest.display(), e)),
         }
     }
-    if wrote {
-        Ok(())
+
+    // Rule 2 — anything less than "both homes hold the same value" is a failure.
+    if !failures.is_empty() {
+        return Err(format!(
+            "could not align the Erlang cookie at: {} — re-run Nucleus as administrator if this persists",
+            failures.join("; ")
+        ));
+    }
+    Ok(CookieRepair { node_cookie_changed })
+}
+
+/// Read a cookie file, normalized. Erlang compares the cookie as exact file
+/// contents, so a stray CRLF is the difference between matching and not — trim
+/// on the way in and out and the comparison stays meaningful. `None` for absent
+/// or empty files.
+#[cfg(target_os = "windows")]
+fn read_cookie(path: &std::path::Path) -> Option<Vec<u8>> {
+    let raw = std::fs::read(path).ok()?;
+    let trimmed = String::from_utf8_lossy(&raw).trim().as_bytes().to_vec();
+    if trimmed.is_empty() {
+        None
     } else {
-        Err("could not write the Erlang cookie (need administrator)".to_string())
+        Some(trimmed)
     }
+}
+
+/// Write a cookie file, clearing the ReadOnly attribute first.
+///
+/// RabbitMQ's own Windows installer marks `.erlang.cookie` ReadOnly, and on
+/// Windows that *attribute* denies writes even when the ACL grants the owner
+/// FullControl — so without this the repair fails with "Access is denied" on a
+/// file the user owns, and no amount of elevation helps. The write is read back
+/// because a silent partial write would reintroduce the very mismatch we are
+/// here to remove.
+#[cfg(target_os = "windows")]
+fn write_cookie(dest: &std::path::Path, value: &[u8]) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(md) = std::fs::metadata(dest) {
+        let mut perms = md.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            std::fs::set_permissions(dest, perms)
+                .map_err(|e| format!("could not clear the ReadOnly attribute: {}", e))?;
+        }
+    }
+    std::fs::write(dest, value).map_err(|e| e.to_string())?;
+    match read_cookie(dest) {
+        Some(v) if v == value => Ok(()),
+        Some(_) => Err("written but read back with a different value".to_string()),
+        None => Err("written but read back empty".to_string()),
+    }
+}
+
+/// True when the broker is already answering AMQP — meaning its Erlang VM has
+/// loaded a cookie and cannot adopt a new one without a service restart.
+#[cfg(target_os = "windows")]
+fn rabbitmq_node_up() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], 5672)),
+        std::time::Duration::from_millis(600),
+    )
+    .is_ok()
 }
 
 /// Generate a RabbitMQ-style Erlang cookie (uppercase alphanumeric, 20 chars).
@@ -2233,8 +2354,9 @@ pub(crate) async fn ensure_mysql_running() -> Result<(), String> {
 /// Public wrapper so the daemon can call the Windows `ensure_rabbitmq_running`
 /// (which is defined below for target_os = "windows" only) uniformly.
 pub(crate) async fn ensure_rabbitmq_running_public() -> Result<(), String> {
+    // No cookie was touched on this path, so a running node needs no restart.
     #[cfg(target_os = "windows")]
-    return ensure_rabbitmq_running().await;
+    return ensure_rabbitmq_running(false).await;
 
     #[cfg(not(target_os = "windows"))]
     Ok(())
@@ -2243,22 +2365,31 @@ pub(crate) async fn ensure_rabbitmq_running_public() -> Result<(), String> {
 /// Start the RabbitMQ Windows service if it isn't running and wait for the node
 /// to accept AMQP on 5672. The service (SYSTEM) picks up the shared cookie written
 /// by `ensure_erlang_cookie` on start, so this must run after it.
+///
+/// `restart_for_cookie` closes the gap that made the cookie repair inert: the
+/// Erlang VM reads its cookie once, at boot. If we just rewrote the node's cookie
+/// file while the node was up, the file is correct and the *node* is still using
+/// the old value — so bounce the service rather than returning a success that
+/// leaves the original mismatch in place.
 #[cfg(target_os = "windows")]
-async fn ensure_rabbitmq_running() -> Result<(), String> {
-    fn amqp_up() -> bool {
-        std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], 5672)),
-            std::time::Duration::from_millis(600),
-        )
-        .is_ok()
-    }
-
-    if amqp_up() {
-        return Ok(());
-    }
-
+async fn ensure_rabbitmq_running(restart_for_cookie: bool) -> Result<(), String> {
     // Discover the RabbitMQ service name (usually "RabbitMQ", but don't assume).
     let svc = rabbitmq_service_name().unwrap_or_else(|| "RabbitMQ".to_string());
+
+    if rabbitmq_node_up() {
+        if !restart_for_cookie {
+            return Ok(());
+        }
+        tracing::info!(
+            "RabbitMQ: node cookie changed while the broker was up — restarting service '{}' so it takes effect",
+            svc
+        );
+        let _ = crate::process::silent_cmd("net")
+            .args(["stop", &svc])
+            .output()
+            .await;
+    }
+
     let _ = crate::process::silent_cmd("net")
         .args(["start", &svc])
         .output()
@@ -2266,7 +2397,7 @@ async fn ensure_rabbitmq_running() -> Result<(), String> {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        if amqp_up() {
+        if rabbitmq_node_up() {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {

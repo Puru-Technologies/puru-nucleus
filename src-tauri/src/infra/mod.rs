@@ -226,6 +226,21 @@ pub async fn ensure_rabbitmq_user() -> Result<(), String> {
     Ok(())
 }
 
+/// Prove the app user can actually authenticate, over the Management API rather
+/// than `rabbitmqctl`. This needs no Erlang cookie, so it still answers when the
+/// CLI can't reach the node at all — which is the difference between "the broker
+/// is misconfigured" and "our CLI transport is broken".
+pub async fn verify_rabbitmq_app_user() -> bool {
+    reqwest::Client::new()
+        .get(format!("{}/whoami", RMQ_API))
+        .basic_auth(RMQ_APP_USER, Some(RMQ_APP_PASS))
+        .timeout(Duration::from_secs(4))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 fn mysql_row(config: &NucleusConfig) -> ServiceInfo {
     let port = if config.mysql_port == 0 { 3306 } else { config.mysql_port };
     let up = port_open(port);
