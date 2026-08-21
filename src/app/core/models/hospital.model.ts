@@ -106,15 +106,51 @@ export interface FileActionResult {
 /**
  * Alert stored in hospital alerts subcollection
  */
+/**
+ * Categories the watchdog writes (src-tauri/src/daemon/scheduler.rs). Typed as
+ * a union of the known values plus `string`, so a category added on the Rust
+ * side still parses instead of breaking the build.
+ */
+export type AlertCategory =
+  | 'disk_space'
+  | 'memory'
+  | 'service_down'
+  | 'service_restart'
+  | 'service_recovered'
+  | 'service_not_installed'
+  | 'boot_task_missing'
+  | 'backup'
+  | 'license'
+  | 'network'
+  | (string & {});
+
 export interface HospitalAlert {
   id: string;
   severity: 'critical' | 'warning' | 'info';
-  category: 'service' | 'backup' | 'disk' | 'license' | 'network';
+  category: AlertCategory;
   title: string;
   message: string;
+  /** A human has seen it. */
   acknowledged: boolean;
   created_at: string;
   acknowledged_at?: string;
+  /** The condition cleared — set by the watchdog, not by a human. */
+  resolved: boolean;
+  resolved_at?: string;
+}
+
+/** Human label for an alert category, for chips and filters. */
+export function alertCategoryLabel(category: AlertCategory): string {
+  switch (category) {
+    case 'disk_space': return 'Hard disk';
+    case 'memory': return 'RAM';
+    case 'service_down': return 'Service down';
+    case 'service_restart': return 'Service restart';
+    case 'service_recovered': return 'Service recovered';
+    case 'service_not_installed': return 'Not installed';
+    case 'boot_task_missing': return 'Boot task';
+    default: return category;
+  }
 }
 
 /**

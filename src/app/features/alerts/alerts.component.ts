@@ -1,6 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { HospitalAlert } from '../../core/models/hospital.model';
+import { HospitalAlert, alertCategoryLabel } from '../../core/models/hospital.model';
 import { TauriService } from '../../core/services/tauri.service';
 import { NotificationService } from '../../core/services/notification.service';
 
@@ -52,13 +52,28 @@ import { NotificationService } from '../../core/services/notification.service';
             <span class="label">Info</span>
           </div>
         </div>
+
+        <div class="card card-pad summary-card resolved" [class.active]="resolvedCount > 0">
+          <div class="summary-content">
+            <span class="material-icons">task_alt</span>
+            <span class="count">{{ resolvedCount }}</span>
+            <span class="label">Resolved</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-row">
+        <label class="toggle">
+          <input type="checkbox" [checked]="showResolved" (change)="toggleResolved()">
+          <span>Show resolved</span>
+        </label>
       </div>
 
       @if (loading) {
         <div class="loading-container">
           <span class="spinner spinner-lg"></span>
         </div>
-      } @else if (alerts.length === 0) {
+      } @else if (visibleAlerts.length === 0) {
         <div class="card card-pad empty-state">
           <span class="material-icons">notifications_off</span>
           <p>No alerts</p>
@@ -66,14 +81,17 @@ import { NotificationService } from '../../core/services/notification.service';
         </div>
       } @else {
         <div class="alerts-list">
-          @for (alert of alerts; track alert.id) {
-            <div class="card card-pad alert-card" [class]="'card card-pad alert-card severity-' + alert.severity" [class.acknowledged]="alert.acknowledged">
+          @for (alert of visibleAlerts; track alert.id) {
+            <div class="card card-pad alert-card" [class]="'card card-pad alert-card severity-' + alert.severity" [class.acknowledged]="alert.acknowledged" [class.resolved]="alert.resolved">
               <div class="alert-header">
-                <span class="material-icons">{{ getIcon(alert.severity) }}</span>
+                <span class="material-icons">{{ alert.resolved ? 'task_alt' : getIcon(alert.severity) }}</span>
                 <div class="alert-info">
                   <div class="alert-title">{{ alert.title }}</div>
                   <div class="alert-meta">
-                    <span class="chip">{{ alert.category }}</span>
+                    <span class="chip">{{ categoryLabel(alert.category) }}</span>
+                    @if (alert.resolved) {
+                      <span class="chip resolved-chip">Resolved {{ alert.resolved_at | date:'short' }}</span>
+                    }
                     <span class="timestamp">{{ alert.created_at | date:'short' }}</span>
                   </div>
                 </div>
@@ -114,9 +132,24 @@ import { NotificationService } from '../../core/services/notification.service';
 
     .alert-summary {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 1rem;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .filter-row {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 1rem;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.875rem;
+      color: #666;
+      cursor: pointer;
     }
 
     .summary-card {
@@ -164,6 +197,11 @@ import { NotificationService } from '../../core/services/notification.service';
       &.info {
         .material-icons, .count { color: #2196f3; }
         &.active { border-left: 4px solid #2196f3; }
+      }
+
+      &.resolved {
+        .material-icons, .count { color: #4caf50; }
+        &.active { border-left: 4px solid #4caf50; }
       }
     }
 
@@ -219,6 +257,18 @@ import { NotificationService } from '../../core/services/notification.service';
       &.acknowledged {
         opacity: 0.6;
       }
+
+      // A resolved alert is history, not a problem — green rail, muted.
+      &.resolved {
+        opacity: 0.75;
+        border-left: 4px solid #4caf50 !important;
+        .material-icons:first-child { color: #4caf50 !important; }
+      }
+    }
+
+    .resolved-chip {
+      background: #e8f5e9;
+      color: #2e7d32;
     }
 
     .alert-header {
@@ -264,21 +314,41 @@ export class AlertsComponent implements OnInit {
 
   alerts: HospitalAlert[] = [];
   loading = true;
+  showResolved = false;
+
+  categoryLabel = alertCategoryLabel;
+
+  /** Alerts whose condition is still present. */
+  private get openAlerts(): HospitalAlert[] {
+    return this.alerts.filter(a => !a.resolved);
+  }
+
+  get visibleAlerts(): HospitalAlert[] {
+    return this.showResolved ? this.alerts : this.openAlerts;
+  }
 
   get criticalCount(): number {
-    return this.alerts.filter(a => a.severity === 'critical' && !a.acknowledged).length;
+    return this.openAlerts.filter(a => a.severity === 'critical' && !a.acknowledged).length;
   }
 
   get warningCount(): number {
-    return this.alerts.filter(a => a.severity === 'warning' && !a.acknowledged).length;
+    return this.openAlerts.filter(a => a.severity === 'warning' && !a.acknowledged).length;
   }
 
   get infoCount(): number {
-    return this.alerts.filter(a => a.severity === 'info' && !a.acknowledged).length;
+    return this.openAlerts.filter(a => a.severity === 'info' && !a.acknowledged).length;
+  }
+
+  get resolvedCount(): number {
+    return this.alerts.filter(a => a.resolved).length;
   }
 
   get unacknowledgedCount(): number {
     return this.alerts.filter(a => !a.acknowledged).length;
+  }
+
+  toggleResolved(): void {
+    this.showResolved = !this.showResolved;
   }
 
   ngOnInit(): void {
@@ -289,8 +359,9 @@ export class AlertsComponent implements OnInit {
     this.loading = true;
     try {
       this.alerts = await this.tauri.invoke<HospitalAlert[]>('get_alerts');
-      // Sort by severity and then by date
+      // Still-broken first, then by severity, then newest first
       this.alerts.sort((a, b) => {
+        if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
         const severityOrder = { critical: 0, warning: 1, info: 2 };
         if (severityOrder[a.severity] !== severityOrder[b.severity]) {
           return severityOrder[a.severity] - severityOrder[b.severity];

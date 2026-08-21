@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { TauriService, ServiceInfo, SystemInfo, DaemonStatus, NetworkStatus, SpeedTestResult, BackupRecord } from '../../core/services/tauri.service';
 import { License } from '../../core/models/license.model';
-import { HospitalAlert } from '../../core/models/hospital.model';
+import { HospitalAlert, alertCategoryLabel } from '../../core/models/hospital.model';
 import { PuruLogoComponent } from '../../core/components/puru-logo.component';
 import { LogViewerDialogComponent } from '../../core/components/log-viewer-dialog.component';
 import { NotificationService } from '../../core/services/notification.service';
@@ -130,8 +130,21 @@ interface ActivityItem { icon: string; kind: 'ok' | 'warn' | 'info'; text: strin
                 @for (a of openAlerts.slice(0, 3); track a.id) {
                   <tr>
                     <td style="width:3px;padding-right:0"><div class="sev" [class]="'sev-' + a.severity"></div></td>
-                    <td><div class="msg">{{ a.title }}</div><div class="sub">{{ timeAgo(toDate(a.created_at)) }}</div></td>
+                    <td><div class="msg">{{ a.title }}</div><div class="sub">{{ alertCategoryLabel(a.category) }} · {{ timeAgo(toDate(a.created_at)) }}</div></td>
                     <td style="text-align:right"><button class="ackbtn" (click)="ack(a)">Ack</button></td>
+                  </tr>
+                }
+              </tbody></table>
+            }
+            <!-- Recovery is news too: a problem that fixed itself should say so
+                 rather than just vanishing from the list. -->
+            @if (recentlyResolved.length) {
+              <table class="alerts resolved-list"><tbody>
+                @for (a of recentlyResolved.slice(0, 2); track a.id) {
+                  <tr>
+                    <td style="width:3px;padding-right:0"><div class="sev sev-resolved"></div></td>
+                    <td><div class="msg">{{ a.title }}</div><div class="sub">Resolved {{ timeAgo(toDate(a.resolved_at || a.created_at)) }}</div></td>
+                    <td style="text-align:right"><span class="material-icons resolved-tick">task_alt</span></td>
                   </tr>
                 }
               </tbody></table>
@@ -310,6 +323,9 @@ interface ActivityItem { icon: string; kind: 'ok' | 'warn' | 'info'; text: strin
     .alerts .msg{color:var(--text-primary);} .alerts .sub{color:var(--text-secondary);font-size:12.5px;}
     .sev{width:3px;height:30px;border-radius:2px;background:var(--text-muted);}
     .sev-critical{background:var(--status-red,#d94339);} .sev-warning{background:var(--status-orange,#c67608);} .sev-info{background:var(--brand-blue,#009efb);}
+    .sev-resolved{background:var(--status-green,#2e9e5b);}
+    .resolved-list{opacity:.8;} .resolved-list .msg{color:var(--text-secondary);}
+    .resolved-tick{font-size:17px;color:var(--status-green,#2e9e5b);}
     .ackbtn{font-size:12.5px;padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--card-bg,#fff);cursor:pointer;color:var(--text-secondary);}
     .ackbtn:hover{color:var(--text-primary);border-color:var(--brand-blue,#009efb);}
 
@@ -389,7 +405,16 @@ export class DashboardComponent implements OnInit, OnDestroy {
   }
   get runningApp(): number { return this.appServices.filter(s => s.status === 'running').length; }
   get servicePct(): number { return this.appServices.length ? Math.round(this.runningApp / this.appServices.length * 100) : 0; }
-  get openAlerts(): HospitalAlert[] { return this.alerts.filter(a => !a.acknowledged); }
+  alertCategoryLabel = alertCategoryLabel;
+  /** Unacknowledged and still broken — a resolved alert needs no attention. */
+  get openAlerts(): HospitalAlert[] { return this.alerts.filter(a => !a.acknowledged && !a.resolved); }
+  /** Conditions that fixed themselves recently, newest first. */
+  get recentlyResolved(): HospitalAlert[] {
+    return this.alerts
+      .filter(a => a.resolved)
+      .sort((a, b) => this.toDate(b.resolved_at || b.created_at).getTime()
+                    - this.toDate(a.resolved_at || a.created_at).getTime());
+  }
   get ramTotal(): string { return this.systemInfo ? this.systemInfo.total_ram_gb.toFixed(0) : '—'; }
   get ramUsed(): string { return this.telemetry ? this.telemetry.ram_gb.toFixed(1) : '—'; }
   get ramPct(): number {
@@ -435,6 +460,10 @@ export class DashboardComponent implements OnInit, OnDestroy {
       .sort((a, b) => this.toDate(b.created_at).getTime() - this.toDate(a.created_at).getTime())[0];
     if (lastDone) items.push({ icon: 'check_circle', kind: 'ok', text: 'Backup completed — uploaded to cloud', time: this.timeAgo(this.toDate(lastDone.created_at)) });
     for (const a of this.alerts.slice(0, 3)) {
+      if (a.resolved) {
+        items.push({ icon: 'task_alt', kind: 'ok', text: a.title, time: this.timeAgo(this.toDate(a.resolved_at || a.created_at)) });
+        continue;
+      }
       items.push({ icon: a.severity === 'critical' || a.severity === 'warning' ? 'warning_amber' : 'info', kind: a.severity === 'info' ? 'info' : 'warn', text: a.title, time: this.timeAgo(this.toDate(a.created_at)) });
     }
     return items.slice(0, 4);

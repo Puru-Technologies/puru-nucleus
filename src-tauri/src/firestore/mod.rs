@@ -433,10 +433,64 @@ impl FirestoreClient {
             "title": string_value(title),
             "message": string_value(message),
             "acknowledged": boolean_value(false),
+            // Written explicitly (rather than left absent) so puru-oxygen can
+            // query `resolved == false` for the "still broken" list.
+            "resolved": boolean_value(false),
             "created_at": timestamp_value(&now),
         });
 
         queries::create_document(&self.http, &token, &parent, "alerts", fields).await
+    }
+
+    /// Mirror the watchdog's currently-open alerts onto `hospital/{code}` as an
+    /// `alert_summary` map.
+    ///
+    /// Same idea as `services` / `backup_summary`: the puru-oxygen hospital list
+    /// can badge every site from one document read instead of a subcollection
+    /// query per hospital. The alerts subcollection stays the source of truth
+    /// for detail; this is the rollup.
+    pub async fn push_alert_summary(
+        &self,
+        code: &str,
+        critical: i64,
+        warning: i64,
+        categories: &[String],
+    ) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}", code);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut summary = serde_json::Map::new();
+        summary.insert("critical".into(), integer_value(critical));
+        summary.insert("warning".into(), integer_value(warning));
+        summary.insert("open".into(), integer_value(critical + warning));
+        summary.insert(
+            "categories".into(),
+            array_value(categories.iter().map(|c| string_value(c)).collect()),
+        );
+        summary.insert("updated_at".into(), timestamp_value(&now));
+
+        let fields = json!({ "alert_summary": map_value(summary) });
+        queries::patch_document(&self.http, &token, &path, fields, &["alert_summary"]).await
+    }
+
+    /// Mark an alert resolved — the condition that raised it has cleared.
+    ///
+    /// Separate from `acknowledge_alert`: acknowledging says a human saw it,
+    /// resolving says the machine is healthy again. An alert can be resolved
+    /// without ever having been acknowledged.
+    pub async fn resolve_alert(&self, code: &str, alert_id: &str) -> Result<(), NucleusError> {
+        let token = self.token().await?;
+        let path = format!("hospital/{}/alerts/{}", code, alert_id);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let fields = json!({
+            "resolved": boolean_value(true),
+            "resolved_at": timestamp_value(&now),
+        });
+
+        queries::patch_document(&self.http, &token, &path, fields, &["resolved", "resolved_at"])
+            .await
     }
 
     /// Log deactivation event and clear nucleus heartbeat from hospital doc.

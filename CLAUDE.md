@@ -190,8 +190,20 @@ puru daemon                 Run daemon mode
 ### Firestore Collections
 
 **Written by puru-nucleus:**
-- `hospital/{code}` — heartbeat (nucleus field), services, backup_summary
-- `hospital/{code}/alerts` — watchdog alerts (severity, category, title, message)
+- `hospital/{code}` — heartbeat (nucleus field), services, backup_summary, alert_summary
+- `hospital/{code}/alerts` — watchdog alerts (severity, category, title, message, acknowledged, resolved)
+
+`acknowledged` and `resolved` are independent: `acknowledged` means a human saw
+the alert, `resolved` means the watchdog observed the condition clear. On
+recovery the watchdog patches the original alert to `resolved: true` and pushes
+a separate `info` alert ("Resolved: …") so the fix is visible, not just the
+absence of the problem. `alert_summary` on the hospital doc is the rollup for
+the puru-oxygen dashboard — `{critical, warning, open, categories, updated_at}`,
+written only when it changes.
+
+Alert categories: `disk_space`, `memory` (RAM), `service_down`,
+`service_restart`, `service_recovered`, `service_not_installed`,
+`boot_task_missing`.
 - `hospital/{code}/commands/{id}` — command results (status, result, error)
 - `hospital/{code}/telemetry/{id}` — telemetry snapshots
 

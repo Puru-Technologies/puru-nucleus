@@ -62,6 +62,83 @@ pub struct ServiceSnapshot {
     pub health_ms: Option<u64>,
 }
 
+/// Physical RAM, in GB. Distinct from disk space — the two are easy to confuse
+/// in alert text, so anything user-facing built from this must say "RAM".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RamUsage {
+    pub total_gb: f64,
+    pub used_gb: f64,
+    /// Memory the OS can hand to a process right now. On Linux this counts
+    /// reclaimable page cache, so it is much larger — and much more honest —
+    /// than `total - used`.
+    pub available_gb: f64,
+    pub used_percent: f64,
+}
+
+/// Usage of one mounted filesystem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskUsage {
+    /// Mount point / drive letter, e.g. `C:\` or `/var`.
+    pub mount: String,
+    pub total_gb: f64,
+    pub free_gb: f64,
+    pub used_percent: f64,
+}
+
+/// Current physical RAM usage.
+pub fn ram_usage() -> RamUsage {
+    use sysinfo::{System, SystemExt};
+
+    let mut sys = System::new();
+    sys.refresh_memory();
+
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let total_gb = sys.total_memory() as f64 / GB;
+    let used_gb = sys.used_memory() as f64 / GB;
+    let available_gb = sys.available_memory() as f64 / GB;
+
+    RamUsage {
+        total_gb,
+        used_gb,
+        available_gb,
+        used_percent: if total_gb > 0.0 {
+            ((total_gb - available_gb) / total_gb) * 100.0
+        } else {
+            0.0
+        },
+    }
+}
+
+/// The fullest mounted disk. `disk_percent` in a snapshot averages every disk
+/// together, which hides a single drive about to fill up — alerts name the
+/// specific drive instead.
+pub fn fullest_disk() -> Option<DiskUsage> {
+    use sysinfo::{DiskExt, System, SystemExt};
+
+    let mut sys = System::new();
+    sys.refresh_disks_list();
+
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    sys.disks()
+        .iter()
+        .filter(|d| d.total_space() > 0)
+        .map(|d| {
+            let total = d.total_space() as f64;
+            let free = d.available_space() as f64;
+            DiskUsage {
+                mount: d.mount_point().to_string_lossy().to_string(),
+                total_gb: total / GB,
+                free_gb: free / GB,
+                used_percent: ((total - free) / total) * 100.0,
+            }
+        })
+        .max_by(|a, b| {
+            a.used_percent
+                .partial_cmp(&b.used_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 /// Collect a telemetry snapshot with current system + Docker service metrics
 pub async fn collect_snapshot() -> Result<TelemetrySnapshot, crate::error::NucleusError> {
     use sysinfo::{CpuExt, DiskExt, System, SystemExt};

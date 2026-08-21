@@ -590,6 +590,10 @@ pub struct Alert {
     pub acknowledged: bool,
     pub created_at: String,
     pub acknowledged_at: Option<String>,
+    /// The condition that raised this alert has cleared (set by the watchdog,
+    /// not by a human — that's `acknowledged`).
+    pub resolved: bool,
+    pub resolved_at: Option<String>,
 }
 
 /// A cloud command's live state, for the GUI's command-activity banner.
@@ -834,6 +838,13 @@ pub async fn get_alerts() -> Result<Vec<Alert>, String> {
                 .unwrap_or_default();
             let acknowledged_at = doc.fields.get("acknowledged_at")
                 .and_then(crate::firestore::convert::get_optional_timestamp);
+            // Alerts written before resolution tracking existed have no
+            // `resolved` field — treat those as still open.
+            let resolved = doc.fields.get("resolved")
+                .and_then(|v| crate::firestore::convert::get_bool(v).ok())
+                .unwrap_or(false);
+            let resolved_at = doc.fields.get("resolved_at")
+                .and_then(crate::firestore::convert::get_optional_timestamp);
 
             Some(Alert {
                 id,
@@ -844,6 +855,8 @@ pub async fn get_alerts() -> Result<Vec<Alert>, String> {
                 acknowledged,
                 created_at,
                 acknowledged_at,
+                resolved,
+                resolved_at,
             })
         })
         .collect();
@@ -3883,7 +3896,14 @@ pub async fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
             .args([
                 "-NoProfile",
                 "-Command",
-                &format!("Start-Process -FilePath {} -Verb RunAs", exe_arg),
+                // `--elevated-restart` tells the new instance that the lock it
+                // is about to contend with belongs to *us*, and that we are on
+                // our way out — so it waits for the handoff rather than
+                // deferring to a GUI that is about to disappear.
+                &format!(
+                    "Start-Process -FilePath {} -ArgumentList '--elevated-restart' -Verb RunAs",
+                    exe_arg
+                ),
             ])
             .status()
             .await
