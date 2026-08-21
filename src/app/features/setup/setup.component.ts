@@ -1871,8 +1871,25 @@ export class SetupComponent implements OnInit {
       detach();
     }
 
-    this.setupComplete = true;
     this.setupInProgress = false;
+    await this.finalizeSetupIfDone();
+  }
+
+  /**
+   * Completion tail, shared by the full run and per-step re-runs.
+   *
+   * Setup is finished when every step is completed — it does not matter which
+   * button got them there. Marking completion only at the end of the full-run
+   * loop meant an operator who worked through the steps one at a time left
+   * `setup_completed` false: every step green, but the init guard still bounces
+   * them back to /setup, and the daemon's boot-task self-heal stays disabled.
+   */
+  private async finalizeSetupIfDone(): Promise<void> {
+    if (!this.steps.length || !this.steps.every(s => s.status === 'completed')) {
+      return;
+    }
+
+    this.setupComplete = true;
 
     // Record that setup has completed so the shell can hide config screens by
     // default from now on (revealed again via the Configuration unlock button).
@@ -1910,6 +1927,9 @@ export class SetupComponent implements OnInit {
       await this.executeStep(index);
       step.status = 'completed';
       this.notification.success(`${step.label} — done`);
+      // This may have been the last outstanding step — finish setup properly
+      // instead of leaving it permanently "almost done".
+      await this.finalizeSetupIfDone();
     } catch (error) {
       step.status = 'error';
       step.message = String(error);
