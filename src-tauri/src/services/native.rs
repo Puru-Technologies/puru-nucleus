@@ -359,19 +359,19 @@ fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::Ha
         }
     }
 
-    // GCP auth approach 2 (broker): service JVMs fetch short-lived, scoped
-    // access tokens from the local daemon's loopback token endpoint instead of
-    // reading the service-account key file. We deliberately do NOT set
-    // GOOGLE_APPLICATION_CREDENTIALS or SPRING_CLOUD_GCP_CREDENTIALS_LOCATION —
-    // the SA key (encrypted at rest) never leaves nucleus. `GCP_AUTH_APPROACH`
-    // maps to the Spring property `gcp.auth.approach` (2 = broker; 1 = legacy
-    // ADC/key-file default when unset).
+    // GCP auth: service JVMs fetch short-lived, scoped access tokens from the
+    // local daemon's loopback token endpoint. The SA key (encrypted at rest)
+    // never leaves nucleus. We deliberately do NOT set
+    // GOOGLE_APPLICATION_CREDENTIALS or SPRING_CLOUD_GCP_CREDENTIALS_LOCATION.
+    //
+    // The former `GCP_AUTH_APPROACH=2` toggle is gone — puru-pacs and
+    // puru-realtime hard-switched to broker-only, so a switch value would be
+    // ignored downstream and setting it is just misleading dead config.
     let (daemon_port, daemon_key) = config
         .daemon
         .as_ref()
         .map(|d| (d.port, d.api_key.clone()))
         .unwrap_or((9090, String::new()));
-    vars.insert("GCP_AUTH_APPROACH".to_string(), "2".to_string());
     vars.insert(
         "PURU_TOKEN_ENDPOINT".to_string(),
         format!("http://127.0.0.1:{}/api/gcp/token", daemon_port),
