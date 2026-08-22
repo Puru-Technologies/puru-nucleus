@@ -62,15 +62,18 @@ fn service_data_root(config: &NucleusConfig) -> String {
 }
 
 /// Config keys nucleus fully owns and keeps correct for the current deployment
-/// (filesystem paths, server IP, RabbitMQ connection). These are UPSERTED —
-/// overwriting the service's own defaults — because a wrong-but-non-empty value
-/// (e.g. the container's `/data/puru` path on a native Windows box) would
-/// otherwise never be corrected by a fill-when-blank update. Everything else is
-/// only filled when blank, so operator/UI edits are preserved.
+/// (filesystem paths, server IP, RabbitMQ connection, hospital identity). These
+/// are UPSERTED — overwriting the service's own registry defaults — because a
+/// wrong-but-non-empty value (e.g. the container's `/data/puru` path on a
+/// native Windows box, or auth's registry default "localhost" for
+/// `puru.server.ip`) would otherwise never be corrected by a fill-when-blank
+/// update. Everything else is only filled when blank, so operator/UI edits
+/// through /auth-config are preserved on re-runs.
 const OVERRIDE_KEYS: &[&str] = &[
     "puru.data.root.dir",
     "service.pacs.storagePath",
     "puru.server.ip",
+    "puru.ins.name",
     "spring.rabbitmq.host",
     "spring.rabbitmq.port",
     "spring.rabbitmq.username",
@@ -491,8 +494,9 @@ async fn seed_puru_config(pool: &mysql_async::Pool, config: &NucleusConfig) -> S
 
     for (key, value) in config_defaults(config) {
         let result = if OVERRIDE_KEYS.contains(&key) {
-            // Managed infra/path key — upsert so a wrong non-empty value (e.g. a
-            // Docker path on a native box) is corrected, not just filled-when-blank.
+            // Managed infra/path/identity key — upsert so a wrong non-empty value
+            // (e.g. a Docker path on a native box, or auth's registry default
+            // "localhost" for puru.server.ip) is corrected, not just filled-when-blank.
             conn.exec_drop(
                 "INSERT INTO puru_auth.puru_config (config_key, config_value) VALUES (?, ?) \
                  ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
@@ -500,12 +504,20 @@ async fn seed_puru_config(pool: &mysql_async::Pool, config: &NucleusConfig) -> S
             )
             .await
         } else {
-            // Business default — only fill when blank; never clobber UI edits.
+            // Business default — insert if missing; otherwise fill only when blank.
+            // Must be an INSERT-based upsert (not a bare UPDATE) because
+            // puru-auth's DbConfigLoader runs INSERT IGNORE at boot with its own
+            // registry defaults BEFORE this seed step; a bare UPDATE with a
+            // fill-when-blank WHERE clause matches zero rows for every key auth
+            // already seeded with a non-empty default, so nucleus's value would
+            // silently lose. This ON DUPLICATE branch keeps operator UI edits
+            // via /auth-config intact (non-empty stays), yet still fills in when
+            // the row is absent or truly blank.
             conn.exec_drop(
-                "UPDATE puru_auth.puru_config \
-                 SET config_value = ? \
-                 WHERE config_key = ? AND (config_value IS NULL OR config_value = '')",
-                (value.as_str(), key),
+                "INSERT INTO puru_auth.puru_config (config_key, config_value) VALUES (?, ?) \
+                 ON DUPLICATE KEY UPDATE config_value = \
+                     IF(config_value IS NULL OR config_value = '', VALUES(config_value), config_value)",
+                (key, value.as_str()),
             )
             .await
         };
@@ -531,12 +543,16 @@ async fn seed_puru_config(pool: &mysql_async::Pool, config: &NucleusConfig) -> S
                     if value.is_empty() {
                         continue;
                     }
+                    // Firebase is the source of truth for hospital identity —
+                    // when the cloud has a value, it wins over auth's registry
+                    // defaults (most are NULL, but hospital.country.code=91
+                    // etc. would otherwise defeat blank-fill). Empty Firebase
+                    // values are skipped above so we never null out a real row.
                     let r = conn
                         .exec_drop(
-                            "UPDATE puru_auth.puru_config \
-                             SET config_value = ? \
-                             WHERE config_key = ? AND (config_value IS NULL OR config_value = '')",
-                            (value.as_str(), key),
+                            "INSERT INTO puru_auth.puru_config (config_key, config_value) VALUES (?, ?) \
+                             ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
+                            (key, value.as_str()),
                         )
                         .await;
                     match r {
