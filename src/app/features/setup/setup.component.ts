@@ -1347,6 +1347,7 @@ export class SetupComponent implements OnInit {
     { label: 'Pull Docker images', status: 'pending' },
     { label: 'Start services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
+    { label: 'Configure local domain (puru.local)', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
     { label: 'Install daemon service', status: 'pending' },
     { label: 'Configure HTTPS (TLS)', status: 'pending' }
@@ -1360,6 +1361,7 @@ export class SetupComponent implements OnInit {
     { label: 'Pull JARs & JRE from cloud', status: 'pending' },
     { label: 'Start native services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
+    { label: 'Configure local domain (puru.local)', status: 'pending' },
     { label: 'Seed database & templates', status: 'pending' },
     { label: 'Initialize roles & users', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
@@ -1950,6 +1952,7 @@ export class SetupComponent implements OnInit {
       'setup_pull_images',
       'setup_start_services',
       'setup_health_check',
+      'setup_local_domain',
       'setup_configure_backups',
       'setup_install_daemon',
       'setup_tls'
@@ -1963,6 +1966,7 @@ export class SetupComponent implements OnInit {
       'setup_pull_jars',
       'setup_start_native_services',
       'setup_health_check',
+      'setup_local_domain',
       'setup_seed_database',
       'setup_init_auth',
       'setup_configure_backups',

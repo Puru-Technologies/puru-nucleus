@@ -73,6 +73,11 @@ colored = "2"
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 
+# mDNS responder — advertises <hospital_code>.puru.local on the LAN so clients
+# on the same subnet resolve the friendly name without any per-client config.
+# Pure-Rust, no C dependency.
+mdns-sd = "0.11"
+
 # Process management (native mode — unix only)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -30,7 +30,9 @@ mod emergency;
 mod messaging;
 mod network;
 mod file_lock;
+mod local_domain;
 mod logs;
+mod mdns;
 mod performance;
 mod platform;
 mod process;
@@ -444,11 +446,40 @@ fn run_gui(minimized: bool, elevated_restart: bool) {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // mDNS responder handle. Empty at boot — the setup wizard's local-
+        // domain step (or the dashboard's auto-heal) calls start(hospital_code)
+        // once activation has assigned a code, and the tokio task then runs
+        // for the app's lifetime.
+        .manage(mdns::MdnsHandle::new())
         .setup(move |app| {
             setup_tray(app.handle().clone())?;
 
             // Make sure we relaunch to the tray on the next login.
             ensure_login_autostart();
+
+            // Best-effort auto-start of the mDNS responder if the machine is
+            // already activated. Failures are logged, not fatal — activation
+            // hasn't run yet, LAN is unavailable, hospital_code empty etc. all
+            // just mean the responder stays idle until an operator action.
+            {
+                use tauri::Manager;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let code = crate::config::load_config()
+                        .ok()
+                        .map(|c| c.hospital_code)
+                        .unwrap_or_default();
+                    if code.is_empty() {
+                        return;
+                    }
+                    let mdns_handle = handle.state::<crate::mdns::MdnsHandle>();
+                    if let Err(e) = mdns_handle.start(&code).await {
+                        tracing::warn!("mdns: auto-start on boot skipped: {}", e);
+                    } else {
+                        tracing::info!("mdns: advertising {}.puru.local on boot", code);
+                    }
+                });
+            }
 
             // The window is created hidden (visible:false in tauri.conf). Show it
             // for a normal launch; keep it in the tray when autostarted.
@@ -625,6 +656,9 @@ fn run_gui(minimized: bool, elevated_restart: bool) {
             commands::auth_config_update,
             commands::auth_config_delete,
             commands::auth_config_refresh,
+            // Local hostnames (puru.local + mDNS)
+            commands::get_live_at_status,
+            commands::setup_local_domain,
         ])
         .on_window_event(|window, event| {
             // Close-to-tray: hide the window instead of quitting so the tray

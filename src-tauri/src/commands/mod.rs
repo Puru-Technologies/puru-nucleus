@@ -4623,6 +4623,63 @@ pub async fn save_performance_config(
     Ok(crate::performance::plan(&config))
 }
 
+// ── Friendly LAN hostnames (puru.local, <code>.puru.local, <code>.puru) ─────
+
+/// Dashboard snapshot: what puru.local names resolve to on this box, what the
+/// server's LAN IP is (clients type this if the domain hasn't been set up on
+/// their router), and whether the mDNS responder is currently advertising.
+#[tauri::command]
+pub async fn get_live_at_status(
+    mdns: tauri::State<'_, crate::mdns::MdnsHandle>,
+) -> Result<serde_json::Value, String> {
+    let cfg = crate::config::load_config().map_err(|e| e.user_message())?;
+    let hosts = crate::local_domain::status(&cfg.hospital_code);
+    let mdns_state = mdns.status().await;
+    Ok(serde_json::json!({
+        "hosts": hosts,
+        "mdns": mdns_state,
+        "hospital_code": cfg.hospital_code,
+    }))
+}
+
+/// Setup-wizard step + dashboard auto-heal: idempotently write the three
+/// hosts-file lines AND start the mDNS responder for this hospital. Requires
+/// admin (hosts file is a system file); returns ELEVATION_REQUIRED on Windows
+/// if not elevated so the UI can trigger a UAC restart, matching the pattern
+/// used by install_prerequisites.
+#[tauri::command]
+pub async fn setup_local_domain(
+    mdns: tauri::State<'_, crate::mdns::MdnsHandle>,
+) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "windows")]
+    if !is_elevated() {
+        return Err("ELEVATION_REQUIRED".to_string());
+    }
+
+    let cfg = crate::config::load_config().map_err(|e| e.user_message())?;
+
+    let written = crate::local_domain::ensure_hosts_entries(&cfg.hospital_code)
+        .map_err(|e| format!("hosts file: {}", e))?;
+
+    // mDNS is best-effort — if it fails (e.g. UDP 5353 blocked by AV), the
+    // dashboard still shows the server-side hostname + LAN IP so operators can
+    // fall back to typing the IP on client PCs. Don't fail the whole step.
+    let mdns_result = if cfg.hospital_code.is_empty() {
+        Err("Hospital code not set — mDNS not started.".to_string())
+    } else {
+        mdns.start(&cfg.hospital_code).await
+    };
+
+    let hosts = crate::local_domain::status(&cfg.hospital_code);
+    Ok(serde_json::json!({
+        "hosts_lines_written": written,
+        "hosts": hosts,
+        "mdns_started": mdns_result.is_ok(),
+        "mdns_error": mdns_result.as_ref().err().cloned(),
+        "mdns": mdns.status().await,
+    }))
+}
+
 // ── puru-auth centralized config (puru_auth.puru_config via REST) ─────────────
 
 /// List every row in `puru_auth.puru_config` via auth's `/config/nucleus/all`.

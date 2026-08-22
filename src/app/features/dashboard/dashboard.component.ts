@@ -17,6 +17,39 @@ interface ActivityItem { icon: string; kind: 'ok' | 'warn' | 'info'; text: strin
   imports: [CommonModule, PuruLogoComponent, LogViewerDialogComponent],
   template: `
     <div class="page">
+      <!-- Puru is live at — friendly URLs staff type to open the app -->
+      @if (liveAt) {
+        <div class="live-at" [class.warn]="!liveAt.hosts?.hosts_configured">
+          <div class="la-head">
+            <span class="material-icons">public</span>
+            <div>
+              <div class="la-title">Puru is live at</div>
+              <div class="la-sub">
+                @if (liveAt.hosts?.hosts_configured && liveAt.mdns?.running) {
+                  Staff on this LAN can use any of these URLs.
+                } @else if (!liveAt.hosts?.hosts_configured) {
+                  Hostnames not configured on this server yet — run the
+                  "Configure local domain" step in Setup.
+                } @else {
+                  mDNS responder not running — clients need to use the IP.
+                }
+              </div>
+            </div>
+          </div>
+          <div class="la-urls">
+            @for (u of liveUrls(); track u.url) {
+              <div class="la-url" [class.la-dim]="u.hint">
+                <a [href]="u.url" target="_blank" rel="noopener">{{ u.url }}</a>
+                <span class="la-note">{{ u.note }}</span>
+                <button class="la-copy" (click)="copyUrl(u.url)" title="Copy">
+                  <span class="material-icons">{{ copiedUrl === u.url ? 'check' : 'content_copy' }}</span>
+                </button>
+              </div>
+            }
+          </div>
+        </div>
+      }
+
       <!-- Metric cards -->
       <div class="cards">
         <div class="metric">
@@ -362,6 +395,24 @@ interface ActivityItem { icon: string; kind: 'ok' | 'warn' | 'info'; text: strin
     .spinner{width:22px;height:22px;border:3px solid var(--border);border-top-color:var(--brand-blue,#009efb);border-radius:50%;animation:spin .8s linear infinite;} @keyframes spin{to{transform:rotate(360deg);}}
 
     @media (max-width:1080px){.cards{grid-template-columns:repeat(3,1fr);}.grid2{grid-template-columns:1fr;}.drawer{width:100%;}}
+
+    /* ── Puru is live at ─────────────────────────────────────────── */
+    .live-at{background:linear-gradient(90deg,#e6f4fe 0%,#f0f9ff 100%);border:1px solid #b6e3fd;border-radius:12px;padding:16px 20px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:24px;align-items:center;}
+    .live-at.warn{background:#fff7ed;border-color:#fed7aa;}
+    .la-head{display:flex;align-items:flex-start;gap:12px;flex-shrink:0;}
+    .la-head .material-icons{font-size:24px;color:#0a6cad;flex-shrink:0;margin-top:2px;}
+    .live-at.warn .la-head .material-icons{color:#ea580c;}
+    .la-title{font-weight:700;font-size:0.95rem;color:var(--text-primary);}
+    .la-sub{font-size:0.78rem;color:var(--text-secondary);margin-top:2px;}
+    .la-urls{display:flex;flex-wrap:wrap;gap:8px 16px;flex:1;min-width:280px;}
+    .la-url{display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(255,255,255,0.7);border:1px solid rgba(255,255,255,0.9);border-radius:8px;}
+    .la-url.la-dim{background:transparent;border-color:transparent;}
+    .la-url a{font-family:'JetBrains Mono','SF Mono',Menlo,monospace;font-size:0.85rem;color:#0a6cad;font-weight:600;text-decoration:none;}
+    .la-url a:hover{text-decoration:underline;}
+    .la-note{font-size:0.72rem;color:var(--text-muted);}
+    .la-copy{background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:2px 4px;border-radius:4px;display:inline-flex;}
+    .la-copy:hover{background:rgba(0,0,0,0.05);color:var(--text-primary);}
+    .la-copy .material-icons{font-size:15px;}
   `]
 })
 export class DashboardComponent implements OnInit, OnDestroy {
@@ -381,6 +432,19 @@ export class DashboardComponent implements OnInit, OnDestroy {
   networkStatus: NetworkStatus | null = null;
   speedTestResult: SpeedTestResult | null = null;
   speedTestRunning = false;
+
+  /** Snapshot returned by `get_live_at_status` — hostnames + LAN IP + mDNS. */
+  liveAt: {
+    hospital_code?: string;
+    hosts?: {
+      hosts_configured?: boolean;
+      lan_ip?: string | null;
+      hosts_path?: string;
+      names?: { mdns_name?: string; router_name?: string } | null;
+    };
+    mdns?: { running?: boolean; hostname?: string | null; advertised_ip?: string | null };
+  } | null = null;
+  copiedUrl: string | null = null;
 
   manageOn = true;
   openMenu: string | null = null;
@@ -503,14 +567,65 @@ export class DashboardComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadFastData();
     this.loadSlowData();
+    this.loadLiveAt();
     this.checkNetwork();
-    this.refreshSub = interval(30000).subscribe(() => { this.loadFastData(); this.loadSlowData(); });
+    this.refreshSub = interval(30000).subscribe(() => { this.loadFastData(); this.loadSlowData(); this.loadLiveAt(); });
     this.networkSub = interval(60000).subscribe(() => this.checkNetwork());
   }
   ngOnDestroy(): void { this.refreshSub?.unsubscribe(); this.networkSub?.unsubscribe(); }
 
   @HostListener('document:click')
   closeOverlays(): void { this.openMenu = null; this.profileOpen = false; }
+
+  /** Fetch the friendly-URL snapshot: puru.local status, LAN IP, mDNS. */
+  private async loadLiveAt(): Promise<void> {
+    try {
+      this.liveAt = await this.tauri.invokeSilent<any>('get_live_at_status');
+    } catch {
+      this.liveAt = null;
+    }
+  }
+
+  /** URL rows for the "Puru is live at" card. Order: fleet `puru.local`
+   *  first (works on the server PC out of the box), then the per-hospital
+   *  mDNS name (works on any modern client on the same LAN), then the raw
+   *  LAN IP (always works, ugly). The router-DNS name is only listed when
+   *  the hosts file confirms it's set — otherwise it'd be a lie. */
+  liveUrls(): Array<{ url: string; note: string; hint?: boolean }> {
+    if (!this.liveAt) return [];
+    const out: Array<{ url: string; note: string; hint?: boolean }> = [];
+    const hosts = this.liveAt.hosts;
+    const mdns = this.liveAt.mdns;
+
+    if (hosts?.hosts_configured) {
+      out.push({ url: 'http://puru.local', note: 'from this server PC' });
+    }
+    if (mdns?.running && mdns.hostname) {
+      out.push({
+        url: `http://${mdns.hostname}`,
+        note: 'from any client on this LAN',
+      });
+    }
+    if (hosts?.lan_ip) {
+      out.push({
+        url: `http://${hosts.lan_ip}`,
+        note: 'fallback if the domain name isn’t resolving',
+        hint: true,
+      });
+    }
+    return out;
+  }
+
+  async copyUrl(url: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(url);
+      this.copiedUrl = url;
+      // Reset the check-mark after a moment so the same URL can be copied again.
+      setTimeout(() => { if (this.copiedUrl === url) this.copiedUrl = null; }, 1500);
+    } catch {
+      this.notify.error('Could not copy — check clipboard permissions.');
+    }
+  }
 
   private async loadFastData(): Promise<void> {
     const [lic, sys, tel] = await Promise.allSettled([
