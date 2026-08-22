@@ -64,18 +64,18 @@ jobs:
   build:
     needs: validate-version
     # TEMP: Ubuntu (.deb) release paused. Windows is the only shipped platform
-    # until the pause is lifted. Un-pause by removing this `if` and restoring
-    # the linux references in create-release / publish-to-gcs below.
-    if: ${{ matrix.platform != 'linux' }}
+    # until the pause is lifted. Un-pause by uncommenting the linux matrix
+    # entry below AND restoring the linux references in create-release /
+    # publish-to-gcs further down.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            platform: linux
-            artifact-name: linux-artifacts
-            rust-targets: ''
-            tauri-args: '--bundles deb'
+          # - os: ubuntu-22.04
+          #   platform: linux
+          #   artifact-name: linux-artifacts
+          #   rust-targets: ''
+          #   tauri-args: '--bundles deb'
           - os: windows-latest
             platform: windows
             artifact-name: windows-artifacts
