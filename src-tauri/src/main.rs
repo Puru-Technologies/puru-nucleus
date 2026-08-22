@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod auth_config;
 mod backup;
 mod cli;
 mod cli_runner;
@@ -619,6 +620,11 @@ fn run_gui(minimized: bool, elevated_restart: bool) {
             commands::get_tls_status,
             commands::generate_client_setup_script,
             commands::generate_nginx_https_config,
+            // puru-auth centralized config
+            commands::auth_config_list,
+            commands::auth_config_update,
+            commands::auth_config_delete,
+            commands::auth_config_refresh,
         ])
         .on_window_event(|window, event| {
             // Close-to-tray: hide the window instead of quitting so the tray

@@ -72,6 +72,16 @@ export const routes: Routes = [
     loadComponent: () => import('./features/setup/setup.component').then(m => m.SetupComponent)
   },
   {
+    path: 'software',
+    canActivate: [initGuard],
+    loadComponent: () => import('./features/software/software.component').then(m => m.SoftwareComponent)
+  },
+  {
+    path: 'auth-config',
+    canActivate: [initGuard, configGuard],
+    loadComponent: () => import('./features/auth-config/auth-config.component').then(m => m.AuthConfigComponent)
+  },
+  {
     path: 'compose',
     canActivate: [initGuard, configGuard],
     loadComponent: () => import('./features/compose/compose.component').then(m => m.ComposeComponent)

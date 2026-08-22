@@ -103,6 +103,8 @@ interface CommandActivity {
                   @if (showConfigNav) {
                     <a routerLink="/settings" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">tune</span>Settings</a>
                     <a routerLink="/setup" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">build</span>Setup</a>
+                    <a routerLink="/software" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">apps</span>Software</a>
+                    <a routerLink="/auth-config" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">tune</span>Auth Config</a>
                     @if (!isNative) {
                       <a routerLink="/compose" routerLinkActive="active" (click)="advOpen = false"><span class="material-icons">description</span>Compose</a>
                     }

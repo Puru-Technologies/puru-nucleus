@@ -1663,6 +1663,8 @@ pub async fn download_prerequisites_to_downloads(
                     out.push("rabbitmq-delayed-message-exchange".into());
                 }
                 "erlang" => out.push("erlang".into()),
+                "vc-redist" | "vc_redist" | "vcredist" => out.push("vc-redist".into()),
+                "mysql-workbench" | "workbench" => out.push("mysql-workbench".into()),
                 other => out.push(other.to_string()),
             }
         }
@@ -4619,4 +4621,36 @@ pub async fn save_performance_config(
     config.performance = performance;
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
     Ok(crate::performance::plan(&config))
+}
+
+// ── puru-auth centralized config (puru_auth.puru_config via REST) ─────────────
+
+/// List every row in `puru_auth.puru_config` via auth's `/config/nucleus/all`.
+#[tauri::command]
+pub async fn auth_config_list() -> Result<Vec<crate::auth_config::AuthConfigEntry>, String> {
+    crate::auth_config::list_all().await
+}
+
+/// Update or upsert a config value. `config_type` is one of STRING/NUMBER/BOOLEAN
+/// (defaults to STRING); `category` defaults to "shared" server-side.
+#[tauri::command]
+pub async fn auth_config_update(
+    key: String,
+    value: String,
+    config_type: Option<String>,
+    category: Option<String>,
+) -> Result<(), String> {
+    crate::auth_config::update(key, value, config_type, category).await
+}
+
+/// Delete a config key.
+#[tauri::command]
+pub async fn auth_config_delete(key: String) -> Result<(), String> {
+    crate::auth_config::delete(key).await
+}
+
+/// Clear auth's cached frontend config so a UI refresh sees the change.
+#[tauri::command]
+pub async fn auth_config_refresh() -> Result<(), String> {
+    crate::auth_config::refresh().await
 }

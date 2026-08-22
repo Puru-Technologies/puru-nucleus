@@ -66,13 +66,27 @@ pub async fn install_missing(
 ) -> Vec<InstallResult> {
     let install_mysql = software.iter().any(|s| s.eq_ignore_ascii_case("mysql"));
     let install_rabbitmq = software.iter().any(|s| s.eq_ignore_ascii_case("rabbitmq"));
+    let install_vc_redist = software
+        .iter()
+        .any(|s| matches!(s.to_ascii_lowercase().as_str(), "vc-redist" | "vc_redist" | "vcredist"));
+    let install_workbench = software
+        .iter()
+        .any(|s| matches!(s.to_ascii_lowercase().as_str(), "mysql-workbench" | "workbench"));
 
     #[cfg(target_os = "windows")]
     {
-        install_missing_windows(app, install_mysql, install_rabbitmq).await
+        install_missing_windows(
+            app,
+            install_mysql,
+            install_rabbitmq,
+            install_vc_redist,
+            install_workbench,
+        )
+        .await
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = (install_vc_redist, install_workbench); // Windows-only helpers
         install_missing_unix(app, install_mysql, install_rabbitmq).await
     }
 }
@@ -344,12 +358,15 @@ fn mk_fail(name: &str, err: &str) -> InstallResult {
 }
 
 /// Windows install driver: build the infra context once, then install the
-/// requested components (Erlang is pulled in as a RabbitMQ dependency).
+/// requested components (Erlang is pulled in as a RabbitMQ dependency;
+/// VC++ Redistributable is pulled in as a MySQL dependency to head off 1603).
 #[cfg(target_os = "windows")]
 async fn install_missing_windows(
     app: &tauri::AppHandle,
     install_mysql: bool,
     install_rabbitmq: bool,
+    install_vc_redist_explicit: bool,
+    install_workbench: bool,
 ) -> Vec<InstallResult> {
     let mut results = Vec::new();
 
@@ -357,6 +374,10 @@ async fn install_missing_windows(
         Ok(c) => c,
         Err(e) => {
             let msg = format!("Cannot reach the infra manifest: {}", e);
+            if install_vc_redist_explicit {
+                emit_progress(app, "VC++ Redistributable", InstallStage::Failed, 0, &msg, 0, 0);
+                results.push(mk_fail("VC++ Redistributable", &msg));
+            }
             if install_mysql {
                 emit_progress(app, "MySQL", InstallStage::Failed, 0, &msg, 0, 0);
                 results.push(mk_fail("MySQL", &msg));
@@ -366,9 +387,31 @@ async fn install_missing_windows(
                 results.push(mk_fail("Erlang", &msg));
                 results.push(mk_fail("RabbitMQ", &msg));
             }
+            if install_workbench {
+                emit_progress(app, "MySQL Workbench", InstallStage::Failed, 0, &msg, 0, 0);
+                results.push(mk_fail("MySQL Workbench", &msg));
+            }
             return results;
         }
     };
+
+    // VC++ Redistributable — install first if MySQL is requested (its MSI custom
+    // actions link against VCRUNTIME140.dll; missing it is the #1 cause of the
+    // opaque msiexec 1603 we keep seeing on freshly-imaged hospital boxes).
+    if install_mysql || install_vc_redist_explicit {
+        if !vc_redist_x64_present() {
+            results.push(do_install_vc_redist(app, &ctx).await);
+        } else if install_vc_redist_explicit {
+            emit_progress(app, "VC++ Redistributable", InstallStage::Completed, 100,
+                "Already installed", 0, 0);
+            results.push(InstallResult {
+                software: "VC++ Redistributable".into(),
+                success: true,
+                version: None,
+                error: None,
+            });
+        }
+    }
 
     if install_mysql {
         results.push(do_install_mysql(app, &ctx).await);
@@ -382,6 +425,9 @@ async fn install_missing_windows(
         } else {
             results.push(mk_fail("RabbitMQ", "Skipped — Erlang installation failed"));
         }
+    }
+    if install_workbench {
+        results.push(do_install_mysql_workbench(app, &ctx).await);
     }
 
     results
@@ -474,6 +520,92 @@ where
 #[cfg(target_os = "windows")]
 async fn do_install_erlang(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResult {
     install_infra_component(app, ctx, "Erlang", "erlang", install_erlang_silent).await
+}
+
+/// VC++ 2015-2022 x64 Redistributable — resolved through the infra manifest
+/// (`vc-redist` component). Silent-installed to fix MySQL MSI 1603 failures on
+/// boxes that never had Visual Studio / any recent VC-linked app installed.
+/// Verification is a registry probe (`vc_redist_x64_present`), since the redist
+/// has no CLI to query a version out of.
+#[cfg(target_os = "windows")]
+async fn do_install_vc_redist(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResult {
+    // The generic install_infra_component runs verify_install_windows against
+    // the display name — the redist has no `--version` binary, so verify inline.
+    let display = "VC++ Redistributable";
+    let (path, version, _file) =
+        match download_infra_with_progress(app, ctx, display, "vc-redist").await {
+            Ok(v) => v,
+            Err(e) => {
+                emit_progress(app, display, InstallStage::Failed, 0, &e, 0, 0);
+                return mk_fail(display, &e);
+            }
+        };
+
+    emit_progress(app, display, InstallStage::Installing, 0,
+        "Running VC++ Redistributable installer (a UAC prompt may appear)…", 0, 0);
+    if let Err(e) = install_vc_redist_silent(&path) {
+        emit_progress(app, display, InstallStage::Failed, 0, &e, 0, 0);
+        let _ = std::fs::remove_file(&path);
+        return mk_fail(display, &e);
+    }
+    let _ = std::fs::remove_file(&path);
+
+    emit_progress(app, display, InstallStage::Verifying, 0, "Verifying…", 0, 0);
+    let present = vc_redist_x64_present();
+    emit_progress(
+        app, display,
+        if present { InstallStage::Completed } else { InstallStage::Failed },
+        if present { 100 } else { 0 },
+        if present { "Installed successfully" } else { "Installation could not be verified" },
+        0, 0,
+    );
+    InstallResult {
+        software: display.into(),
+        success: present,
+        version: Some(version),
+        error: if present { None } else { Some("Could not verify VC++ Redistributable".into()) },
+    }
+}
+
+/// MySQL Workbench — GUI client for DBA/support tasks on the hospital box.
+/// Optional; not a MySQL server dependency. Resolved through the manifest
+/// (`mysql-workbench`) so ops uploads whichever build matches the server.
+#[cfg(target_os = "windows")]
+async fn do_install_mysql_workbench(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResult {
+    let display = "MySQL Workbench";
+    let (path, version, file) =
+        match download_infra_with_progress(app, ctx, display, "mysql-workbench").await {
+            Ok(v) => v,
+            Err(e) => {
+                emit_progress(app, display, InstallStage::Failed, 0, &e, 0, 0);
+                return mk_fail(display, &e);
+            }
+        };
+
+    emit_progress(app, display, InstallStage::Installing, 0,
+        "Installing MySQL Workbench (a UAC prompt may appear)…", 0, 0);
+    if let Err(e) = install_mysql_workbench_silent(&path, &file) {
+        emit_progress(app, display, InstallStage::Failed, 0, &e, 0, 0);
+        let _ = std::fs::remove_file(&path);
+        return mk_fail(display, &e);
+    }
+    let _ = std::fs::remove_file(&path);
+
+    emit_progress(app, display, InstallStage::Verifying, 0, "Verifying…", 0, 0);
+    let present = find_mysql_workbench_exe().is_some();
+    emit_progress(
+        app, display,
+        if present { InstallStage::Completed } else { InstallStage::Failed },
+        if present { 100 } else { 0 },
+        if present { "Installed successfully" } else { "Installation could not be verified" },
+        0, 0,
+    );
+    InstallResult {
+        software: display.into(),
+        success: present,
+        version: Some(version),
+        error: if present { None } else { Some("Could not verify MySQL Workbench".into()) },
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1326,6 +1458,115 @@ pub(crate) fn mysql_service_name() -> Option<String> {
 pub(crate) fn mysql_service_name() -> Option<String> {
     None
 }
+
+/// VC++ Redistributable silent install. The vendor's `vc_redist.x64.exe`
+/// supports `/install /quiet /norestart`; exit 3010 means "installed, reboot
+/// pending" which we treat as success. 1638 = same-or-newer already installed.
+#[cfg(target_os = "windows")]
+fn install_vc_redist_silent(installer_path: &PathBuf) -> Result<(), String> {
+    let output = crate::process::silent_std_cmd(installer_path)
+        .args(["/install", "/quiet", "/norestart"])
+        .output()
+        .map_err(|e| format!("Failed to run VC++ Redistributable installer: {}", e))?;
+
+    let code = output.status.code().unwrap_or_default();
+    if output.status.success() || code == 3010 || code == 1638 {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "VC++ Redistributable installer exited with code {}: {}",
+        code, stderr.trim()
+    ))
+}
+
+/// MySQL Workbench silent install. MSI → msiexec /qn; EXE → /S (NSIS/Inno).
+#[cfg(target_os = "windows")]
+fn install_mysql_workbench_silent(installer_path: &PathBuf, file: &str) -> Result<(), String> {
+    let lower = file.to_ascii_lowercase();
+    if lower.ends_with(".msi") {
+        let output = crate::process::silent_std_cmd("msiexec")
+            .args([
+                "/i",
+                installer_path.to_str().unwrap_or(""),
+                "/qn",
+                "/norestart",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run msiexec: {}", e))?;
+        if !output.status.success() {
+            let code = output.status.code().unwrap_or_default();
+            return Err(format!("MySQL Workbench msiexec exited with code {}", code));
+        }
+        Ok(())
+    } else {
+        let output = crate::process::silent_std_cmd(installer_path)
+            .args(["/S"])
+            .output()
+            .map_err(|e| format!("Failed to run MySQL Workbench installer: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "MySQL Workbench installer exited with code {:?}: {}",
+                output.status.code(),
+                stderr.trim()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// True if VC++ 2015-2022 x64 Redistributable is registered. Microsoft's
+/// canonical install marker is HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64
+/// with `Installed = 1` — works for the 2015/17/19/22 unified redist which all
+/// share the 14.x runtime major.
+#[cfg(target_os = "windows")]
+pub(crate) fn vc_redist_x64_present() -> bool {
+    const KEY: &str = r"HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64";
+    let out = crate::process::silent_std_cmd("reg")
+        .args(["query", KEY, "/v", "Installed"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.contains("Installed")
+                && text
+                    .lines()
+                    .any(|l| l.to_uppercase().contains("REG_DWORD") && l.trim_end().ends_with("0x1"))
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+pub(crate) fn vc_redist_x64_present() -> bool { true }
+
+/// Locate `MySQLWorkbench.exe` under Program Files, version-agnostic.
+#[cfg(target_os = "windows")]
+pub(crate) fn find_mysql_workbench_exe() -> Option<PathBuf> {
+    for base in [r"C:\Program Files\MySQL", r"C:\Program Files (x86)\MySQL"] {
+        let base_path = std::path::Path::new(base);
+        let entries = match std::fs::read_dir(base_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.to_ascii_lowercase().starts_with("mysql workbench") {
+                let exe = entry.path().join("MySQLWorkbench.exe");
+                if exe.exists() {
+                    return Some(exe);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+pub(crate) fn find_mysql_workbench_exe() -> Option<PathBuf> { None }
 
 #[cfg(target_os = "windows")]
 fn install_erlang_silent(installer_path: &PathBuf) -> Result<(), String> {
