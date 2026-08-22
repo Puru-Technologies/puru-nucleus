@@ -63,6 +63,10 @@ jobs:
   # ── 2. Build all platforms (matrix) ─────────────────────────────
   build:
     needs: validate-version
+    # TEMP: Ubuntu (.deb) release paused. Windows is the only shipped platform
+    # until the pause is lifted. Un-pause by removing this `if` and restoring
+    # the linux references in create-release / publish-to-gcs below.
+    if: ${{ matrix.platform != 'linux' }}
     strategy:
       fail-fast: false
       matrix:
@@ -208,11 +212,11 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
 
+          # TEMP: Ubuntu (.deb) release paused — only .msi is attached.
           gh release create "v${VERSION}" \
             --title "Puru Nucleus v${VERSION}" \
             --generate-notes \
             $PRERELEASE_FLAG \
-            artifacts/linux-artifacts/puru-nucleus-*.deb \
             artifacts/windows-artifacts/puru-nucleus-*.msi
 
   # ── 4. Publish to GCS ──────────────────────────────────────────
@@ -244,10 +248,7 @@ jobs:
             grep "^${key}=" "$file" | cut -d= -f2 | tr -d '\r'
           }
 
-          LINUX_FILE=$(parse_metadata artifacts/linux-artifacts/metadata.txt file)
-          LINUX_SHA=$(parse_metadata artifacts/linux-artifacts/metadata.txt sha256)
-          LINUX_SIZE=$(parse_metadata artifacts/linux-artifacts/metadata.txt size_mb)
-
+          # TEMP: Ubuntu (.deb) release paused — only the windows platform is emitted.
           WINDOWS_FILE=$(parse_metadata artifacts/windows-artifacts/metadata.txt file)
           WINDOWS_SHA=$(parse_metadata artifacts/windows-artifacts/metadata.txt sha256)
           WINDOWS_SIZE=$(parse_metadata artifacts/windows-artifacts/metadata.txt size_mb)
@@ -269,15 +270,6 @@ jobs:
                     "size_mb": ${WINDOWS_SIZE}
                   }
                 }
-              },
-              "linux": {
-                "amd64": {
-                  "deb": {
-                    "file": "${LINUX_FILE}",
-                    "sha256": "${LINUX_SHA}",
-                    "size_mb": ${LINUX_SIZE}
-                  }
-                }
               }
             }
           }
@@ -294,7 +286,7 @@ jobs:
         run: |
           GCS_PATH="gs://puru-releases/nucleus/${CHANNEL}"
 
-          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${GCS_PATH}/"
+          # TEMP: Ubuntu (.deb) release paused — .deb upload skipped.
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${GCS_PATH}/"
 
           gsutil -h "Cache-Control:no-cache, no-store, must-revalidate" \
@@ -307,12 +299,13 @@ jobs:
         run: |
           PUBLIC_PATH="gs://puru-pacs-ace-artifact/nucleus"
 
-          # Versioned copies
-          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/"
+          # TEMP: Ubuntu (.deb) release paused — only .msi is copied to the
+          # public bucket. `puru-nucleus-latest.deb` is intentionally left
+          # untouched so any older copy still serves.
+          # Versioned copy
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/"
 
-          # Latest copies (stable names for website download links)
-          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/puru-nucleus-latest.deb"
+          # Latest copy (stable name for website download link)
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/puru-nucleus-latest.msi"
 
           echo "Copied installers to public bucket: ${PUBLIC_PATH}/"

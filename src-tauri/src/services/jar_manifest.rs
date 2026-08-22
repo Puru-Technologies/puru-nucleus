@@ -384,14 +384,19 @@ pub fn read_for(config: &NucleusConfig, service: &str) -> JarManifest {
 mod tests {
     use super::*;
 
+    /// Per-call unique tempdir. PID alone collides across parallel tests in one
+    /// cargo binary, so tests raced each other into the same directory — one
+    /// test's setup deleted another's files. Handle is leaked (Box::leak) so the
+    /// dir survives until process exit without changing the `PathBuf` signature
+    /// callers rely on.
     fn tmp_dir() -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "puru-manifest-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        base
+        let td = tempfile::Builder::new()
+            .prefix("puru-manifest-test-")
+            .tempdir()
+            .expect("create tempdir");
+        let path = td.path().to_path_buf();
+        Box::leak(Box::new(td));
+        path
     }
 
     fn entry(file: &str, sha: &str) -> JarEntry {
