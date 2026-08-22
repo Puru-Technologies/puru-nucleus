@@ -233,6 +233,21 @@ interface UpdateFlow {
                       <span class="material-icons">article</span>
                       Logs
                     </button>
+                    @if (service.status === 'running') {
+                      <button class="btn btn-stroked btn-sm inline-stop"
+                              (click)="stopAny(service)"
+                              [title]="'Stop ' + displayName(service.name)">
+                        <span class="material-icons">stop</span>
+                        Stop
+                      </button>
+                    } @else if (service.status === 'stopped' || service.status === 'error') {
+                      <button class="btn btn-stroked btn-sm inline-start"
+                              (click)="startAny(service)"
+                              [title]="'Start ' + displayName(service.name)">
+                        <span class="material-icons">play_arrow</span>
+                        Start
+                      </button>
+                    }
                     <div class="menu-wrap">
                       <button class="btn-icon" (click)="toggleMenu(service, $event)">
                         <span class="material-icons">more_vert</span>
@@ -522,9 +537,17 @@ interface UpdateFlow {
     .services-table td { vertical-align: middle; }
     .update-col { width: auto; }
     .actions-cell { text-align: right; width: 1%; white-space: nowrap; }
-    .actions-cell .inline-logs { margin-right: 6px; vertical-align: middle; }
+    .actions-cell .inline-logs,
+    .actions-cell .inline-stop,
+    .actions-cell .inline-start { margin-right: 6px; vertical-align: middle; }
     .actions-cell .menu-wrap { display: inline-block; vertical-align: middle; }
-    .inline-logs .material-icons { font-size: 15px; }
+    .inline-logs .material-icons,
+    .inline-stop .material-icons,
+    .inline-start .material-icons { font-size: 15px; }
+    .inline-stop { color: #b91c1c; border-color: #fecaca; }
+    .inline-stop:hover:not([disabled]) { background: #fef2f2; border-color: #fca5a5; }
+    .inline-start { color: #047857; border-color: #a7f3d0; }
+    .inline-start:hover:not([disabled]) { background: #ecfdf5; border-color: #6ee7b7; }
 
     .name-cell { display: flex; align-items: center; gap: 12px; }
     .status-dot {
@@ -714,7 +737,9 @@ interface UpdateFlow {
       .page-header { flex-direction: column; align-items: stretch; gap: 12px; }
       .header-actions { justify-content: flex-start; }
       .update-col { width: 1%; }
-      .inline-logs { display: none; }   /* logs live in the ⋮ menu on small screens */
+      .inline-logs,
+      .inline-stop,
+      .inline-start { display: none; }   /* actions collapse into the ⋮ menu on small screens */
       .log-modal-backdrop { padding: 0; }
       .log-modal { width: 100vw; height: 100vh; border-radius: 0; }
     }
@@ -1167,6 +1192,28 @@ export class ServicesComponent implements OnInit, OnDestroy {
   /** In native mode use service name; in Docker mode use container_name */
   private svcId(service: ServiceInfo): string {
     return this.isNative ? service.name : service.container_name;
+  }
+
+  /** Dispatch a Stop click to whichever backend the row represents — infra
+   *  (MySQL / RabbitMQ Windows services) routes through `controlInfra`; native
+   *  and Docker services go through `stop_service`. */
+  async stopAny(service: ServiceInfo): Promise<void> {
+    if (service.infra) {
+      await this.controlInfra(service, 'stop');
+    } else {
+      await this.stopService(service);
+    }
+  }
+
+  /** Symmetric to `stopAny` — used by the inline Start button when a service
+   *  is stopped or errored. NotInstalled rows still route through the setup
+   *  wizard from the kebab menu because they need the JAR pulled first. */
+  async startAny(service: ServiceInfo): Promise<void> {
+    if (service.infra) {
+      await this.controlInfra(service, 'start');
+    } else {
+      await this.startService(service);
+    }
   }
 
   async startService(service: ServiceInfo): Promise<void> {
