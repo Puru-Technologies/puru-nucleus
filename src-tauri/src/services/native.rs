@@ -150,6 +150,9 @@ fn active_jar_path(config: &NucleusConfig, service: &str) -> Option<PathBuf> {
 /// hydrogen/dviewer static bundle deployed. Used as the fallback service list
 /// when the hospital's Firestore module selection can't be fetched, so the UI
 /// never shows the entire catalog as "Not installed" rows.
+///
+/// Also exposed as [`installed_service_names_for_updates`] for the Updates tab
+/// to enumerate what's checkable in native mode.
 fn installed_service_names(config: &NucleusConfig) -> Vec<String> {
     let jars_dir = config.jars_dir();
     let mut names: Vec<String> = releases::all_updatable_services()
@@ -180,6 +183,13 @@ fn installed_service_names(config: &NucleusConfig) -> Vec<String> {
         names.push("dviewer".into());
     }
     names
+}
+
+/// Public re-export of the installed-services helper for the Updates tab in
+/// native mode. Kept as a thin wrapper so the internal helper's private
+/// invariants aren't leaked outside this module.
+pub(crate) fn installed_service_names_for_updates(config: &NucleusConfig) -> Vec<String> {
+    installed_service_names(config)
 }
 
 fn service_port(service: &str) -> Option<u16> {

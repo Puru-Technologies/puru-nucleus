@@ -696,8 +696,42 @@ pub async fn check_nucleus_update(channel: &str) -> Result<NucleusUpdateInfo, Nu
     })
 }
 
-/// Check for updates across all running Docker services.
+/// Check for updates across all running Docker services (Docker mode) or
+/// installed static bundles + JAR services (Native mode). The Updates tab
+/// calls this via the `check_service_updates` Tauri command; without the
+/// native-mode branch it would return an empty list on native boxes, hiding
+/// hydrogen and dviewer updates entirely.
 pub async fn check_service_updates() -> Result<Vec<ServiceUpdateInfo>, NucleusError> {
+    let cfg = config::load_config()?;
+
+    // Native mode: reuse the JAR-manifest / meta.json scheme and map its
+    // JarUpdateCheck output onto the same ServiceUpdateInfo shape the Updates
+    // tab already renders. Covers hydrogen + dviewer + every installed JAR.
+    if cfg.deployment_mode == config::DeploymentMode::Native {
+        let services = crate::services::native::installed_service_names_for_updates(&cfg);
+        if services.is_empty() {
+            return Ok(Vec::new());
+        }
+        let checks = check_jar_updates_available(&services).await?;
+        let updates = checks.into_iter()
+            .map(|c| ServiceUpdateInfo {
+                service: c.service,
+                current_version: if c.current_sha.is_empty() {
+                    "not installed".to_string()
+                } else {
+                    c.current_sha
+                },
+                latest_version: c.latest_sha,
+                update_available: c.update_available,
+                release_date: c.latest_built_at,
+                changelog: String::new(),
+                size_mb: 0.0,
+            })
+            .collect();
+        return Ok(updates);
+    }
+
+    // Docker mode (existing path).
     let cred_path = get_credentials_path()?;
     let client = create_gcs_client(&cred_path).await?;
 

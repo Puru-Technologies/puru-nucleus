@@ -641,9 +641,21 @@ export class UpdatesComponent implements OnInit {
   nucleusError: string | null = null;
   servicesError: string | null = null;
 
+  isNative = false;
+
   ngOnInit(): void {
+    this.detectMode();
     this.checkAll();
     this.loadHistory();
+  }
+
+  private async detectMode(): Promise<void> {
+    try {
+      const mode = await this.tauri.invoke<string>('get_deployment_mode');
+      this.isNative = mode === 'Native';
+    } catch {
+      this.isNative = false;
+    }
   }
 
   async checkAll(): Promise<void> {
@@ -736,6 +748,38 @@ export class UpdatesComponent implements OnInit {
   async updateDockerService(svc: ServiceUpdateInfo): Promise<void> {
     this.updatingService = svc.service;
     try {
+      // Native mode dispatch. Docker mode uses `update_docker_service` (pull
+      // new tag + recreate container). Native mode has no docker tag —
+      // hydrogen/dviewer just re-download the tarball via `pull_single_jar`
+      // (which routes through `pull_hydrogen_inner` / `pull_dviewer_inner`),
+      // and JAR services use `update_native_service` (manifest-driven).
+      if (this.isNative) {
+        if (svc.service === 'puru-hydrogen' || svc.service === 'dviewer') {
+          const pull = await this.tauri.invoke<{ success: boolean; short_sha: string; size_mb: number; message: string }>(
+            'pull_single_jar',
+            { serviceName: svc.service }
+          );
+          if (pull.success) {
+            this.notification.success(`${svc.service} updated to ${pull.short_sha} (${pull.size_mb.toFixed(1)} MB)`);
+          } else {
+            this.notification.warning(pull.message || `Failed to update ${svc.service}`);
+          }
+        } else {
+          const result = await this.tauri.invoke<{ success: boolean; message: string }>(
+            'update_native_service',
+            { serviceName: svc.service }
+          );
+          if (result.success) {
+            this.notification.success(result.message);
+          } else {
+            this.notification.warning(result.message);
+          }
+        }
+        await this.checkServices();
+        await this.loadHistory();
+        return;
+      }
+
       const result = await this.tauri.invoke<DockerUpdateResult>(
         'update_docker_service',
         { serviceName: svc.service, newTag: svc.latest_version }
