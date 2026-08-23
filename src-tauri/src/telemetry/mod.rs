@@ -145,6 +145,14 @@ pub async fn collect_snapshot() -> Result<TelemetrySnapshot, crate::error::Nucle
 
     let mut sys = System::new_all();
     sys.refresh_all();
+    // sysinfo computes CPU usage as a delta between refreshes — the first
+    // sample after `new_all` has no baseline and reads as 0% or 100% depending
+    // on the platform (Windows typically pegs to 100%, making the dashboard
+    // tile disagree wildly with Task Manager). Sleep past the sysinfo
+    // MINIMUM_CPU_UPDATE_INTERVAL (~200ms) and refresh once more before
+    // reading, so the number matches what the OS actually reports.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    sys.refresh_cpu();
 
     let cpu_percent = sys.global_cpu_info().cpu_usage() as f64;
     let ram_gb = sys.used_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
