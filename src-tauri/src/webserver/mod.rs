@@ -191,7 +191,25 @@ pub fn generate_config(config: &NucleusConfig) -> String {
             # request for a directory — including the bare root — 403s with
             # "directory index is forbidden".
             autoindex on;
-            add_header Access-Control-Allow-Origin *;
+
+            # CORS. Cornerstone/OHIF cross-fetches DCMs from :3000 → :81 with
+            # non-simple XHR (custom Accept + X-Requested-With), which triggers
+            # an OPTIONS preflight. Without an explicit OPTIONS handler nginx
+            # tries to serve OPTIONS off disk (404 for the .dcm's OPTIONS verb)
+            # and the response carries no ACAO — browser blocks the actual GET
+            # with "Response to preflight request doesn't pass access control
+            # check". `always` on add_header makes CORS survive 4xx/5xx too.
+            if ($request_method = OPTIONS) {{
+                add_header Access-Control-Allow-Origin  "*" always;
+                add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+                add_header Access-Control-Allow-Headers "*" always;
+                add_header Access-Control-Max-Age       "3600" always;
+                add_header Content-Length 0;
+                add_header Content-Type text/plain;
+                return 204;
+            }}
+            add_header Access-Control-Allow-Origin  "*" always;
+            add_header Access-Control-Expose-Headers "Content-Length, Content-Range" always;
         }}
     }}
 "#,
