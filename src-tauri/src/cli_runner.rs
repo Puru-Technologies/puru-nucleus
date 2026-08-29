@@ -1664,14 +1664,16 @@ async fn cmd_info() {
             "No"
         },
     ]);
-    table.add_row(vec![
-        "Auto Update",
-        if cfg.auto_update_enabled {
-            "Yes"
-        } else {
-            "No"
-        },
-    ]);
+    let auto_update_desc = if !cfg.auto_update_enabled {
+        "Off".to_string()
+    } else if cfg.deployment_mode != crate::config::DeploymentMode::Native {
+        "Enabled (Docker mode — no-op)".to_string()
+    } else if cfg.auto_update_interval_minutes == 0 {
+        "Enabled but interval=0 (disabled)".to_string()
+    } else {
+        format!("Every {} min", cfg.auto_update_interval_minutes)
+    };
+    table.add_row(vec!["Auto Update", &auto_update_desc]);
     table.add_row(vec!["Release Channel", &cfg.release_channel]);
     table.add_row(vec![
         "Config Dir",

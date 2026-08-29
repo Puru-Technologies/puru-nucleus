@@ -104,9 +104,17 @@ pub struct ServiceUpdateInfo {
     pub current_version: String,
     pub latest_version: String,
     pub update_available: bool,
+    /// Cloud Build's `built_at` for the *latest* remote build. Not "when this
+    /// box installed it" — for that see `installed_at`.
     pub release_date: String,
     pub changelog: String,
     pub size_mb: f64,
+    /// When this box last pulled / applied the currently-active build.
+    /// Sourced from the local meta.json / JAR file mtime; None if there's no
+    /// local install yet or the file was hand-placed without a sidecar.
+    /// ISO 8601 UTC (e.g. "2026-08-24T04:32:11Z").
+    #[serde(default)]
+    pub installed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,6 +734,7 @@ pub async fn check_service_updates() -> Result<Vec<ServiceUpdateInfo>, NucleusEr
                 release_date: c.latest_built_at,
                 changelog: String::new(),
                 size_mb: 0.0,
+                installed_at: c.installed_at,
             })
             .collect();
         return Ok(updates);
@@ -770,6 +779,12 @@ pub async fn check_service_updates() -> Result<Vec<ServiceUpdateInfo>, NucleusEr
                             .map(|v| v.changelog.clone())
                             .unwrap_or_default(),
                         size_mb: latest_info.map(|v| v.size_mb).unwrap_or(0.0),
+                        // Docker doesn't leave a JAR/meta on disk, so we don't
+                        // have a mtime; the accurate answer would be an
+                        // `image inspect` .Created round-trip which isn't
+                        // worth blocking the update-check loop on. Left None
+                        // — the UI falls back to release_date for docker rows.
+                        installed_at: None,
                     });
                 }
                 Err(e) => {
@@ -1035,6 +1050,10 @@ pub struct JarUpdateCheck {
     pub latest_sha: String,
     pub latest_built_at: String,
     pub update_available: bool,
+    /// mtime of the local meta.json (hydrogen/dviewer) or the active JAR file
+    /// (native services). None when no local install exists. ISO 8601 UTC.
+    #[serde(default)]
+    pub installed_at: Option<String>,
 }
 
 /// A downloaded-but-not-yet-applied JAR update, staged next to the live JAR.
@@ -1378,6 +1397,19 @@ where
 
 /// Check which services have newer JARs available. `current_sha` comes from
 /// the manifest's active entry (falls back to empty if never pulled).
+/// Modified-time of `path` as an ISO 8601 UTC string, or None if the file
+/// is missing / its mtime can't be read. Used to answer "when did this box
+/// pick up the currently-active build?" — the cloud `built_at` from the
+/// remote meta.json can't (a box may lag a week behind the build if nobody
+/// clicked Update).
+fn file_mtime_iso(path: &std::path::Path) -> Option<String> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let dt: chrono::DateTime<chrono::Utc> = modified.into();
+    // Trim subsecond precision — the dashboard displays "5 min ago" style,
+    // sub-second detail is noise and stops the JSON churning on every read.
+    Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
 pub async fn check_jar_updates_available(
     services: &[String],
 ) -> Result<Vec<JarUpdateCheck>, NucleusError> {
@@ -1392,21 +1424,35 @@ pub async fn check_jar_updates_available(
         // Manifest → current build (empty string when nothing is active yet).
         // For hydrogen/dviewer (no manifest) we fall back to their legacy
         // `{svc}.meta.json` sidecar written by the tarball pullers.
-        let current_sha = if svc == "puru-hydrogen" || svc == "dviewer" {
+        //
+        // installed_at: mtime of whichever local file marks the current build
+        // (meta.json for the tarball flow, the active JAR file for services).
+        // Answers "when did THIS box actually pick it up?", which the cloud
+        // built_at from the remote meta.json can't — a box can lag a week
+        // behind the build date because it hasn't run a pull.
+        let (current_sha, installed_at) = if svc == "puru-hydrogen" || svc == "dviewer" {
             let legacy = jars_dir.join(format!("{}.meta.json", svc));
             if legacy.exists() {
-                tokio::fs::read_to_string(&legacy)
+                let sha = tokio::fs::read_to_string(&legacy)
                     .await
                     .ok()
                     .and_then(|s| serde_json::from_str::<JarBuildMeta>(&s).ok())
                     .map(|m| m.short_sha)
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                (sha, file_mtime_iso(&legacy))
             } else {
-                String::new()
+                (String::new(), None)
             }
         } else {
             let manifest = crate::services::jar_manifest::JarManifest::read(&jars_dir, svc);
-            manifest.active.map(|e| e.short_sha).unwrap_or_default()
+            match manifest.active {
+                Some(active) => {
+                    let sha = active.short_sha.clone();
+                    let mtime = file_mtime_iso(&jars_dir.join(&active.file));
+                    (sha, mtime)
+                }
+                None => (String::new(), None),
+            }
         };
 
         let remote_meta_path = format!("jars/{}/latest/meta.json", svc);
@@ -1420,6 +1466,7 @@ pub async fn check_jar_updates_available(
                         latest_sha: remote_meta.short_sha,
                         latest_built_at: remote_meta.built_at,
                         update_available,
+                        installed_at: installed_at.clone(),
                     });
                 }
                 Err(e) => {
@@ -1847,6 +1894,13 @@ pub fn all_updatable_services() -> Vec<String> {
     services.push("puru-hydrogen".to_string());
     services.push("dviewer".to_string());
     services
+}
+
+/// JAR-only services that the native-mode auto-update loop can drive. Excludes
+/// static bundles (`puru-hydrogen`, `dviewer`) — those need a different pull
+/// path and are handled out-of-band by the setup wizard / manual pull.
+pub fn native_jar_services() -> Vec<String> {
+    UPDATABLE_SERVICES.iter().map(|s| s.to_string()).collect()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

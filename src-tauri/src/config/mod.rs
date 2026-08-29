@@ -33,6 +33,11 @@ pub struct NucleusConfig {
     pub mysql_user: String,
     pub mysql_password: String,
     pub auto_update_enabled: bool,
+    /// How often (in minutes) the daemon polls GCS for new JAR builds when
+    /// `auto_update_enabled` is on and `deployment_mode = Native`. Setting to 0
+    /// disables the polling loop even when `auto_update_enabled` is true.
+    #[serde(default = "default_auto_update_interval_minutes")]
+    pub auto_update_interval_minutes: u32,
     pub release_channel: String,
     pub deployment_mode: DeploymentMode,
     pub jars_dir: Option<String>,
@@ -137,6 +142,7 @@ impl Default for NucleusConfig {
             mysql_user: "root".to_string(),
             mysql_password: String::new(),
             auto_update_enabled: true,
+            auto_update_interval_minutes: default_auto_update_interval_minutes(),
             release_channel: "stable".to_string(),
             deployment_mode: DeploymentMode::default(),
             jars_dir: None,
@@ -227,6 +233,10 @@ impl NucleusConfig {
 
 fn default_jar_history_keep() -> usize {
     3
+}
+
+fn default_auto_update_interval_minutes() -> u32 {
+    60
 }
 
 /// Get default config directory path

@@ -185,6 +185,21 @@ import { NotificationService } from '../../core/services/notification.service';
                     }
                   </div>
                 </div>
+                <div class="build-meta">
+                  @if (svc.installed_at) {
+                    <span class="bm-item" [title]="svc.installed_at">
+                      <span class="material-icons">history</span>
+                      Installed on this box: <b>{{ relativeTime(svc.installed_at) }}</b>
+                      <span class="bm-abs">({{ svc.installed_at | date:'medium' }})</span>
+                    </span>
+                  }
+                  @if (svc.release_date) {
+                    <span class="bm-item bm-dim" [title]="svc.release_date">
+                      <span class="material-icons">cloud</span>
+                      Latest cloud build: {{ svc.release_date | date:'medium' }}
+                    </span>
+                  }
+                </div>
                 @if (svc.update_available && svc.changelog) {
                   <div class="changelog">
                     <span class="label">Changes:</span> {{ svc.changelog }}
@@ -508,6 +523,30 @@ import { NotificationService } from '../../core/services/notification.service';
       min-width: 160px;
     }
 
+    .build-meta {
+      margin-top: 0.6rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid #f5f5f5;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      font-size: 0.8rem;
+      color: #555;
+    }
+    .bm-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .bm-item .material-icons {
+      font-size: 15px;
+      color: #666;
+    }
+    .bm-item b { color: #111; font-weight: 600; }
+    .bm-abs { color: #999; font-size: 0.72rem; }
+    .bm-dim { color: #999; }
+    .bm-dim .material-icons { color: #999; }
+
     .changelog {
       margin-top: 0.75rem;
       padding-top: 0.5rem;
@@ -642,6 +681,27 @@ export class UpdatesComponent implements OnInit {
   servicesError: string | null = null;
 
   isNative = false;
+
+  /** "5 min ago" / "2 days ago" from an ISO timestamp. Handles the "just now"
+   *  / future-date edge cases so an install that happened seconds ago doesn't
+   *  render as "in 0 sec". */
+  relativeTime(iso?: string | null): string {
+    if (!iso) return '';
+    const then = new Date(iso).getTime();
+    if (isNaN(then)) return '';
+    const diffMs = Date.now() - then;
+    if (diffMs < 60_000) return 'just now';
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
+    const years = Math.floor(days / 365);
+    return `${years} year${years === 1 ? '' : 's'} ago`;
+  }
 
   ngOnInit(): void {
     this.detectMode();
