@@ -271,7 +271,6 @@ export interface NucleusConfig {
   mysql_user: string;
   mysql_password: string;
   auto_update_enabled: boolean;
-  auto_update_interval_minutes: number;
   release_channel: string;
   deployment_mode: 'docker' | 'native';
   jars_dir?: string;
@@ -398,15 +397,9 @@ export interface ServiceUpdateInfo {
   current_version: string;
   latest_version: string;
   update_available: boolean;
-  /** Cloud Build's `built_at` for the *latest remote* build. Not "when this
-   *  box installed it" — see `installed_at` for that. */
   release_date: string;
   changelog: string;
   size_mb: number;
-  /** When THIS box last pulled/applied the currently-active build. ISO 8601
-   *  UTC. Null when there's no local install or the mtime can't be read (e.g.
-   *  docker-mode services — the mtime lives in the daemon, not on disk). */
-  installed_at?: string | null;
 }
 
 export interface DownloadResult {

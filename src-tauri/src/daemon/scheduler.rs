@@ -4,7 +4,7 @@ use chrono::{DateTime, Local, TimeZone, Utc};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
-use crate::config::{BackupSchedule, DaemonConfig, DeploymentMode};
+use crate::config::{BackupSchedule, DaemonConfig};
 use crate::firestore::convert::{get_map_fields, get_optional_string, get_string};
 
 /// Shared application state for the daemon
@@ -53,13 +53,6 @@ pub fn start_all(daemon_cfg: &DaemonConfig, telemetry_enabled: bool) -> Vec<Join
     let ship_interval = daemon_cfg.backup_schedule.interval_hours.max(1);
     handles.push(tokio::spawn(async move {
         lan_binlog_shipping_loop(ship_interval).await;
-    }));
-
-    // Native-mode JAR auto-update — polls GCS for new builds and applies them.
-    // Re-checks config each tick, so operators can flip the flag without a
-    // daemon restart. No-op in Docker mode.
-    handles.push(tokio::spawn(async move {
-        auto_update_loop().await;
     }));
 
     handles
@@ -543,143 +536,6 @@ async fn lan_binlog_shipping_loop(interval_hours: u32) {
                 tracing::error!("LAN binlog shipping: failed: {}", e);
             }
         }
-    }
-}
-
-// ── Native-mode auto-update ─────────────────────────────────────────────────
-
-/// Minimum sleep between poll ticks when auto-update is misconfigured (0 or
-/// negative interval). Prevents a hot loop while still re-reading config often
-/// enough that an operator flipping the flag takes effect within a minute.
-const AUTO_UPDATE_IDLE_SLEEP_SECS: u64 = 60;
-
-/// Poll GCS for new JAR builds and apply them to native services.
-///
-/// Config is re-read on every tick so `auto_update_enabled` and
-/// `auto_update_interval_minutes` can be toggled at runtime — flipping the flag
-/// on nucleus.toml takes effect within one idle-sleep cycle without a daemon
-/// restart. Docker mode is a no-op; static bundles (hydrogen/dviewer) are
-/// deliberately excluded since they need a different pull path.
-///
-/// Updates are sequential — one service at a time — to avoid two parallel GCS
-/// pulls fighting for bandwidth, and (more importantly on Windows) to avoid
-/// two JVMs cycling ports at once. Failures are logged and swallowed; a bad
-/// build for one service never blocks the others on the next tick.
-async fn auto_update_loop() {
-    tracing::info!("Auto-update loop started (native-mode only)");
-
-    loop {
-        // Re-read config each tick so the operator can flip flags at runtime.
-        let cfg = match crate::config::load_config() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Auto-update: failed to load config: {}", e);
-                tokio::time::sleep(Duration::from_secs(AUTO_UPDATE_IDLE_SLEEP_SECS)).await;
-                continue;
-            }
-        };
-
-        // Gate: native mode only, enabled, non-zero interval, hospital set.
-        // Any miss idles for a minute and re-checks — cheap enough.
-        if cfg.deployment_mode != DeploymentMode::Native
-            || !cfg.auto_update_enabled
-            || cfg.auto_update_interval_minutes == 0
-            || cfg.hospital_code.is_empty()
-        {
-            tokio::time::sleep(Duration::from_secs(AUTO_UPDATE_IDLE_SLEEP_SECS)).await;
-            continue;
-        }
-
-        // License gate — matches backup/binlog behaviour. An expired license
-        // shouldn't be silently pulling new code onto a hospital that hasn't
-        // paid for support.
-        match crate::licensing::load_license() {
-            Ok(Some(l)) if l.is_valid() => {}
-            Ok(Some(_)) => {
-                tracing::warn!("Auto-update: license expired, skipping cycle");
-                tokio::time::sleep(Duration::from_secs(AUTO_UPDATE_IDLE_SLEEP_SECS)).await;
-                continue;
-            }
-            Ok(None) => {
-                tracing::debug!("Auto-update: no license, skipping cycle");
-                tokio::time::sleep(Duration::from_secs(AUTO_UPDATE_IDLE_SLEEP_SECS)).await;
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!("Auto-update: license check failed: {}", e);
-                tokio::time::sleep(Duration::from_secs(AUTO_UPDATE_IDLE_SLEEP_SECS)).await;
-                continue;
-            }
-        }
-
-        let services = crate::releases::native_jar_services();
-        let checks = match crate::releases::check_jar_updates_available(&services).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Auto-update: update check failed: {}", e);
-                tokio::time::sleep(Duration::from_secs(
-                    cfg.auto_update_interval_minutes as u64 * 60,
-                ))
-                .await;
-                continue;
-            }
-        };
-
-        let pending: Vec<&crate::releases::JarUpdateCheck> =
-            checks.iter().filter(|c| c.update_available).collect();
-
-        if pending.is_empty() {
-            tracing::debug!("Auto-update: all {} services up to date", checks.len());
-        } else {
-            tracing::info!(
-                "Auto-update: {} service(s) have new builds: {}",
-                pending.len(),
-                pending
-                    .iter()
-                    .map(|c| format!("{}({}→{})", c.service, c.current_sha, c.latest_sha))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-
-            for check in pending {
-                // Respect operator intent: if they've manually stopped a
-                // service, skip even the pre-download. `update_service_progress`
-                // is safe on a stopped service (just stages pending), but the
-                // spirit of a manual stop is "don't touch this".
-                if crate::services::is_manually_stopped(&check.service) {
-                    tracing::info!(
-                        "Auto-update: skipping {} — manually stopped",
-                        check.service
-                    );
-                    continue;
-                }
-
-                tracing::info!(
-                    "Auto-update: applying {} → {}",
-                    check.service, check.latest_sha
-                );
-                match crate::services::update_native_service_progress(
-                    &check.service,
-                    |_, _, _| {},
-                )
-                .await
-                {
-                    Ok(r) => tracing::info!(
-                        "Auto-update: {} now on build {} ({:.1} MB)",
-                        check.service, r.short_sha, r.size_mb
-                    ),
-                    Err(e) => tracing::error!(
-                        "Auto-update: {} failed: {}",
-                        check.service, e
-                    ),
-                }
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(
-            cfg.auto_update_interval_minutes as u64 * 60,
-        ))
-        .await;
     }
 }
 

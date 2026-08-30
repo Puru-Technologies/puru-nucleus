@@ -4134,7 +4134,7 @@ dependencies = [
 
 [[package]]
 name = "puru-dc"
-version = "0.12.4"
+version = "0.12.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
