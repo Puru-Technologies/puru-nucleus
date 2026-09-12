@@ -970,18 +970,18 @@ pub async fn list_service_versions(
 
 /// Service → Java version mapping for native mode
 const SERVICE_JAVA_VERSIONS: &[(&str, &str)] = &[
-    ("puru-xenon", "21"),
-    ("puru-has", "21"),
-    ("puru-pacs", "21"),
-    ("puru-auth", "21"),
-    ("puru-neon", "21"),
-    ("puru-comm", "21"),
-    ("puru-argon", "21"),
-    ("puru-bridge", "21"),
-    ("puru-realtime", "21"),
+    ("puru-xenon", "25"),
+    ("puru-has", "25"),
+    ("puru-pacs", "25"),
+    ("puru-auth", "25"),
+    ("puru-neon", "25"),
+    ("puru-comm", "25"),
+    ("puru-argon", "25"),
+    ("puru-bridge", "25"),
+    ("puru-realtime", "25"),
     ("puru-mercury", "25"),
-    ("puru-counter", "21"),
-    ("puru-integration", "21"),
+    ("puru-counter", "25"),
+    ("puru-integration", "25"),
 ];
 
 /// Metadata from Cloud Build JAR upload (meta.json)
