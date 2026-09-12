@@ -1534,7 +1534,39 @@ const PURU_DATABASES: &[&str] = &[
     "puru_bridge",
     "puru_auth",
     "puru_gh",
+    // Fleet-shared queue store (RabbitMQ replacement). Owned schema-wise by
+    // puru-auth at runtime, but pre-creating here lets every backend boot
+    // even if the MySQL user lacks CREATE-DATABASE privilege. Table DDL is
+    // applied below in setup_create_databases.
+    "puru_shared",
 ];
+
+/// DDL for the fleet-shared queue tables. Mirrors puru-carbon's
+/// `db/queue/V1__queue_tables.sql` — kept in sync manually since nucleus is
+/// Rust and can't consume the Java resource. Idempotent (`IF NOT EXISTS`).
+const PURU_SHARED_QUEUE_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS puru_shared.queue_message (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    queue_name    VARCHAR(80)  NOT NULL,
+    payload_json  MEDIUMTEXT   NOT NULL,
+    payload_class VARCHAR(255) NOT NULL,
+    headers_json  VARCHAR(1024) NULL,
+    producer_svc  VARCHAR(40)  NOT NULL,
+    created_at    DATETIME(3)  NOT NULL,
+    available_at  DATETIME(3)  NOT NULL,
+    lease_until   DATETIME(3)  NULL,
+    lease_owner   VARCHAR(64)  NULL,
+    attempts      SMALLINT     NOT NULL DEFAULT 0,
+    status        ENUM('PENDING','IN_FLIGHT','DONE','DEAD') NOT NULL DEFAULT 'PENDING',
+    last_error    VARCHAR(2000) NULL,
+    KEY idx_claim (queue_name, status, available_at),
+    KEY idx_gc    (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS puru_shared.queue_message_archive LIKE puru_shared.queue_message;
+
+CREATE TABLE IF NOT EXISTS puru_shared.queue_dead LIKE puru_shared.queue_message;
+"#;
 
 /// Docker images to pull from Artifact Registry.
 /// Image names must match the GCS compose fragments at
@@ -1868,6 +1900,28 @@ pub async fn setup_create_databases() -> Result<(), String> {
     }
 
     tracing::info!("Setup: created {} databases", PURU_DATABASES.len());
+
+    // Apply the queue DDL to puru_shared so every backend finds tables ready
+    // on first boot. Same mysql client invocation as above — idempotent.
+    let ddl_output = crate::process::silent_cmd(&mysql_bin)
+        .env("MYSQL_PWD", &config.mysql_password)
+        .args([
+            &format!("-h{}", config.mysql_host),
+            &format!("-P{}", config.mysql_port),
+            &format!("-u{}", config.mysql_user),
+            "-e",
+            PURU_SHARED_QUEUE_DDL,
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to apply puru_shared queue DDL: {}", e))?;
+
+    if !ddl_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ddl_output.stderr);
+        return Err(format!("puru_shared queue DDL failed: {}", stderr.trim()));
+    }
+
+    tracing::info!("Setup: applied queue DDL to puru_shared");
     Ok(())
 }
 
