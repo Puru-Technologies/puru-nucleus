@@ -63,19 +63,15 @@ jobs:
   # ── 2. Build all platforms (matrix) ─────────────────────────────
   build:
     needs: validate-version
-    # TEMP: Ubuntu (.deb) release paused. Windows is the only shipped platform
-    # until the pause is lifted. Un-pause by uncommenting the linux matrix
-    # entry below AND restoring the linux references in create-release /
-    # publish-to-gcs further down.
     strategy:
       fail-fast: false
       matrix:
         include:
-          # - os: ubuntu-22.04
-          #   platform: linux
-          #   artifact-name: linux-artifacts
-          #   rust-targets: ''
-          #   tauri-args: '--bundles deb'
+          - os: ubuntu-22.04
+            platform: linux
+            artifact-name: linux-artifacts
+            rust-targets: ''
+            tauri-args: '--bundles deb'
           - os: windows-latest
             platform: windows
             artifact-name: windows-artifacts
@@ -212,12 +208,12 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
 
-          # TEMP: Ubuntu (.deb) release paused — only .msi is attached.
           gh release create "v${VERSION}" \
             --title "Puru Nucleus v${VERSION}" \
             --generate-notes \
             $PRERELEASE_FLAG \
-            artifacts/windows-artifacts/puru-nucleus-*.msi
+            artifacts/windows-artifacts/puru-nucleus-*.msi \
+            artifacts/linux-artifacts/puru-nucleus-*.deb
 
   # ── 4. Publish to GCS ──────────────────────────────────────────
   publish-to-gcs:
@@ -248,10 +244,13 @@ jobs:
             grep "^${key}=" "$file" | cut -d= -f2 | tr -d '\r'
           }
 
-          # TEMP: Ubuntu (.deb) release paused — only the windows platform is emitted.
           WINDOWS_FILE=$(parse_metadata artifacts/windows-artifacts/metadata.txt file)
           WINDOWS_SHA=$(parse_metadata artifacts/windows-artifacts/metadata.txt sha256)
           WINDOWS_SIZE=$(parse_metadata artifacts/windows-artifacts/metadata.txt size_mb)
+
+          LINUX_FILE=$(parse_metadata artifacts/linux-artifacts/metadata.txt file)
+          LINUX_SHA=$(parse_metadata artifacts/linux-artifacts/metadata.txt sha256)
+          LINUX_SIZE=$(parse_metadata artifacts/linux-artifacts/metadata.txt size_mb)
 
           RELEASE_DATE=$(date +%Y-%m-%d)
 
@@ -270,6 +269,15 @@ jobs:
                     "size_mb": ${WINDOWS_SIZE}
                   }
                 }
+              },
+              "linux": {
+                "amd64": {
+                  "deb": {
+                    "file": "${LINUX_FILE}",
+                    "sha256": "${LINUX_SHA}",
+                    "size_mb": ${LINUX_SIZE}
+                  }
+                }
               }
             }
           }
@@ -286,8 +294,8 @@ jobs:
         run: |
           GCS_PATH="gs://puru-releases/nucleus/${CHANNEL}"
 
-          # TEMP: Ubuntu (.deb) release paused — .deb upload skipped.
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${GCS_PATH}/"
+          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${GCS_PATH}/"
 
           gsutil -h "Cache-Control:no-cache, no-store, must-revalidate" \
             cp latest.json "${GCS_PATH}/latest.json"
@@ -299,14 +307,13 @@ jobs:
         run: |
           PUBLIC_PATH="gs://puru-pacs-ace-artifact/nucleus"
 
-          # TEMP: Ubuntu (.deb) release paused — only .msi is copied to the
-          # public bucket. `puru-nucleus-latest.deb` is intentionally left
-          # untouched so any older copy still serves.
-          # Versioned copy
+          # Versioned copies
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/"
+          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/"
 
-          # Latest copy (stable name for website download link)
+          # Latest copies (stable names for website download links)
           gsutil cp "artifacts/windows-artifacts/puru-nucleus-${VERSION}-x64.msi" "${PUBLIC_PATH}/puru-nucleus-latest.msi"
+          gsutil cp "artifacts/linux-artifacts/puru-nucleus-${VERSION}-amd64.deb" "${PUBLIC_PATH}/puru-nucleus-latest.deb"
 
           echo "Copied installers to public bucket: ${PUBLIC_PATH}/"
 
