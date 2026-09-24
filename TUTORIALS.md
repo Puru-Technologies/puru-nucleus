@@ -39,19 +39,18 @@
 2. The app redirects to the **Activation** page
 3. Enter your hospital email (provided by Puru Labs Private Limited)
 4. The system looks up your hospital and activates the license
-5. After activation, the **Setup Wizard** runs 9 steps:
+5. After activation, the **Setup Wizard** runs 8 steps:
 
 | Step | What it does |
 |------|-------------|
 | 1. Prerequisites | Verifies Docker, MySQL, network |
 | 2. Create Databases | Sets up required MySQL databases |
-| 3. Configure RabbitMQ | Configures message queues |
-| 4. Generate Config | Creates nucleus.toml with your hospital settings |
-| 5. Pull Images | Downloads Docker images from GCP registry |
-| 6. Start Services | Launches all Puru Docker containers |
-| 7. Health Check | Verifies all services are healthy |
-| 8. Configure Backups | Sets up automated backup schedule |
-| 9. Install Daemon | Registers puru-nucleus as a system service |
+| 3. Generate Config | Creates nucleus.toml with your hospital settings |
+| 4. Pull Images | Downloads Docker images from GCP registry |
+| 5. Start Services | Launches all Puru Docker containers |
+| 6. Health Check | Verifies all services are healthy |
+| 7. Configure Backups | Sets up automated backup schedule |
+| 8. Install Daemon | Registers puru-nucleus as a system service |
 
 ### CLI Setup (alternative)
 

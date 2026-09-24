@@ -2,7 +2,7 @@
 
 ## Overview
 
-Nucleus assembles `docker-compose.yml` by **concatenating individual fragment files** instead of downloading a monolithic template and stripping disabled services. MySQL and RabbitMQ run on the host (not in Docker).
+Nucleus assembles `docker-compose.yml` by **concatenating individual fragment files** instead of downloading a monolithic template and stripping disabled services. MySQL runs on the host (not in Docker).
 
 ## GCS Layout
 
@@ -22,12 +22,10 @@ gs://puru-releases/templates/
   env/
     general.env
     database.env
-    rabbitmq.env
     has.env
     mail.env
     pacs.env
     database-neon.env
-    rabbitmq-neon.env
 ```
 
 No `{os}` prefix — shared across all platforms.
@@ -81,16 +79,15 @@ version: "3.8"
     env_file:
       - ./env/general.env
       - ./env/database.env
-      - ./env/rabbitmq.env
 ```
 
 **Critical formatting rules:**
 1. **2-space indent** for the service name (e.g., `  backend:`) — it goes under `services:`.
 2. **4-space indent** for service properties (e.g., `    image:`).
 3. **6-space indent** for nested lists (e.g., `      - ./env/general.env`).
-4. **No `depends_on`** — MySQL/RabbitMQ are on host, not Docker containers.
+4. **No `depends_on`** — MySQL is on host, not a Docker container.
 5. **No `volumes`** — no database containers to persist.
-6. **`network_mode: host`** on every service — connects to host MySQL/RabbitMQ via localhost.
+6. **`network_mode: host`** on every service — connects to host MySQL via localhost.
 7. **Use `{{TAG_PLACEHOLDER}}`** for image tags — see mapping table above.
 8. **End with a newline** — ensures clean concatenation between fragments.
 9. **No `services:` key** in the fragment — only the indented service block.
@@ -102,7 +99,6 @@ version: "3.8"
 | `{{HOSPITAL_CODE}}`    | NucleusConfig.hospital_code     |
 | `{{SERVER_IP}}`        | NucleusConfig.server_ip         |
 | `{{MYSQL_PASSWORD}}`   | NucleusConfig.mysql_password    |
-| `{{RABBITMQ_PASSWORD}}`| Hardcoded "puru123" default     |
 | `{{XENON_TAG}}`        | Default "latest"                |
 | `{{HAS_TAG}}`          | Default "latest"                |
 | `{{PACS_TAG}}`         | Default "latest"                |
@@ -129,8 +125,8 @@ gsutil -m cp core.yml backend.yml has.yml pacs.yml pathology.yml \
   gs://puru-releases/templates/fragments/
 
 # Upload env templates
-gsutil -m cp general.env database.env rabbitmq.env has.env mail.env \
-  pacs.env database-neon.env rabbitmq-neon.env \
+gsutil -m cp general.env database.env has.env mail.env \
+  pacs.env database-neon.env \
   gs://puru-releases/templates/env/
 ```
 
@@ -183,13 +179,12 @@ Given a full `docker-compose.yml`, split it into fragments as follows:
    - Hospital codes → `{{HOSPITAL_CODE}}`
    - Server IPs → `{{SERVER_IP}}`
    - MySQL passwords → `{{MYSQL_PASSWORD}}`
-   - RabbitMQ passwords → `{{RABBITMQ_PASSWORD}}`
 
 5. **Remove these if present** (not needed in fragment system):
-   - `depends_on` blocks (MySQL/RabbitMQ on host)
+   - `depends_on` blocks (MySQL on host)
    - `volumes` top-level key and volume definitions (no DB containers)
    - `networks` top-level key (using `network_mode: host`)
-   - Any `database`, `rabbitmq`, `auth`, `fileserver` service blocks (infra is on host)
+   - Any `database`, `auth`, `fileserver` service blocks (infra is on host)
 
 6. **Ensure `network_mode: host`** is present on every service fragment.
 
@@ -210,10 +205,6 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
-  rabbitmq:
-    image: rabbitmq:3.12-management
-    container_name: rabbitmq
-
   backend:
     image: gcr.io/puru-255206/puru-xenon:2.3.5
     container_name: backend
@@ -221,11 +212,9 @@ services:
     network_mode: host
     depends_on:
       - database
-      - rabbitmq
     env_file:
       - ./env/general.env
       - ./env/database.env
-      - ./env/rabbitmq.env
 
   pacs:
     image: gcr.io/puru-255206/puru-pacs:1.2.0
@@ -260,7 +249,6 @@ version: "3.8"
     env_file:
       - ./env/general.env
       - ./env/database.env
-      - ./env/rabbitmq.env
 ```
 
 `pacs.yml`:
@@ -276,7 +264,7 @@ version: "3.8"
       - ./env/pacs.env
 ```
 
-**Dropped**: `database` service, `rabbitmq` service, `volumes` section, all `depends_on` blocks.
+**Dropped**: `database` service, `volumes` section, all `depends_on` blocks.
 
 ## Adding a New Service
 

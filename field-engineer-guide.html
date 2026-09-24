@@ -796,12 +796,12 @@ puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</bu
 
   </div>
   <div class="step-body"><div class="step-body-inner">
-    <p class="step-description">The setup wizard runs 9 automated steps. Each shows a green checkmark on success or a red X on failure. Monitor the progress and note any failures for troubleshooting.</p>
+    <p class="step-description">The setup wizard runs 8 automated steps. Each shows a green checkmark on success or a red X on failure. Monitor the progress and note any failures for troubleshooting.</p>
 
     <ul class="checklist" data-group="new">
       <li class="checklist-item" data-key="new-s5-1" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>1. Check Prerequisites</strong> &mdash; verifies Docker, MySQL client, RabbitMQ tools</span>
+        <span class="check-text"><strong>1. Check Prerequisites</strong> &mdash; verifies Docker and MySQL client</span>
       </li>
       <li class="checklist-item" data-key="new-s5-2" onclick="toggleCheck(this)">
         <div class="check-box"></div>
@@ -809,37 +809,33 @@ puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</bu
       </li>
       <li class="checklist-item" data-key="new-s5-3" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>3. Configure RabbitMQ</strong> &mdash; creates the message broker vhost and credentials</span>
+        <span class="check-text"><strong>3. Generate Docker Compose</strong> &mdash; writes docker-compose.yml with all containers</span>
       </li>
       <li class="checklist-item" data-key="new-s5-4" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>4. Generate Docker Compose</strong> &mdash; writes docker-compose.yml with all 11 containers</span>
+        <span class="check-text"><strong>4. Pull Docker Images</strong> &mdash; downloads service images from the private registry (~2&ndash;5 GB total)</span>
       </li>
       <li class="checklist-item" data-key="new-s5-5" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>5. Pull Docker Images</strong> &mdash; downloads service images from the private registry (~2&ndash;5 GB total)</span>
+        <span class="check-text"><strong>5. Start Services</strong> &mdash; runs <code>docker compose up -d</code></span>
       </li>
       <li class="checklist-item" data-key="new-s5-6" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>6. Start Services</strong> &mdash; runs <code>docker compose up -d</code></span>
+        <span class="check-text"><strong>6. Health Check</strong> &mdash; verifies containers are running (waits ~10 seconds)</span>
       </li>
       <li class="checklist-item" data-key="new-s5-7" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>7. Health Check</strong> &mdash; verifies containers are running (waits ~10 seconds)</span>
+        <span class="check-text"><strong>7. Configure Backups</strong> &mdash; enables automated cloud backup</span>
       </li>
       <li class="checklist-item" data-key="new-s5-8" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text"><strong>8. Configure Backups</strong> &mdash; enables automated cloud backup</span>
-      </li>
-      <li class="checklist-item" data-key="new-s5-9" onclick="toggleCheck(this)">
-        <div class="check-box"></div>
-        <span class="check-text"><strong>9. Install Daemon Service</strong> &mdash; registers puru-dc as a system service (systemd / launchd / Windows Service)</span>
+        <span class="check-text"><strong>8. Install Daemon Service</strong> &mdash; registers puru-dc as a system service (systemd / launchd / Windows Service)</span>
       </li>
     </ul>
 
     <div class="callout warning">
       <span class="callout-icon">&#9888;</span>
-      <span><strong>Step 5 (Pull Images) takes the longest.</strong> If internet is slow, consider pre-pulling images from USB using <code>docker load -i &lt;image&gt;.tar</code></span>
+      <span><strong>Step 4 (Pull Images) takes the longest.</strong> If internet is slow, consider pre-pulling images from USB using <code>docker load -i &lt;image&gt;.tar</code></span>
     </div>
 
     <div class="mockup">
@@ -859,37 +855,33 @@ puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</bu
           </div>
           <div class="m-setup-step completed">
             <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">3. Configure RabbitMQ</span>
+            <span class="m-step-label">3. Generate Docker Compose</span>
           </div>
           <div class="m-setup-step completed">
             <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">4. Generate Docker Compose</span>
+            <span class="m-step-label">4. Pull Docker Images</span>
           </div>
           <div class="m-setup-step completed">
             <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">5. Pull Docker Images</span>
+            <span class="m-step-label">5. Start Services</span>
           </div>
           <div class="m-setup-step completed">
             <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">6. Start Services</span>
+            <span class="m-step-label">6. Health Check</span>
           </div>
           <div class="m-setup-step completed">
             <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">7. Health Check</span>
+            <span class="m-step-label">7. Configure Backups</span>
           </div>
           <div class="m-setup-step completed">
             <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">8. Configure Backups</span>
-          </div>
-          <div class="m-setup-step completed">
-            <div class="m-step-indicator">&#10003;</div>
-            <span class="m-step-label">9. Install Daemon Service</span>
+            <span class="m-step-label">8. Install Daemon Service</span>
           </div>
         </div>
         <div class="m-progress-track"><div class="m-progress-fill"></div></div>
-        <div style="text-align:center;font-size:12px;color:var(--green);font-weight:600;margin-top:4px">&#9989; Setup Complete &mdash; 9/9 steps passed</div>
+        <div style="text-align:center;font-size:12px;color:var(--green);font-weight:600;margin-top:4px">&#9989; Setup Complete &mdash; 8/8 steps passed</div>
       </div>
-      <div class="m-caption">All 9 setup steps should show green checkmarks &mdash; if any step fails, check the error and resolve before continuing</div>
+      <div class="m-caption">All 8 setup steps should show green checkmarks &mdash; if any step fails, check the error and resolve before continuing</div>
     </div>
   </div></div>
 </div>
@@ -910,7 +902,7 @@ puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</bu
     <ul class="checklist" data-group="new">
       <li class="checklist-item" data-key="new-s6-1" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Check all 11 containers are running</span>
+        <span class="check-text">Check all 10 containers are running</span>
       </li>
     </ul>
     <div class="code-block"><pre>docker ps --format "table {{.Names}}\t{{.Status}}"</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</button></div>
@@ -956,11 +948,10 @@ puru-dc setup</pre><button class="copy-btn" onclick="copyCode(this)">&#9112;</bu
             <tr><td><div class="m-svc-name"><div class="m-dot green"></div><span class="m-name">Data Integration</span></div></td><td>puru-bridge</td><td><span class="m-chip running">Running</span></td><td>8094</td></tr>
             <tr><td><div class="m-svc-name"><div class="m-dot green"></div><span class="m-name">Frontend</span></div></td><td>puru-hydrogen</td><td><span class="m-chip running">Running</span></td><td>80</td></tr>
             <tr><td><div class="m-svc-name"><div class="m-dot green"></div><span class="m-name">Database</span></div></td><td>purusql</td><td><span class="m-chip running">Running</span></td><td>3306</td></tr>
-            <tr><td><div class="m-svc-name"><div class="m-dot green"></div><span class="m-name">Message Queue</span></div></td><td>rabbitmq</td><td><span class="m-chip running">Running</span></td><td>5672</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="m-caption">All 11 services should show green "Running" status &mdash; take a screenshot and send to the admin team</div>
+      <div class="m-caption">All 10 services should show green "Running" status &mdash; take a screenshot and send to the admin team</div>
     </div>
   </div></div>
 </div>
@@ -1285,7 +1276,7 @@ sudo systemctl restart puru-dc</pre><button class="copy-btn" onclick="copyCode(t
       </li>
       <li class="checklist-item" data-key="ex-s3-4" onclick="toggleCheck(this)">
         <div class="check-box"></div>
-        <span class="check-text">Wizard extracts credentials from existing <code>.env</code> files, skips database and RabbitMQ setup</span>
+        <span class="check-text">Wizard extracts credentials from existing <code>.env</code> files, skips database setup</span>
       </li>
       <li class="checklist-item" data-key="ex-s3-5" onclick="toggleCheck(this)">
         <div class="check-box"></div>
@@ -1299,7 +1290,7 @@ sudo systemctl restart puru-dc</pre><button class="copy-btn" onclick="copyCode(t
 
     <div class="callout info">
       <span class="callout-icon">&#8505;</span>
-      <span>The "Adopt Existing" path is significantly faster because it skips database creation, RabbitMQ configuration, and Docker image pulling. It only registers the daemon and connects to the cloud.</span>
+      <span>The "Adopt Existing" path is significantly faster because it skips database creation and Docker image pulling. It only registers the daemon and connects to the cloud.</span>
     </div>
   </div></div>
 </div>
@@ -1349,7 +1340,7 @@ sudo systemctl restart puru-dc</pre><button class="copy-btn" onclick="copyCode(t
 
 <div id="ref-services" class="ref-section" style="border-top:none;padding-top:0">
   <h3>Services Reference</h3>
-  <p>All 11 Docker containers deployed at each hospital site.</p>
+  <p>All 10 Docker containers deployed at each hospital site.</p>
   <div class="ref-table-wrap">
     <table>
       <thead><tr><th>Service</th><th>Container</th><th>Port</th><th>Description</th></tr></thead>
@@ -1364,7 +1355,6 @@ sudo systemctl restart puru-dc</pre><button class="copy-btn" onclick="copyCode(t
         <tr><td>Data Integration</td><td><code>puru-bridge</code></td><td><span class="port-badge">8094</span></td><td>Data bridge service</td></tr>
         <tr><td>Frontend</td><td><code>puru-hydrogen</code></td><td><span class="port-badge">80</span></td><td>Main UI application</td></tr>
         <tr><td>Database</td><td><code>purusql</code></td><td><span class="port-badge">3306</span></td><td>MySQL 8.0</td></tr>
-        <tr><td>Message Queue</td><td><code>rabbitmq</code></td><td><span class="port-badge">5672 / 15672</span></td><td>RabbitMQ with management UI</td></tr>
       </tbody>
     </table>
   </div>
