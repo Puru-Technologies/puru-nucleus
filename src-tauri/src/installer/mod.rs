@@ -1,4 +1,4 @@
-//! Cross-platform installer for MySQL, Erlang, and RabbitMQ.
+//! Cross-platform installer for MySQL.
 //!
 //! - **Windows**: Downloads MSI/EXE installers, runs silent installs, sets PATH
 //! - **macOS**: Uses Homebrew (`brew install`)
@@ -44,18 +44,12 @@ const MYSQL_BASE: &str = r"C:\Program Files\MySQL";
 /// Version-agnostic target for a fresh ZIP extraction when no MySQL is present.
 #[cfg(target_os = "windows")]
 const MYSQL_DEFAULT_DIR: &str = r"C:\Program Files\MySQL\MySQL Server";
-#[cfg(target_os = "windows")]
-const ERLANG_INSTALL_DIR: &str = r"C:\Program Files\Erlang OTP";
 
-// Legacy GitHub/vendor fallback URLs — retained for reference now that infra
+// Legacy GitHub/vendor fallback URL — retained for reference now that infra
 // downloads resolve through oxygen's infra manifest.
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
 const MYSQL_FALLBACK_URL: &str = "https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.40-winx64.msi";
-#[allow(dead_code)]
-const ERLANG_FALLBACK_URL: &str = "https://github.com/erlang/otp/releases/download/OTP-26.2.5.6/otp_win64_26.2.5.6.exe";
-#[allow(dead_code)]
-const RABBITMQ_FALLBACK_URL: &str = "https://github.com/rabbitmq/rabbitmq-server/releases/download/v3.13.7/rabbitmq-server-3.13.7.exe";
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -65,7 +59,6 @@ pub async fn install_missing(
     software: &[String],
 ) -> Vec<InstallResult> {
     let install_mysql = software.iter().any(|s| s.eq_ignore_ascii_case("mysql"));
-    let install_rabbitmq = software.iter().any(|s| s.eq_ignore_ascii_case("rabbitmq"));
     let install_vc_redist = software
         .iter()
         .any(|s| matches!(s.to_ascii_lowercase().as_str(), "vc-redist" | "vc_redist" | "vcredist"));
@@ -78,7 +71,6 @@ pub async fn install_missing(
         install_missing_windows(
             app,
             install_mysql,
-            install_rabbitmq,
             install_vc_redist,
             install_workbench,
         )
@@ -87,7 +79,7 @@ pub async fn install_missing(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (install_vc_redist, install_workbench); // Windows-only helpers
-        install_missing_unix(app, install_mysql, install_rabbitmq).await
+        install_missing_unix(app, install_mysql).await
     }
 }
 
@@ -96,28 +88,11 @@ pub async fn install_missing(
 async fn install_missing_unix(
     app: &tauri::AppHandle,
     install_mysql: bool,
-    install_rabbitmq: bool,
 ) -> Vec<InstallResult> {
     let mut results = Vec::new();
 
     if install_mysql {
         results.push(do_install_mysql(app).await);
-    }
-    if install_rabbitmq {
-        // Erlang first (dependency)
-        let erlang_result = do_install_erlang(app).await;
-        let erlang_ok = erlang_result.success;
-        results.push(erlang_result);
-        if erlang_ok {
-            results.push(do_install_rabbitmq(app).await);
-        } else {
-            results.push(InstallResult {
-                software: "RabbitMQ".into(),
-                success: false,
-                version: None,
-                error: Some("Skipped — Erlang installation failed".into()),
-            });
-        }
     }
 
     results
@@ -130,28 +105,6 @@ async fn install_missing_unix(
 #[cfg(target_os = "macos")]
 async fn do_install_mysql(app: &tauri::AppHandle) -> InstallResult {
     brew_install(app, "MySQL", "mysql").await
-}
-
-#[cfg(target_os = "macos")]
-async fn do_install_erlang(app: &tauri::AppHandle) -> InstallResult {
-    brew_install(app, "Erlang", "erlang").await
-}
-
-#[cfg(target_os = "macos")]
-async fn do_install_rabbitmq(app: &tauri::AppHandle) -> InstallResult {
-    let result = brew_install(app, "RabbitMQ", "rabbitmq").await;
-    if result.success {
-        // Start RabbitMQ service and enable management plugin
-        let _ = tokio::process::Command::new("brew")
-            .args(["services", "start", "rabbitmq"])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("rabbitmq-plugins")
-            .args(["enable", "rabbitmq_management"])
-            .output()
-            .await;
-    }
-    result
 }
 
 #[cfg(target_os = "macos")]
@@ -223,33 +176,6 @@ async fn brew_install(app: &tauri::AppHandle, display_name: &str, formula: &str)
 #[cfg(target_os = "linux")]
 async fn do_install_mysql(app: &tauri::AppHandle) -> InstallResult {
     apt_install(app, "MySQL", &["mysql-server", "mysql-client"]).await
-}
-
-#[cfg(target_os = "linux")]
-async fn do_install_erlang(app: &tauri::AppHandle) -> InstallResult {
-    apt_install(app, "Erlang", &["erlang"]).await
-}
-
-#[cfg(target_os = "linux")]
-async fn do_install_rabbitmq(app: &tauri::AppHandle) -> InstallResult {
-    let result = apt_install(app, "RabbitMQ", &["rabbitmq-server"]).await;
-    if result.success {
-        // Enable and start RabbitMQ
-        let _ = tokio::process::Command::new("sudo")
-            .args(["systemctl", "enable", "rabbitmq-server"])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("sudo")
-            .args(["systemctl", "start", "rabbitmq-server"])
-            .output()
-            .await;
-        // Enable management plugin
-        let _ = tokio::process::Command::new("sudo")
-            .args(["rabbitmq-plugins", "enable", "rabbitmq_management"])
-            .output()
-            .await;
-    }
-    result
 }
 
 #[cfg(target_os = "linux")]
@@ -358,13 +284,12 @@ fn mk_fail(name: &str, err: &str) -> InstallResult {
 }
 
 /// Windows install driver: build the infra context once, then install the
-/// requested components (Erlang is pulled in as a RabbitMQ dependency;
-/// VC++ Redistributable is pulled in as a MySQL dependency to head off 1603).
+/// requested components (VC++ Redistributable is pulled in as a MySQL
+/// dependency to head off 1603).
 #[cfg(target_os = "windows")]
 async fn install_missing_windows(
     app: &tauri::AppHandle,
     install_mysql: bool,
-    install_rabbitmq: bool,
     install_vc_redist_explicit: bool,
     install_workbench: bool,
 ) -> Vec<InstallResult> {
@@ -381,11 +306,6 @@ async fn install_missing_windows(
             if install_mysql {
                 emit_progress(app, "MySQL", InstallStage::Failed, 0, &msg, 0, 0);
                 results.push(mk_fail("MySQL", &msg));
-            }
-            if install_rabbitmq {
-                emit_progress(app, "RabbitMQ", InstallStage::Failed, 0, &msg, 0, 0);
-                results.push(mk_fail("Erlang", &msg));
-                results.push(mk_fail("RabbitMQ", &msg));
             }
             if install_workbench {
                 emit_progress(app, "MySQL Workbench", InstallStage::Failed, 0, &msg, 0, 0);
@@ -415,16 +335,6 @@ async fn install_missing_windows(
 
     if install_mysql {
         results.push(do_install_mysql(app, &ctx).await);
-    }
-    if install_rabbitmq {
-        let erlang = do_install_erlang(app, &ctx).await;
-        let erlang_ok = erlang.success;
-        results.push(erlang);
-        if erlang_ok {
-            results.push(do_install_rabbitmq(app, &ctx).await);
-        } else {
-            results.push(mk_fail("RabbitMQ", "Skipped — Erlang installation failed"));
-        }
     }
     if install_workbench {
         results.push(do_install_mysql_workbench(app, &ctx).await);
@@ -517,11 +427,6 @@ where
     }
 }
 
-#[cfg(target_os = "windows")]
-async fn do_install_erlang(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResult {
-    install_infra_component(app, ctx, "Erlang", "erlang", install_erlang_silent).await
-}
-
 /// VC++ 2015-2022 x64 Redistributable — resolved through the infra manifest
 /// (`vc-redist` component). Silent-installed to fix MySQL MSI 1603 failures on
 /// boxes that never had Visual Studio / any recent VC-linked app installed.
@@ -606,62 +511,6 @@ async fn do_install_mysql_workbench(app: &tauri::AppHandle, ctx: &InfraCtx) -> I
         version: Some(version),
         error: if present { None } else { Some("Could not verify MySQL Workbench".into()) },
     }
-}
-
-#[cfg(target_os = "windows")]
-async fn do_install_rabbitmq(app: &tauri::AppHandle, ctx: &InfraCtx) -> InstallResult {
-    let result = install_infra_component(app, ctx, "RabbitMQ", "rabbitmq", install_rabbitmq_silent).await;
-    if result.success {
-        // Drop the delayed-message-exchange .ez into the plugins dir so the
-        // configure step's `rabbitmq-plugins enable` succeeds. Best-effort.
-        match install_delayed_exchange_plugin(app, ctx).await {
-            Ok(file) => emit_progress(
-                app, "RabbitMQ", InstallStage::Completed, 100,
-                &format!("Installed + delayed-exchange plugin ({})", file), 0, 0,
-            ),
-            Err(e) => {
-                tracing::warn!("RabbitMQ: delayed-exchange plugin not installed: {}", e);
-                emit_progress(
-                    app, "RabbitMQ", InstallStage::Completed, 100,
-                    &format!("Installed (delayed-exchange plugin skipped — {})", e), 0, 0,
-                );
-            }
-        }
-    }
-    result
-}
-
-/// Download the `rabbitmq_delayed_message_exchange` .ez and place it in the
-/// RabbitMQ plugins directory. Enabling happens in `setup_configure_rabbitmq`.
-#[cfg(target_os = "windows")]
-async fn install_delayed_exchange_plugin(
-    app: &tauri::AppHandle,
-    ctx: &InfraCtx,
-) -> Result<String, String> {
-    let artifact = ctx.resolve("rabbitmq-delayed-message-exchange")?;
-    let plugins_dir =
-        find_rabbitmq_plugins_dir().ok_or_else(|| "RabbitMQ plugins directory not found".to_string())?;
-    let dest = plugins_dir.join(&artifact.file);
-    emit_progress(app, "RabbitMQ", InstallStage::Installing, 0, &format!("Installing plugin {}", artifact.file), 0, 0);
-    crate::releases::download_infra_artifact(&ctx.client, &artifact, &dest, |_, _| {})
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(artifact.file)
-}
-
-#[cfg(target_os = "windows")]
-fn find_rabbitmq_plugins_dir() -> Option<PathBuf> {
-    let base = std::path::Path::new(r"C:\Program Files\RabbitMQ Server");
-    for entry in std::fs::read_dir(base).ok()?.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("rabbitmq_server-") {
-            let p = base.join(&name).join("plugins");
-            if p.is_dir() {
-                return Some(p);
-            }
-        }
-    }
-    None
 }
 
 /// MySQL install: download → set up a running service with a generated root
@@ -1069,8 +918,6 @@ fn extract_version(text: &str) -> Option<String> {
 async fn verify_install_unix(software: &str) -> Option<String> {
     let (cmd, args): (&str, &[&str]) = match software {
         "MySQL" => ("mysql", &["--version"]),
-        "Erlang" => ("erl", &["-eval", "erlang:display(erlang:system_info(otp_release)), halt().", "-noshell"]),
-        "RabbitMQ" => ("rabbitmqctl", &["version"]),
         _ => return None,
     };
 
@@ -1105,42 +952,6 @@ fn verify_install_windows(software: &str) -> Option<String> {
             } else {
                 None
             }
-        }
-        "Erlang" => {
-            let erl = format!(r"{}\bin\erl.exe", ERLANG_INSTALL_DIR);
-            if std::path::Path::new(&erl).exists() {
-                // Try to get actual version
-                let output = crate::process::silent_std_cmd(&erl)
-                    .args(["-eval", "erlang:display(erlang:system_info(otp_release)), halt().", "-noshell"])
-                    .output()
-                    .ok();
-                if let Some(out) = output {
-                    if out.status.success() {
-                        let raw = String::from_utf8_lossy(&out.stdout);
-                        return Some(raw.trim().trim_matches('"').to_string());
-                    }
-                }
-                Some("installed".into())
-            } else {
-                None
-            }
-        }
-        "RabbitMQ" => {
-            let rabbitmq_base = r"C:\Program Files\RabbitMQ Server";
-            if let Ok(entries) = std::fs::read_dir(rabbitmq_base) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("rabbitmq_server-") {
-                        let ctl = format!(r"{}\{}\sbin\rabbitmqctl.bat", rabbitmq_base, name);
-                        if let Ok(output) = crate::process::silent_std_cmd(&ctl).arg("version").output() {
-                            if output.status.success() {
-                                return extract_version(&String::from_utf8_lossy(&output.stdout));
-                            }
-                        }
-                    }
-                }
-            }
-            None
         }
         _ => None,
     }
@@ -1568,54 +1379,6 @@ pub(crate) fn find_mysql_workbench_exe() -> Option<PathBuf> {
 #[allow(dead_code)]
 pub(crate) fn find_mysql_workbench_exe() -> Option<PathBuf> { None }
 
-#[cfg(target_os = "windows")]
-fn install_erlang_silent(installer_path: &PathBuf) -> Result<(), String> {
-    let output = crate::process::silent_std_cmd(installer_path)
-        .args(["/S", &format!("/D={}", ERLANG_INSTALL_DIR)])
-        .output()
-        .map_err(|e| format!("Failed to run Erlang installer: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Erlang installer exited with code {:?}: {}", output.status.code(), stderr));
-    }
-
-    set_system_env("ERLANG_HOME", ERLANG_INSTALL_DIR);
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn install_rabbitmq_silent(installer_path: &PathBuf) -> Result<(), String> {
-    let output = crate::process::silent_std_cmd(installer_path)
-        .args(["/S"])
-        .output()
-        .map_err(|e| format!("Failed to run RabbitMQ installer: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("RabbitMQ installer exited with code {:?}: {}", output.status.code(), stderr));
-    }
-
-    // Add RabbitMQ sbin to PATH
-    let rabbitmq_base = r"C:\Program Files\RabbitMQ Server";
-    if let Ok(entries) = std::fs::read_dir(rabbitmq_base) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("rabbitmq_server-") {
-                add_to_system_path(&format!(r"{}\{}\sbin", rabbitmq_base, name));
-                break;
-            }
-        }
-    }
-
-    // Enable management plugin
-    let _ = crate::process::silent_std_cmd("rabbitmq-plugins")
-        .args(["enable", "rabbitmq_management"])
-        .output();
-
-    Ok(())
-}
-
 // ── Windows PATH/env helpers ────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
@@ -1660,9 +1423,3 @@ fn add_to_system_path(new_path: &str) {
         .output();
 }
 
-#[cfg(target_os = "windows")]
-fn set_system_env(key: &str, value: &str) {
-    let _ = crate::process::silent_std_cmd("setx")
-        .args(["/M", key, value])
-        .output();
-}

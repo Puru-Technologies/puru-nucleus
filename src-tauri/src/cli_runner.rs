@@ -32,7 +32,7 @@ pub async fn run(command: Commands) {
         Commands::Update { service } => cmd_update(&service).await,
         Commands::Rollback { service, to } => cmd_rollback(&service, to.as_deref()).await,
         Commands::Jars(args) => cmd_jars(args).await,
-        Commands::Seed { db, queues, templates } => cmd_seed(db, queues, templates).await,
+        Commands::Seed { db, templates } => cmd_seed(db, templates).await,
         Commands::SeedMasterData { radiology } => cmd_seed_master_data(radiology).await,
         Commands::Version => cmd_version(),
         Commands::Daemon => {
@@ -44,16 +44,16 @@ pub async fn run(command: Commands) {
 
 // ── Seed ─────────────────────────────────────────────────────────────────────
 
-async fn cmd_seed(db: bool, queues: bool, templates: bool) {
+async fn cmd_seed(db: bool, templates: bool) {
     // No flags = seed everything
-    let all = !db && !queues && !templates;
-    let (do_db, do_queues, do_templates) = (db || all, queues || all, templates || all);
+    let all = !db && !templates;
+    let (do_db, do_templates) = (db || all, templates || all);
 
     println!();
     println!("  Seeding fresh-install data (existing values are never overwritten)...");
     println!();
 
-    match crate::seed::run_seed(do_db, do_queues, do_templates).await {
+    match crate::seed::run_seed(do_db, do_templates).await {
         Ok(report) => {
             let mut table = Table::new();
             table.load_preset(presets::UTF8_FULL_CONDENSED);

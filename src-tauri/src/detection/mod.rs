@@ -1,8 +1,8 @@
 //! Environment file parsing and hospital detection
 //!
 //! Reads `.env` files from the `env/` directory alongside `docker-compose.yml`
-//! to extract hospital configuration, database credentials, and RabbitMQ settings.
-//! Also detects network mode (host vs bridge) from the compose file.
+//! to extract hospital configuration and database credentials. Also detects
+//! network mode (host vs bridge) from the compose file.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,15 +33,6 @@ pub struct DatabaseCredentials {
     pub pool_size: u32,
 }
 
-/// Parsed RabbitMQ credentials from env files
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RabbitMQCredentials {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub password: String,
-}
-
 /// Network mode detected from docker-compose.yml
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -57,7 +48,6 @@ pub struct EnvDetectionResult {
     pub env_dir: Option<String>,
     pub hospital_info: Option<HospitalInfo>,
     pub database: Option<DatabaseCredentials>,
-    pub rabbitmq: Option<RabbitMQCredentials>,
     pub network_mode: NetworkMode,
     pub platform: String,
     pub env_files_found: Vec<String>,
@@ -148,28 +138,6 @@ fn extract_database_credentials(env: &HashMap<String, String>) -> DatabaseCreden
             .get("spring.datasource.hikari.maximumpoolsize")
             .and_then(|v| v.parse().ok())
             .unwrap_or(5),
-    }
-}
-
-/// Extract RabbitMQ credentials from rabbitmq.env
-fn extract_rabbitmq_credentials(env: &HashMap<String, String>) -> RabbitMQCredentials {
-    RabbitMQCredentials {
-        host: env
-            .get("spring.rabbitmq.host")
-            .cloned()
-            .unwrap_or_else(|| "localhost".to_string()),
-        port: env
-            .get("spring.rabbitmq.port")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5672),
-        username: env
-            .get("spring.rabbitmq.username")
-            .cloned()
-            .unwrap_or_default(),
-        password: env
-            .get("spring.rabbitmq.password")
-            .cloned()
-            .unwrap_or_default(),
     }
 }
 
@@ -293,12 +261,10 @@ fn list_env_files(env_dir: &Path) -> Vec<String> {
     let expected = [
         "general.env",
         "database.env",
-        "rabbitmq.env",
         "has.env",
         "mail.env",
         "pacs.env",
         "database-neon.env",
-        "rabbitmq-neon.env",
     ];
 
     expected
@@ -311,7 +277,7 @@ fn list_env_files(env_dir: &Path) -> Vec<String> {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /// Parse environment files from a docker-compose.yml's sibling `env/` directory.
-/// Returns hospital info, database creds, RabbitMQ creds, and network mode.
+/// Returns hospital info, database creds, and network mode.
 pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, NucleusError> {
     let compose = Path::new(compose_path);
 
@@ -337,7 +303,7 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
 
     let env_dir = find_env_dir(compose);
 
-    let (env_dir_str, hospital_info, database, rabbitmq, env_files_found) = match env_dir {
+    let (env_dir_str, hospital_info, database, env_files_found) = match env_dir {
         Some(ref dir) => {
             let files = list_env_files(dir);
 
@@ -357,19 +323,10 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
                 .and_then(|r| r.ok())
                 .map(|env| extract_database_credentials(&env));
 
-            // Parse rabbitmq.env
-            let rmq = dir
-                .join("rabbitmq.env")
-                .exists()
-                .then(|| parse_env_file(&dir.join("rabbitmq.env")))
-                .and_then(|r| r.ok())
-                .map(|env| extract_rabbitmq_credentials(&env));
-
             (
                 Some(dir.to_string_lossy().to_string()),
                 hospital,
                 db,
-                rmq,
                 files,
             )
         }
@@ -377,7 +334,7 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
             // Fallback: parse inline environment variables from docker-compose.yml
             let inline_vars = parse_compose_inline_env(compose);
             if inline_vars.is_empty() {
-                (None, None, None, None, vec![])
+                (None, None, None, vec![])
             } else {
                 tracing::info!(
                     "No env/ directory found, parsed {} inline variables from docker-compose.yml",
@@ -385,8 +342,7 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
                 );
                 let hospital = Some(extract_hospital_info(&inline_vars));
                 let db = Some(extract_database_credentials(&inline_vars));
-                let rmq = Some(extract_rabbitmq_credentials(&inline_vars));
-                (None, hospital, db, rmq, vec!["(inline in docker-compose.yml)".to_string()])
+                (None, hospital, db, vec!["(inline in docker-compose.yml)".to_string()])
             }
         }
     };
@@ -395,7 +351,6 @@ pub fn detect_environment(compose_path: &str) -> Result<EnvDetectionResult, Nucl
         env_dir: env_dir_str,
         hospital_info,
         database,
-        rabbitmq,
         network_mode,
         platform,
         env_files_found,
@@ -592,7 +547,6 @@ mod tests {
       - puru.server.ip=192.168.1.100
       - spring.datasource.username=puru_admin
       - spring.datasource.password=secret123
-      - spring.rabbitmq.host=localhost
     ports:
       - '8082:8082'
 "#,

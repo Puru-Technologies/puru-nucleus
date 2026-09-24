@@ -133,11 +133,6 @@ import { NotificationService } from '../../core/services/notification.service';
               </div>
 
               <div class="field">
-                <label>RabbitMQ Password</label>
-                <input class="input" [(ngModel)]="variables.rabbitmq_password">
-              </div>
-
-              <div class="field">
                 <label>Auth Tag</label>
                 <input class="input" [(ngModel)]="variables.auth_tag">
               </div>
@@ -193,7 +188,7 @@ import { NotificationService } from '../../core/services/notification.service';
             <div class="modules-section">
               <div class="modules-label">Service Modules</div>
               <div class="modules-hint">
-                Controlled from cloud (Oxygen). MySQL and RabbitMQ run on host, not in Docker.
+                Controlled from cloud (Oxygen). MySQL runs on host, not in Docker.
               </div>
               <div class="modules-grid">
                 <label class="check"><input type="checkbox" [ngModel]="modules.auth" disabled> <span>Auth</span></label>
@@ -585,7 +580,6 @@ export class ComposeComponent implements OnInit {
     barcode_prefix_return: '2526R',
     server_ip: '',
     mysql_password: '',
-    rabbitmq_password: 'puru123',
     auth_tag: 'latest',
     xenon_tag: 'latest',
     has_tag: 'latest',

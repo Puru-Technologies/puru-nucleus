@@ -85,7 +85,7 @@ pub async fn run_daemon() {
     //   Puru container that isn't running. Docker's `restart: always` handles
     //   the common case; this is a safety net for containers that exited
     //   cleanly or a compose set to `restart: no`.
-    // - **Native mode**: ensure MySQL + RabbitMQ, then `sync_native_services`
+    // - **Native mode**: ensure MySQL, then `sync_native_services`
     //   (auth first, then everything else).
     if config.deployment_mode == crate::config::DeploymentMode::Docker {
         tokio::spawn(async {
@@ -100,16 +100,6 @@ pub async fn run_daemon() {
                 Err(e) => {
                     tracing::error!(
                         "Daemon (native): MySQL not reachable ({}). Aborting boot start — the watchdog will retry once MySQL is up.",
-                        e
-                    );
-                    return;
-                }
-            }
-            match crate::commands::ensure_rabbitmq_running_public().await {
-                Ok(_) => tracing::info!("Daemon (native): RabbitMQ reachable"),
-                Err(e) => {
-                    tracing::error!(
-                        "Daemon (native): RabbitMQ not reachable ({}). Aborting boot start — the watchdog will retry once RabbitMQ is up.",
                         e
                     );
                     return;
@@ -183,14 +173,12 @@ pub async fn run_daemon() {
         // Remote setup pipeline (mirrors the GUI setup_* commands)
         .route("/api/setup/prerequisites/check", post(routes::setup_check_prerequisites))
         .route("/api/setup/databases", post(routes::setup_create_databases))
-        .route("/api/setup/rabbitmq", post(routes::setup_configure_rabbitmq))
         .route("/api/setup/compose", post(routes::setup_generate_config))
         .route("/api/setup/images", post(routes::setup_pull_images))
         .route("/api/setup/services/start", post(routes::setup_start_services))
         .route("/api/setup/env-files", post(routes::setup_generate_env_files))
         .route("/api/setup/jars", post(routes::setup_pull_jars))
         .route("/api/setup/native-services/start", post(routes::setup_start_native_services))
-        .route("/api/setup/seed-queues", post(routes::setup_seed_queues))
         .route("/api/setup/init-auth", post(routes::setup_init_auth))
         .route("/api/setup/seed-database", post(routes::setup_seed_database))
         .route("/api/setup/health-check", post(routes::setup_health_check))

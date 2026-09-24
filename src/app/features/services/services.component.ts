@@ -999,7 +999,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
       this.isNative && !s.infra && s.name !== 'puru-hydrogen' && s.name !== 'dviewer' && s.status !== 'notinstalled');
   }
 
-  /** Start / stop / restart the MySQL or RabbitMQ Windows service (elevated). */
+  /** Start / stop / restart the MySQL Windows service (elevated). */
   async controlInfra(service: ServiceInfo, action: 'start' | 'stop' | 'restart'): Promise<void> {
     const name = service.name;
     const busy = action === 'start' ? 'Starting…' : action === 'stop' ? 'Stopping…' : 'Restarting…';
@@ -1013,7 +1013,7 @@ export class ServicesComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Show the MySQL/RabbitMQ log in the log panel (the crash reason). */
+  /** Show the MySQL log in the log panel (the crash reason). */
   async viewInfraLog(service: ServiceInfo): Promise<void> {
     this.logContainer = service.name;
     this.logTimeFilter = 'tail';
@@ -1195,8 +1195,8 @@ export class ServicesComponent implements OnInit, OnDestroy {
   }
 
   /** Dispatch a Stop click to whichever backend the row represents — infra
-   *  (MySQL / RabbitMQ Windows services) routes through `controlInfra`; native
-   *  and Docker services go through `stop_service`. */
+   *  (MySQL Windows service) routes through `controlInfra`; native and Docker
+   *  services go through `stop_service`. */
   async stopAny(service: ServiceInfo): Promise<void> {
     if (service.infra) {
       await this.controlInfra(service, 'stop');

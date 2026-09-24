@@ -331,7 +331,7 @@ fn load_env_files(config: &NucleusConfig, service: &str) -> std::collections::Ha
     let mut vars = std::collections::HashMap::new();
 
     // Load general.env, database.env, etc. in order
-    let env_files = ["general.env", "database.env", "rabbitmq.env"];
+    let env_files = ["general.env", "database.env"];
     for filename in &env_files {
         let path = env_dir.join(filename);
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -432,14 +432,6 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
         }
         // Clean up stale PID file from a dead process
         let _ = std::fs::remove_file(pid_path(config, name));
-    }
-
-    // Self-heal the RabbitMQ app user before launching. A broker reset (the
-    // Khepri virgin-node behaviour on a 4.x upgrade) silently drops `puru`,
-    // which makes every service abort on boot with ACCESS_REFUSED. Best-effort:
-    // if the management API is off we just log and proceed.
-    if let Err(e) = crate::infra::ensure_rabbitmq_user().await {
-        tracing::warn!("RabbitMQ user self-heal skipped for {}: {}", name, e);
     }
 
     // Resolve java binary path
@@ -826,8 +818,8 @@ pub async fn get_services(config: &NucleusConfig) -> Result<Vec<ServiceInfo>, Nu
         }
     }
 
-    // Prepend infra status rows (Database + Message Broker) so operators see
-    // MySQL / RabbitMQ health alongside the app services.
+    // Prepend infra status rows (Database) so operators see MySQL health
+    // alongside the app services.
     let mut all = crate::infra::infra_rows(config).await;
     all.append(&mut services);
 

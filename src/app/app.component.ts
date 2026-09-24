@@ -147,7 +147,7 @@ interface CommandActivity {
             <div class="admin-banner">
               <span class="material-icons">shield</span>
               <span class="admin-banner-text">
-                Not running as administrator — installing services, MySQL/RabbitMQ, and certificates need elevation.
+                Not running as administrator — installing services, MySQL, and certificates need elevation.
               </span>
               <button class="btn btn-primary btn-sm" (click)="restartAsAdmin()" [disabled]="elevating">
                 {{ elevating ? 'Restarting…' : 'Restart as Admin' }}

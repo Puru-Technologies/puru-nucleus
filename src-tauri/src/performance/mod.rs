@@ -8,7 +8,7 @@
 //! can explain rather than an outright crash.
 //!
 //! This module turns the box's RAM into an explicit budget: reserve what the OS,
-//! MySQL, RabbitMQ and Nucleus itself need, then divide what's left across the
+//! MySQL and Nucleus itself need, then divide what's left across the
 //! services that are actually installed, weighted by how hard each one works.
 //! The result is rendered as JVM flags at spawn time and shown, with its
 //! arithmetic, on the Performance screen.
@@ -196,10 +196,6 @@ pub struct ReserveConfig {
     pub nucleus_mb: u64,
     /// MySQL: InnoDB buffer pool plus server overhead.
     pub mysql_mb: u64,
-    /// RabbitMQ. Note its own `vm_memory_high_watermark` defaults to 40% of the
-    /// box, far above this — pin the watermark to match or the broker will
-    /// happily grow past what we reserved here.
-    pub rabbitmq_mb: u64,
     /// nginx, plus headroom for the backup path (mysqldump → ZIP spikes).
     pub other_mb: u64,
 }
@@ -212,7 +208,6 @@ impl Default for ReserveConfig {
             os_mb: 2048,
             nucleus_mb: 400,
             mysql_mb: 2048,
-            rabbitmq_mb: 512,
             other_mb: 600,
         }
     }
@@ -289,7 +284,7 @@ pub struct MemoryPlan {
     pub enabled: bool,
     pub exit_on_oom: bool,
     pub services: Vec<ServicePlan>,
-    /// Operator-facing notes: over-subscription, RabbitMQ's watermark, and so on.
+    /// Operator-facing notes: over-subscription, and so on.
     pub warnings: Vec<String>,
 }
 
@@ -313,20 +308,17 @@ pub fn default_reserves(total_mb: u64) -> ReserveConfig {
     // keeps something and a large one doesn't hand MySQL everything.
     let mysql_mb = (total_mb * 22 / 100).clamp(768, 8192) + 600;
 
-    let rabbitmq_mb = (total_mb * 6 / 100).clamp(512, 2048);
-
     ReserveConfig {
         os_mb,
         nucleus_mb: 400,
         mysql_mb,
-        rabbitmq_mb,
         other_mb: 600,
     }
 }
 
 impl ReserveConfig {
     pub fn total_mb(&self) -> u64 {
-        self.os_mb + self.nucleus_mb + self.mysql_mb + self.rabbitmq_mb + self.other_mb
+        self.os_mb + self.nucleus_mb + self.mysql_mb + self.other_mb
     }
 }
 
@@ -483,14 +475,6 @@ pub fn plan(config: &NucleusConfig) -> MemoryPlan {
         );
     }
 
-    warnings.push(format!(
-        "RabbitMQ's vm_memory_high_watermark defaults to 40% of RAM (about {:.1} GB here), well above \
-         the {} MB reserved for it. Pin the watermark to match, or the broker can grow into the \
-         services' budget.",
-        total_ram_mb as f64 * 0.4 / 1024.0,
-        reserves.rabbitmq_mb
-    ));
-
     MemoryPlan {
         total_ram_mb,
         reserves,
@@ -575,7 +559,6 @@ mod tests {
             os_mb: 2048,
             nucleus_mb: 400,
             mysql_mb: 4204,
-            rabbitmq_mb: 983,
             other_mb: 600,
         }
     }
@@ -586,13 +569,13 @@ mod tests {
         let pool = budget as i64 - (NON_HEAP_TAIL_MB * 12) as i64;
         let alloc = distribute(&all_installed(), pool);
 
-        // The tiers documented for a 16 GB box: 576 / 384 / 256 MB of heap.
+        // The tiers documented for a 16 GB box: 640 / 512 / 320 MB of heap.
         // pacs and has hold the large working sets; auth is on every request
         // path but holds little, so it sits in the small tier.
-        assert_eq!(alloc["puru-pacs"], 576, "heavy tier");
-        assert_eq!(alloc["puru-has"], 576, "heavy tier");
-        assert_eq!(alloc["puru-xenon"], 384, "standard tier");
-        assert_eq!(alloc["puru-auth"], 256, "small tier");
+        assert_eq!(alloc["puru-pacs"], 640, "heavy tier");
+        assert_eq!(alloc["puru-has"], 640, "heavy tier");
+        assert_eq!(alloc["puru-xenon"], 512, "standard tier");
+        assert_eq!(alloc["puru-auth"], 320, "small tier");
 
         // The whole plan has to fit the budget it was derived from.
         let total_rss: u64 = alloc.values().map(|m| m + NON_HEAP_TAIL_MB).sum();
@@ -616,13 +599,13 @@ mod tests {
 
     #[test]
     fn small_box_floors_every_service_rather_than_shrinking_below_it() {
-        // 8 GB cannot hold twelve services; each one should still be planned at
-        // the floor so the caller can report a shortfall instead of handing out
-        // heaps too small to run on.
-        let reserves = default_reserves(8192);
-        let budget = 8192 - reserves.total_mb();
-        let pool = budget as i64 - (NON_HEAP_TAIL_MB * 12) as i64;
-        assert!(pool < 0, "expected 8 GB to be over-subscribed");
+        // A 4 GB box cannot hold twelve services; each one should still be
+        // planned at the floor so the caller can report a shortfall instead
+        // of handing out heaps too small to run on.
+        let reserves = default_reserves(4096);
+        let budget = 4096i64 - reserves.total_mb() as i64;
+        let pool = budget - (NON_HEAP_TAIL_MB * 12) as i64;
+        assert!(pool < 0, "expected 4 GB to be over-subscribed");
 
         let alloc = distribute(&all_installed(), pool);
         assert!(alloc.values().all(|m| *m == HEAP_FLOOR_MB));
@@ -645,7 +628,6 @@ mod tests {
             os_mb: 2048,
             nucleus_mb: 400,
             mysql_mb: 2402,
-            rabbitmq_mb: 512,
             other_mb: 600,
         };
         let budget = 8192 - reserves.total_mb();

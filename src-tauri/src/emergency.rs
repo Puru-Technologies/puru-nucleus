@@ -128,9 +128,8 @@ echo.
 
 echo ============================================================
 echo  Done. Processes killed: !KILLED!
-echo  MySQL and RabbitMQ are Windows services — they were NOT
-echo  touched. Manage those with "net stop MySQL" / "net stop
-echo  RabbitMQ" if you need to.
+echo  MySQL is a Windows service — it was NOT touched. Manage it
+echo  with "net stop MySQL" if you need to.
 echo ============================================================
 echo.
 pause
@@ -205,8 +204,8 @@ echo
 
 echo "============================================================"
 echo " Done. Processes killed: $KILLED"
-echo " MySQL and RabbitMQ are managed by systemd/launchd — they"
-echo " were NOT touched. Use 'systemctl stop mysql' etc. if needed."
+echo " MySQL is managed by systemd/launchd — it was NOT touched."
+echo " Use 'systemctl stop mysql' etc. if needed."
 echo "============================================================"
 "#,
         pid_dir = pid_dir,

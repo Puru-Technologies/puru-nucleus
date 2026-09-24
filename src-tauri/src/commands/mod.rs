@@ -519,7 +519,7 @@ pub async fn check_prerequisites() -> Result<Vec<PrerequisiteStatus>, String> {
 }
 
 /// Detect environment from env files alongside docker-compose.yml.
-/// Parses general.env, database.env, rabbitmq.env to extract hospital info.
+/// Parses general.env and database.env to extract hospital info.
 #[tauri::command]
 pub async fn detect_environment(
     compose_path: Option<String>,
@@ -1534,10 +1534,10 @@ const PURU_DATABASES: &[&str] = &[
     "puru_bridge",
     "puru_auth",
     "puru_gh",
-    // Fleet-shared queue store (RabbitMQ replacement). Owned schema-wise by
-    // puru-auth at runtime, but pre-creating here lets every backend boot
-    // even if the MySQL user lacks CREATE-DATABASE privilege. Table DDL is
-    // applied below in setup_create_databases.
+    // Fleet-shared queue store. Owned schema-wise by puru-auth at runtime,
+    // but pre-creating here lets every backend boot even if the MySQL user
+    // lacks CREATE-DATABASE privilege. Table DDL is applied below in
+    // setup_create_databases.
     "puru_shared",
 ];
 
@@ -1623,7 +1623,7 @@ pub async fn setup_check_prerequisites() -> Result<(), String> {
     Ok(())
 }
 
-/// Install missing prerequisites (MySQL, RabbitMQ + Erlang) on Windows.
+/// Install missing prerequisites (MySQL) on Windows.
 /// Emits `install-progress` Tauri events for download/install progress.
 #[tauri::command]
 pub async fn install_prerequisites(
@@ -1655,12 +1655,12 @@ pub struct ManualDownloadResult {
     pub error: Option<String>,
 }
 
-/// Download infra installers (MySQL, Erlang, RabbitMQ, delayed-exchange plugin)
-/// straight to the operator's OS Downloads folder so they can install them by
-/// hand — useful when silent installers can't run (locked-down machines, no
-/// admin rights, air-gapped copy-to-USB flows). No install, no elevation, no
-/// side effects: just files on disk. Emits `manual-infra-download-progress`
-/// events per artifact so the UI can show a bar.
+/// Download infra installers (MySQL) straight to the operator's OS Downloads
+/// folder so they can install them by hand — useful when silent installers
+/// can't run (locked-down machines, no admin rights, air-gapped copy-to-USB
+/// flows). No install, no elevation, no side effects: just files on disk.
+/// Emits `manual-infra-download-progress` events per artifact so the UI can
+/// show a bar.
 #[tauri::command]
 pub async fn download_prerequisites_to_downloads(
     app: tauri::AppHandle,
@@ -1680,21 +1680,14 @@ pub async fn download_prerequisites_to_downloads(
 
     // Which components to fetch. Empty request → the full default infra set.
     let mut components: Vec<String> = if software.is_empty() {
-        vec!["mysql".into(), "erlang".into(), "rabbitmq".into(), "rabbitmq-delayed-message-exchange".into()]
+        vec!["mysql".into()]
     } else {
-        // Map friendly names ("MySQL", "RabbitMQ", …) to the manifest component
-        // ids used by oxygen. RabbitMQ implicitly pulls Erlang + the delayed
-        // exchange plugin — same rule the auto-installer uses.
+        // Map friendly names ("MySQL", …) to the manifest component ids used
+        // by oxygen.
         let mut out: Vec<String> = Vec::new();
         for s in &software {
             match s.to_ascii_lowercase().as_str() {
                 "mysql" => out.push("mysql".into()),
-                "rabbitmq" => {
-                    out.push("erlang".into());
-                    out.push("rabbitmq".into());
-                    out.push("rabbitmq-delayed-message-exchange".into());
-                }
-                "erlang" => out.push("erlang".into()),
                 "vc-redist" | "vc_redist" | "vcredist" => out.push("vc-redist".into()),
                 "mysql-workbench" | "workbench" => out.push("mysql-workbench".into()),
                 other => out.push(other.to_string()),
@@ -1925,440 +1918,6 @@ pub async fn setup_create_databases() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 3: Configure RabbitMQ user + permissions for Puru services.
-///
-/// We deliberately do **not** create an extra vhost — services use the default
-/// `/` vhost. This grants user `puru`/`puru123` full permissions on `/`, tags it
-/// `administrator`, and enables the management + delayed-message-exchange
-/// plugins. On the host path we first repair the Erlang cookie so `rabbitmqctl`
-/// can authenticate against the node.
-///
-/// Two transports, deliberately: `rabbitmqctl` needs a matching Erlang cookie,
-/// which is the single most common thing to break on Windows. When it can't
-/// reach the node we fall back to the Management API (cookie-free) and only fail
-/// the step if *both* are unusable — a cookie problem alone should never block an
-/// install whose goal is already achievable over HTTP.
-#[tauri::command]
-pub async fn setup_configure_rabbitmq() -> Result<(), String> {
-    tracing::info!("Setup: configuring RabbitMQ (default vhost \"/\")");
-
-    // Detect a containerised RabbitMQ with a read-only probe (no side effects).
-    let docker_probe = crate::process::silent_cmd("docker")
-        .args(["exec", "rabbitmq", "rabbitmqctl", "-q", "list_vhosts"])
-        .output()
-        .await;
-    let use_docker = matches!(&docker_probe, Ok(out) if out.status.success());
-
-    // Explains a host-path auth failure (Erlang cookie) precisely in the error.
-    #[allow(unused_mut)]
-    let mut cookie_note = String::new();
-
-    // Resolve the rabbitmqctl entrypoint. For the host node we also prepare it
-    // first (cookie → offline plugin fix → start) because those must happen
-    // before the node accepts commands. `ctl` is the host binary path; for
-    // Docker it is unused (verbs run via `docker exec`).
-    let ctl: String = if use_docker {
-        enable_rabbitmq_plugins_docker().await;
-        "rabbitmqctl".to_string()
-    } else {
-        // Host-installed RabbitMQ. Order is critical:
-        //  1. share the Erlang cookie (node runs as SYSTEM, rabbitmqctl as user),
-        //  2. fix the enabled-plugins set OFFLINE — an enabled plugin whose .ez is
-        //     missing aborts the node on boot, so management is enabled and
-        //     delayed-exchange is enabled ONLY when its .ez is actually present
-        //     (otherwise explicitly disabled to clear any stale entry),
-        //  3. start the node.
-
-        // Whether the node's own cookie file changed — decides below whether the
-        // service has to be bounced for the repair to actually take effect.
-        #[allow(unused_mut, unused_variables, unused_assignments)]
-        let mut restart_for_cookie = false;
-
-        #[cfg(target_os = "windows")]
-        match ensure_erlang_cookie() {
-            Ok(repair) => restart_for_cookie = repair.node_cookie_changed,
-            Err(e) => {
-                tracing::warn!("RabbitMQ: {}", e);
-                cookie_note = format!(" (Erlang cookie: {})", e);
-            }
-        }
-
-        let rabbitmqctl = find_rabbitmqctl().await.ok_or_else(|| {
-            "Cannot reach RabbitMQ: rabbitmqctl was not found on PATH or in the default install directory. Is RabbitMQ installed?".to_string()
-        })?;
-        let plugins_bin = rabbitmq_plugins_from_ctl(&rabbitmqctl);
-
-        // (2) Fix plugins offline, before the node starts.
-        let _ = crate::process::silent_cmd(&plugins_bin)
-            .args(["enable", "rabbitmq_management"])
-            .output()
-            .await;
-        #[cfg(target_os = "windows")]
-        {
-            if rabbitmq_delayed_ez_present() {
-                let _ = crate::process::silent_cmd(&plugins_bin)
-                    .args(["enable", "rabbitmq_delayed_message_exchange"])
-                    .output()
-                    .await;
-                tracing::info!("RabbitMQ: delayed_message_exchange .ez present — enabled");
-            } else {
-                // No .ez — make sure it is NOT enabled, or the node won't boot.
-                let _ = crate::process::silent_cmd(&plugins_bin)
-                    .args(["disable", "rabbitmq_delayed_message_exchange"])
-                    .output()
-                    .await;
-                tracing::warn!(
-                    "RabbitMQ: delayed_message_exchange .ez missing from the plugins dir — left disabled (upload the matching .ez to infra to enable it)"
-                );
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = crate::process::silent_cmd(&plugins_bin)
-                .args(["enable", "rabbitmq_delayed_message_exchange"])
-                .output()
-                .await;
-        }
-
-        // (3) Now the node can boot cleanly.
-        #[cfg(target_os = "windows")]
-        if let Err(e) = ensure_rabbitmq_running(restart_for_cookie).await {
-            cookie_note = format!("{} ({})", cookie_note, e);
-        }
-
-        rabbitmqctl
-    };
-
-    // ── Create + converge the `puru` user on the default "/" vhost ──────────────
-    // Idempotent by design: on a setup RE-RUN the user already exists, which is
-    // NOT an error — instead of failing we reset its password to the expected
-    // value and re-apply permissions, so a second run finishes cleanly.
-    let (add_ok, add_diag) =
-        rabbitmq_ctl(use_docker, &ctl, &["add_user", "puru", "puru123"]).await;
-    let user_existed =
-        !add_ok && (add_diag.contains("already_exists") || add_diag.contains("already exists"));
-    if user_existed {
-        // Existing user is fine — make sure the password still matches puru123.
-        let _ = rabbitmq_ctl(use_docker, &ctl, &["change_password", "puru", "puru123"]).await;
-        tracing::info!(
-            "Setup: RabbitMQ user 'puru' already existed — password reset so the re-run stays idempotent"
-        );
-    }
-    let _ = rabbitmq_ctl(
-        use_docker,
-        &ctl,
-        &["set_permissions", "-p", "/", "puru", ".*", ".*", ".*"],
-    )
-    .await;
-    let _ = rabbitmq_ctl(use_docker, &ctl, &["set_user_tags", "puru", "administrator"]).await;
-
-    // ── Verify, and on failure explain *precisely* why ─────────────────────────
-    let (auth_ok, auth_diag) =
-        rabbitmq_ctl(use_docker, &ctl, &["authenticate_user", "puru", "puru123"]).await;
-    if auth_ok {
-        tracing::info!("Setup: RabbitMQ configured (vhost=\"/\", user=puru)");
-        return Ok(());
-    }
-
-    // rabbitmqctl couldn't confirm it — but that is very often a *transport*
-    // failure (Erlang cookie mismatch) rather than a broker failure: the node
-    // itself is healthy and answering on HTTP. Converge and verify over the
-    // Management API, which needs no cookie, before calling this step failed.
-    // Configuring the broker is the goal; rabbitmqctl is just one way to do it.
-    if let Err(e) = crate::infra::ensure_rabbitmq_user().await {
-        tracing::warn!("RabbitMQ: management-API fallback unavailable: {}", e);
-    }
-    if crate::infra::verify_rabbitmq_app_user().await {
-        tracing::info!(
-            "Setup: RabbitMQ configured via the management API — rabbitmqctl was unreachable{}",
-            if cookie_note.is_empty() {
-                String::new()
-            } else {
-                format!(" —{}", cookie_note)
-            }
-        );
-        return Ok(());
-    }
-
-    // Distinguish "node unreachable" from "user/password problem": `list_users`
-    // fails with a connection/cookie error when the node is down, but succeeds
-    // when it's up — so it tells the two cases apart.
-    let (node_ok, node_diag) = rabbitmq_ctl(use_docker, &ctl, &["list_users"]).await;
-    if !node_ok {
-        let detail = if !node_diag.is_empty() { node_diag } else { add_diag };
-        let detail = if detail.is_empty() { "(no output)".to_string() } else { detail };
-        return Err(if use_docker {
-            format!(
-                "RabbitMQ configuration failed: the node inside the 'rabbitmq' container is not reachable \
-                 (it may be stopped or still starting up).\n\nrabbitmqctl said: {}",
-                detail
-            )
-        } else {
-            format!(
-                "RabbitMQ configuration failed: neither rabbitmqctl nor the management API on \
-                 http://127.0.0.1:15672 could configure the broker. The RabbitMQ Windows service is \
-                 most likely stopped; if it is running, the Erlang cookie doesn't match between the \
-                 service (runs as SYSTEM) and your user account AND the management plugin is off, so \
-                 there is no way left to reach the node.{}\n\nrabbitmqctl said: {}",
-                cookie_note, detail
-            )
-        });
-    }
-
-    // Node is up, but 'puru' still can't authenticate with puru123.
-    Err(format!(
-        "RabbitMQ is running, but the 'puru' user could not be verified with the expected password. \
-         It may already exist with a different password; setup tried to reset it but authentication still failed. \
-         You can fix it manually with:  rabbitmqctl change_password puru puru123\n\n\
-         add_user said: {}\nauthenticate_user said: {}",
-        if add_diag.is_empty() { "(user created)".to_string() } else { add_diag },
-        if auth_diag.is_empty() { "(no output)".to_string() } else { auth_diag },
-    ))
-}
-
-/// Run a single `rabbitmqctl` verb against either the Docker container
-/// (`docker exec rabbitmq rabbitmqctl …`) or the host node (`<ctl_path> …`).
-/// Returns `(succeeded, diagnostic)`, where `diagnostic` is the trimmed stderr
-/// (falling back to stdout) — used to build precise, user-facing error messages.
-async fn rabbitmq_ctl(use_docker: bool, ctl_path: &str, verb: &[&str]) -> (bool, String) {
-    let output = if use_docker {
-        let mut args: Vec<&str> = vec!["exec", "rabbitmq", "rabbitmqctl"];
-        args.extend_from_slice(verb);
-        crate::process::silent_cmd("docker").args(&args).output().await
-    } else {
-        crate::process::silent_cmd(ctl_path).args(verb).output().await
-    };
-    match output {
-        Ok(o) => {
-            let mut diag = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            if diag.is_empty() {
-                diag = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            }
-            (o.status.success(), diag)
-        }
-        Err(e) => (false, format!("could not run rabbitmqctl ({})", e)),
-    }
-}
-
-/// Enable RabbitMQ plugins inside the `rabbitmq` Docker container. Both are
-/// best-effort: `rabbitmq_management` is bundled (idempotent), while
-/// `rabbitmq_delayed_message_exchange` needs its `.ez` present in the plugins
-/// dir first — warn (don't fail) if it isn't there yet.
-async fn enable_rabbitmq_plugins_docker() {
-    for plugin in ["rabbitmq_management", "rabbitmq_delayed_message_exchange"] {
-        let out = crate::process::silent_cmd("docker")
-            .args(["exec", "rabbitmq", "rabbitmq-plugins", "enable", plugin])
-            .output()
-            .await;
-        match out {
-            Ok(o) if o.status.success() => tracing::info!("RabbitMQ: enabled {}", plugin),
-            Ok(o) => tracing::warn!(
-                "RabbitMQ: could not enable {} — {}",
-                plugin,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-            Err(e) => tracing::warn!("RabbitMQ: could not enable {}: {}", plugin, e),
-        }
-    }
-}
-
-/// Outcome of a cookie repair — tells the caller whether the *node's* own cookie
-/// file changed, because a node that is already running keeps the cookie it read
-/// at boot and only adopts the new one after a service restart.
-#[cfg(target_os = "windows")]
-struct CookieRepair {
-    node_cookie_changed: bool,
-}
-
-/// Repair the Erlang cookie on Windows: the RabbitMQ node runs as LocalSystem
-/// while `rabbitmqctl` runs as the invoking user. Erlang authenticates the two by
-/// a shared `.erlang.cookie`; a mismatch causes "TCP connection succeeded but
-/// Erlang distribution failed".
-///
-/// Two rules make this actually converge:
-///
-/// 1. **The running node wins.** Its VM loaded a cookie at boot and cannot adopt
-///    a different one without a restart, so when the broker is up we treat the
-///    SYSTEM cookie as authoritative and align the user's copy to it — no
-///    downtime. Only when the node is down are we free to pick (or generate) one.
-/// 2. **Both homes must agree.** Writing one of the two leaves exactly the
-///    mismatch this function exists to remove, so a partial repair is an error,
-///    not a success.
-#[cfg(target_os = "windows")]
-fn ensure_erlang_cookie() -> Result<CookieRepair, String> {
-    use std::path::PathBuf;
-
-    let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-    // LocalSystem's home — where the RabbitMQ service (running as SYSTEM) reads
-    // its cookie from.
-    let systemprofile =
-        PathBuf::from(&sys_root).join(r"System32\config\systemprofile\.erlang.cookie");
-    // The invoking user's home — where rabbitmqctl reads its cookie from.
-    let user = std::env::var("USERPROFILE")
-        .ok()
-        .map(|u| PathBuf::from(u).join(".erlang.cookie"));
-
-    let sys_cookie = read_cookie(&systemprofile);
-    let user_cookie = user.as_deref().and_then(read_cookie);
-
-    let node_up = rabbitmq_node_up();
-    let value: Vec<u8> = if node_up {
-        // Rule 1 — never hand a live node a cookie it can't be holding.
-        sys_cookie.clone().or_else(|| user_cookie.clone()).ok_or_else(|| {
-            "the RabbitMQ node is running but no Erlang cookie could be read from either home — \
-             re-run Nucleus as administrator so the SYSTEM cookie is readable"
-                .to_string()
-        })?
-    } else {
-        user_cookie
-            .clone()
-            .or_else(|| sys_cookie.clone())
-            .unwrap_or_else(|| generate_erlang_cookie().into_bytes())
-    };
-
-    let node_cookie_changed = sys_cookie.as_deref() != Some(value.as_slice());
-
-    let mut dests: Vec<PathBuf> = vec![systemprofile];
-    if let Some(u) = user {
-        dests.push(u);
-    }
-
-    let mut failures: Vec<String> = Vec::new();
-    for dest in &dests {
-        if read_cookie(dest).as_deref() == Some(value.as_slice()) {
-            continue; // already correct — leave it alone
-        }
-        match write_cookie(dest, &value) {
-            Ok(_) => tracing::info!("RabbitMQ: Erlang cookie aligned at {}", dest.display()),
-            Err(e) => failures.push(format!("{} ({})", dest.display(), e)),
-        }
-    }
-
-    // Rule 2 — anything less than "both homes hold the same value" is a failure.
-    if !failures.is_empty() {
-        return Err(format!(
-            "could not align the Erlang cookie at: {} — re-run Nucleus as administrator if this persists",
-            failures.join("; ")
-        ));
-    }
-    Ok(CookieRepair { node_cookie_changed })
-}
-
-/// Read a cookie file, normalized. Erlang compares the cookie as exact file
-/// contents, so a stray CRLF is the difference between matching and not — trim
-/// on the way in and out and the comparison stays meaningful. `None` for absent
-/// or empty files.
-#[cfg(target_os = "windows")]
-fn read_cookie(path: &std::path::Path) -> Option<Vec<u8>> {
-    let raw = std::fs::read(path).ok()?;
-    let trimmed = String::from_utf8_lossy(&raw).trim().as_bytes().to_vec();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
-}
-
-/// Write a cookie file, clearing the ReadOnly attribute first.
-///
-/// RabbitMQ's own Windows installer marks `.erlang.cookie` ReadOnly, and on
-/// Windows that *attribute* denies writes even when the ACL grants the owner
-/// FullControl — so without this the repair fails with "Access is denied" on a
-/// file the user owns, and no amount of elevation helps. The write is read back
-/// because a silent partial write would reintroduce the very mismatch we are
-/// here to remove.
-#[cfg(target_os = "windows")]
-fn write_cookie(dest: &std::path::Path, value: &[u8]) -> Result<(), String> {
-    if let Some(parent) = dest.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(md) = std::fs::metadata(dest) {
-        let mut perms = md.permissions();
-        if perms.readonly() {
-            perms.set_readonly(false);
-            std::fs::set_permissions(dest, perms)
-                .map_err(|e| format!("could not clear the ReadOnly attribute: {}", e))?;
-        }
-    }
-    std::fs::write(dest, value).map_err(|e| e.to_string())?;
-    match read_cookie(dest) {
-        Some(v) if v == value => Ok(()),
-        Some(_) => Err("written but read back with a different value".to_string()),
-        None => Err("written but read back empty".to_string()),
-    }
-}
-
-/// True when the broker is already answering AMQP — meaning its Erlang VM has
-/// loaded a cookie and cannot adopt a new one without a service restart.
-#[cfg(target_os = "windows")]
-fn rabbitmq_node_up() -> bool {
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], 5672)),
-        std::time::Duration::from_millis(600),
-    )
-    .is_ok()
-}
-
-/// Generate a RabbitMQ-style Erlang cookie (uppercase alphanumeric, 20 chars).
-#[cfg(target_os = "windows")]
-fn generate_erlang_cookie() -> String {
-    use rand::Rng;
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut rng = rand::thread_rng();
-    (0..20).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect()
-}
-
-/// Whether the `rabbitmq_delayed_message_exchange` .ez is actually present in a
-/// RabbitMQ plugins dir. Enabling the plugin without the file makes the node
-/// abort on boot, so we gate the enable on this.
-#[cfg(target_os = "windows")]
-fn rabbitmq_delayed_ez_present() -> bool {
-    let base = std::path::Path::new(r"C:\Program Files\RabbitMQ Server");
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("rabbitmq_server-") {
-            continue;
-        }
-        if let Ok(files) = std::fs::read_dir(entry.path().join("plugins")) {
-            for f in files.flatten() {
-                let fname = f.file_name().to_string_lossy().to_lowercase();
-                if fname.contains("delayed_message_exchange") && fname.ends_with(".ez") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Name of the registered RabbitMQ Windows service (via `sc query`), or None.
-/// Version-agnostic — matches `RabbitMQ`, `RabbitMQ Server`, etc.
-#[cfg(target_os = "windows")]
-pub(crate) fn rabbitmq_service_name() -> Option<String> {
-    let out = crate::process::silent_std_cmd("sc")
-        .args(["query", "state=", "all"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        if let Some(rest) = line.trim().strip_prefix("SERVICE_NAME:") {
-            let name = rest.trim();
-            if name.to_lowercase().contains("rabbitmq") {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn rabbitmq_service_name() -> Option<String> {
-    None
-}
-
 /// Ensure the MySQL Windows service is running, waiting until the server
 /// accepts TCP on `mysql_host:mysql_port` (default 127.0.0.1:3306). Used both
 /// by setup steps and by the daemon's boot-time native startup — Puru services
@@ -2420,107 +1979,7 @@ pub(crate) async fn ensure_mysql_running() -> Result<(), String> {
     Ok(())
 }
 
-/// Public wrapper so the daemon can call the Windows `ensure_rabbitmq_running`
-/// (which is defined below for target_os = "windows" only) uniformly.
-pub(crate) async fn ensure_rabbitmq_running_public() -> Result<(), String> {
-    // No cookie was touched on this path, so a running node needs no restart.
-    #[cfg(target_os = "windows")]
-    return ensure_rabbitmq_running(false).await;
-
-    #[cfg(not(target_os = "windows"))]
-    Ok(())
-}
-
-/// Start the RabbitMQ Windows service if it isn't running and wait for the node
-/// to accept AMQP on 5672. The service (SYSTEM) picks up the shared cookie written
-/// by `ensure_erlang_cookie` on start, so this must run after it.
-///
-/// `restart_for_cookie` closes the gap that made the cookie repair inert: the
-/// Erlang VM reads its cookie once, at boot. If we just rewrote the node's cookie
-/// file while the node was up, the file is correct and the *node* is still using
-/// the old value — so bounce the service rather than returning a success that
-/// leaves the original mismatch in place.
-#[cfg(target_os = "windows")]
-async fn ensure_rabbitmq_running(restart_for_cookie: bool) -> Result<(), String> {
-    // Discover the RabbitMQ service name (usually "RabbitMQ", but don't assume).
-    let svc = rabbitmq_service_name().unwrap_or_else(|| "RabbitMQ".to_string());
-
-    if rabbitmq_node_up() {
-        if !restart_for_cookie {
-            return Ok(());
-        }
-        tracing::info!(
-            "RabbitMQ: node cookie changed while the broker was up — restarting service '{}' so it takes effect",
-            svc
-        );
-        let _ = crate::process::silent_cmd("net")
-            .args(["stop", &svc])
-            .output()
-            .await;
-    }
-
-    let _ = crate::process::silent_cmd("net")
-        .args(["start", &svc])
-        .output()
-        .await;
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        if rabbitmq_node_up() {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(
-                "RabbitMQ service did not come up on 5672 within 60s — check the RabbitMQ service"
-                    .to_string(),
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-}
-
-/// Derive the `rabbitmq-plugins` binary from a resolved `rabbitmqctl` path —
-/// they sit side by side (same PATH entry or the same `sbin` dir), so swapping
-/// the name yields the plugins tool: `rabbitmqctl` → `rabbitmq-plugins`,
-/// `…\sbin\rabbitmqctl.bat` → `…\sbin\rabbitmq-plugins.bat`.
-fn rabbitmq_plugins_from_ctl(ctl: &str) -> String {
-    ctl.replace("rabbitmqctl", "rabbitmq-plugins")
-}
-
-/// Find rabbitmqctl binary — checks PATH first, then Windows default install directory.
-async fn find_rabbitmqctl() -> Option<String> {
-    // 1. Check PATH
-    if let Ok(output) = crate::process::silent_cmd("rabbitmqctl")
-        .arg("version")
-        .output()
-        .await
-    {
-        if output.status.success() {
-            return Some("rabbitmqctl".to_string());
-        }
-    }
-
-    // 2. Windows: scan default install directory
-    #[cfg(target_os = "windows")]
-    {
-        let rabbitmq_base = r"C:\Program Files\RabbitMQ Server";
-        if let Ok(entries) = std::fs::read_dir(rabbitmq_base) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("rabbitmq_server-") {
-                    let ctl = format!(r"{}\{}\sbin\rabbitmqctl.bat", rabbitmq_base, name);
-                    if std::path::Path::new(&ctl).exists() {
-                        return Some(ctl);
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Step 4: Generate docker-compose.yml and save config
+/// Step 3: Generate docker-compose.yml and save config
 #[tauri::command]
 pub async fn setup_generate_config() -> Result<(), String> {
     tracing::info!("Setup: generating configuration files");
@@ -2545,10 +2004,9 @@ pub async fn setup_generate_config() -> Result<(), String> {
         ServiceModules::default()
     };
 
-    // Check which infra is host-installed (skip their Docker containers)
+    // Check which infra is host-installed (skip its Docker container)
     let prereqs = crate::services::check_prerequisites().await.unwrap_or_default();
     let mysql_on_host = prereqs.iter().any(|p| p.name == "MySQL" && p.installed);
-    let rmq_on_host = prereqs.iter().any(|p| p.name == "RabbitMQ" && p.installed);
 
     // Ensure compose fragments + env templates are present locally. Both calls
     // are idempotent (skip files that already exist on disk). Without this,
@@ -2572,7 +2030,7 @@ pub async fn setup_generate_config() -> Result<(), String> {
         }
         Err(_) => {
             tracing::info!("Setup: fragments not available, using inline template");
-            generate_docker_compose(&config, &modules, mysql_on_host, rmq_on_host)
+            generate_docker_compose(&config, &modules, mysql_on_host)
         }
     };
 
@@ -2616,8 +2074,8 @@ pub async fn setup_reset() -> Result<String, String> {
 
 /// Generate a docker-compose.yml for the Puru stack (inline fallback).
 /// Only includes services enabled in ServiceModules.
-/// Skips MySQL/RabbitMQ containers if they're detected as host-installed.
-fn generate_docker_compose(config: &NucleusConfig, modules: &ServiceModules, mysql_on_host: bool, rmq_on_host: bool) -> String {
+/// Skips the MySQL container if it's detected as host-installed.
+fn generate_docker_compose(config: &NucleusConfig, modules: &ServiceModules, mysql_on_host: bool) -> String {
     let mut compose = format!(
         r#"version: "3.8"
 
@@ -2652,27 +2110,8 @@ services:
         ));
     }
 
-    // Only add RabbitMQ container if NOT host-installed
-    let rmq_is_docker = !rmq_on_host;
-    if rmq_is_docker {
-        compose.push_str(
-            r#"  rabbitmq:
-    image: rabbitmq:3.12-management
-    container_name: rabbitmq
-    restart: unless-stopped
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-
-"#,
-        );
-    }
-
     let mysql_host = if config.mysql_host.is_empty() { "127.0.0.1" } else { &config.mysql_host };
     let db_host = if mysql_is_docker { "database" } else { mysql_host };
-    let rmq_host = if rmq_is_docker { "rabbitmq" } else { "localhost" };
 
     // Host data dir (cloud `dataLocation`) bind-mounted into each container at the
     // container-side data root `/data/puru`. This is why the config seed uses the
@@ -2680,7 +2119,7 @@ services:
     let host_data = config.puru_data_path.as_deref().unwrap_or("").replace('\\', "/");
 
     // Helper to generate a Spring Boot service block
-    let svc = |name: &str, image: &str, container: &str, db: &str, port: u16, needs_rmq: bool| -> String {
+    let svc = |name: &str, image: &str, container: &str, db: &str, port: u16| -> String {
         // Every backend microservice waits for auth to be created first — auth is
         // the token authority the rest authenticate against. Compose `depends_on`
         // orders container startup; `restart: unless-stopped` + Spring retries
@@ -2709,17 +2148,6 @@ services:
             user = config.mysql_user,
             pw = config.mysql_password,
         );
-        if needs_rmq {
-            // Default vhost "/" — we deliberately do not create an extra vhost.
-            s.push_str(&format!(
-                r#"      SPRING_RABBITMQ_HOST: {rmq}
-      SPRING_RABBITMQ_VIRTUAL_HOST: "/"
-      SPRING_RABBITMQ_USERNAME: puru
-      SPRING_RABBITMQ_PASSWORD: puru123
-"#,
-                rmq = rmq_host,
-            ));
-        }
         let volumes = if host_data.is_empty() {
             String::new()
         } else {
@@ -2739,40 +2167,40 @@ services:
     };
 
     if modules.auth {
-        compose.push_str(&svc("Auth", "puru-auth", "auth", "puru_auth", 8080, false));
+        compose.push_str(&svc("Auth", "puru-auth", "auth", "puru_auth", 8080));
     }
     if modules.xenon {
-        compose.push_str(&svc("Xenon", "puru-xenon", "backend", "puru_im", 8081, true));
+        compose.push_str(&svc("Xenon", "puru-xenon", "backend", "puru_im", 8081));
     }
     if modules.has {
-        compose.push_str(&svc("HAS", "puru-has", "has", "puru_has", 8082, true));
+        compose.push_str(&svc("HAS", "puru-has", "has", "puru_has", 8082));
     }
     if modules.pacs {
-        compose.push_str(&svc("PACS", "gcp-puru-pacs", "pacs", "puru_dicom", 8083, false));
+        compose.push_str(&svc("PACS", "gcp-puru-pacs", "pacs", "puru_dicom", 8083));
     }
     if modules.argon {
-        compose.push_str(&svc("Argon", "puru-argon", "pathology", "puru_path", 8084, true));
+        compose.push_str(&svc("Argon", "puru-argon", "pathology", "puru_path", 8084));
     }
     if modules.comm {
-        compose.push_str(&svc("Comm", "gcp-puru-comm", "comm_server", "puru_im", 8085, true));
+        compose.push_str(&svc("Comm", "gcp-puru-comm", "comm_server", "puru_im", 8085));
     }
     if modules.realtime {
-        compose.push_str(&svc("Realtime", "gcp-puru-realtime", "realtime", "puru_im", 8086, true));
+        compose.push_str(&svc("Realtime", "gcp-puru-realtime", "realtime", "puru_im", 8086));
     }
     if modules.neon {
-        compose.push_str(&svc("Neon", "puru-neon", "medical", "puru_med", 8087, false));
+        compose.push_str(&svc("Neon", "puru-neon", "medical", "puru_med", 8087));
     }
     if modules.mercury {
-        compose.push_str(&svc("Mercury", "puru-mercury", "hrms", "puru_im", 8089, false));
+        compose.push_str(&svc("Mercury", "puru-mercury", "hrms", "puru_im", 8089));
     }
     if modules.counter {
-        compose.push_str(&svc("Counter", "puru-counter", "counter", "puru_im", 8095, false));
+        compose.push_str(&svc("Counter", "puru-counter", "counter", "puru_im", 8095));
     }
     if modules.bridge {
-        compose.push_str(&svc("Bridge", "puru-bridge", "bridge", "puru_bridge", 8094, false));
+        compose.push_str(&svc("Bridge", "puru-bridge", "bridge", "puru_bridge", 8094));
     }
     if modules.integration {
-        compose.push_str(&svc("Integration", "puru-integration", "integration", "puru_im", 8088, false));
+        compose.push_str(&svc("Integration", "puru-integration", "integration", "puru_im", 8088));
     }
 
     if modules.hydrogen {
@@ -2788,22 +2216,15 @@ services:
         );
     }
 
-    // Volumes (only if Docker containers are used)
-    let mut volumes = Vec::new();
-    if mysql_is_docker { volumes.push("  mysql_data:"); }
-    if rmq_is_docker { volumes.push("  rabbitmq_data:"); }
-    if !volumes.is_empty() {
-        compose.push_str("volumes:\n");
-        for v in volumes {
-            compose.push_str(v);
-            compose.push('\n');
-        }
+    // Volumes (only if the MySQL container is used)
+    if mysql_is_docker {
+        compose.push_str("volumes:\n  mysql_data:\n");
     }
 
     compose
 }
 
-/// Step 5: Pull Docker images from Artifact Registry
+/// Step 4: Pull Docker images from Artifact Registry
 #[tauri::command]
 pub async fn setup_pull_images() -> Result<(), String> {
     tracing::info!("Setup: pulling Docker images");
@@ -2874,7 +2295,7 @@ pub async fn setup_pull_images() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 6: Start all services via docker compose
+/// Step 5: Start all services via docker compose
 #[tauri::command]
 pub async fn setup_start_services() -> Result<(), String> {
     tracing::info!("Setup: starting services");
@@ -2965,17 +2386,6 @@ pub async fn setup_generate_env_files() -> Result<(), String> {
     tokio::fs::write(env_dir.join("database.env"), &database)
         .await
         .map_err(|e| format!("Failed to write database.env: {}", e))?;
-
-    // rabbitmq.env — default "/" vhost (we do not create an extra vhost)
-    let rabbitmq = "# Generated by puru-dc\n\
-         SPRING_RABBITMQ_HOST=127.0.0.1\n\
-         SPRING_RABBITMQ_PORT=5672\n\
-         SPRING_RABBITMQ_VIRTUAL_HOST=/\n\
-         SPRING_RABBITMQ_USERNAME=puru\n\
-         SPRING_RABBITMQ_PASSWORD=puru123\n";
-    tokio::fs::write(env_dir.join("rabbitmq.env"), rabbitmq)
-        .await
-        .map_err(|e| format!("Failed to write rabbitmq.env: {}", e))?;
 
     tracing::info!("Setup (native): env files written to {}", env_dir.display());
     Ok(())
@@ -3451,8 +2861,8 @@ pub(crate) async fn sync_native_services(
 }
 
 /// Manually seed fresh-install data: service databases (puru_config, ref_data,
-/// charge categories, document master, bootstrap services), RabbitMQ queues, and
-/// Jasper report templates. Idempotent — existing values are never overwritten.
+/// charge categories, document master, bootstrap services) and Jasper report
+/// templates. Idempotent — existing values are never overwritten.
 ///
 /// Run this once after the services have booted for the first time (so their
 /// tables exist). Passing all-false is treated as "seed everything", matching the
@@ -3460,23 +2870,17 @@ pub(crate) async fn sync_native_services(
 #[tauri::command]
 pub async fn seed_data(
     db: bool,
-    queues: bool,
     templates: bool,
 ) -> Result<crate::seed::SeedReport, String> {
-    let (db, queues, templates) = if !db && !queues && !templates {
-        (true, true, true)
+    let (db, templates) = if !db && !templates {
+        (true, true)
     } else {
-        (db, queues, templates)
+        (db, templates)
     };
 
-    tracing::info!(
-        "Seeding data (db={}, queues={}, templates={})",
-        db,
-        queues,
-        templates
-    );
+    tracing::info!("Seeding data (db={}, templates={})", db, templates);
 
-    crate::seed::run_seed(db, queues, templates)
+    crate::seed::run_seed(db, templates)
         .await
         .map_err(|e| e.user_message())
 }
@@ -3492,35 +2896,6 @@ pub async fn seed_master_data(
     crate::seed::run_master_data_seed(radiology)
         .await
         .map_err(|e| e.user_message())
-}
-
-/// Native setup step: seed RabbitMQ queues. Runs BEFORE services start — the
-/// Spring services passively declare their queues at boot and crash if missing.
-/// Strict: any queue-declare error fails the step so the operator sees it before
-/// the services crash-loop.
-#[tauri::command]
-pub async fn setup_seed_queues() -> Result<(), String> {
-    let report = crate::seed::run_seed(false, true, false)
-        .await
-        .map_err(|e| e.user_message())?;
-
-    let errs: Vec<String> = report
-        .sections
-        .iter()
-        .flat_map(|s| s.errors.iter().cloned())
-        .collect();
-    if !errs.is_empty() {
-        return Err(format!("Queue seeding failed:\n{}", errs.join("\n")));
-    }
-
-    let created: u64 = report.sections.iter().map(|s| s.created).sum();
-    let skipped: u64 = report.sections.iter().map(|s| s.skipped).sum();
-    tracing::info!(
-        "Setup (native): message queues seeded ({} created, {} already present)",
-        created,
-        skipped
-    );
-    Ok(())
 }
 
 /// Native setup step: initialize auth's roles, privileges, and the root user.
@@ -3541,7 +2916,7 @@ pub async fn setup_init_auth() -> Result<(), String> {
 /// supplementary — issues are logged but don't fail the whole setup.
 #[tauri::command]
 pub async fn setup_seed_database() -> Result<(), String> {
-    match crate::seed::run_seed(true, false, true).await {
+    match crate::seed::run_seed(true, true).await {
         Ok(report) => {
             for s in &report.sections {
                 if s.errors.is_empty() {
@@ -3605,7 +2980,7 @@ pub async fn apply_template_updates() -> Result<crate::templates::ApplyReport, S
     .map_err(|e| e.user_message())
 }
 
-/// Step 7: Health check — verify all services are running
+/// Step 6: Health check — verify all services are running
 #[tauri::command]
 pub async fn setup_health_check() -> Result<(), String> {
     tracing::info!("Setup: running health check");
@@ -3663,7 +3038,7 @@ pub async fn setup_health_check() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 8: Configure backups — ensure backup directory exists and config is set
+/// Step 7: Configure backups — ensure backup directory exists and config is set
 #[tauri::command]
 pub async fn setup_configure_backups() -> Result<(), String> {
     tracing::info!("Setup: configuring backups");
@@ -3711,7 +3086,7 @@ pub async fn setup_configure_backups() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 9: Register puru-dc as a system service (daemon)
+/// Step 8: Register puru-dc as a system service (daemon)
 #[tauri::command]
 pub async fn setup_install_daemon() -> Result<(), String> {
     tracing::info!("Setup: installing daemon service ({})", crate::platform::platform_name());
@@ -3722,7 +3097,7 @@ pub async fn setup_install_daemon() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 10: Configure HTTPS — generate CA + cert via mkcert, write nginx config
+/// Step 9: Configure HTTPS — generate CA + cert via mkcert, write nginx config
 #[tauri::command]
 pub async fn setup_tls() -> Result<(), String> {
     tracing::info!("Setup: configuring TLS/HTTPS");
@@ -4296,16 +3671,16 @@ pub async fn rollback_native_service_to(
         .map_err(|e| e.to_string())
 }
 
-// ── Infra (MySQL / RabbitMQ) control + logs ──────────────────────────────────
+// ── Infra (MySQL) control + logs ─────────────────────────────────────────────
 
 /// Start / stop / restart the Windows service backing an infra component
-/// (name = "MySQL" | "RabbitMQ"; action = "start" | "stop" | "restart").
+/// (name = "MySQL"; action = "start" | "stop" | "restart").
 #[tauri::command]
 pub async fn control_infra_service(name: String, action: String) -> Result<String, String> {
     crate::infra::control(&name, &action).await
 }
 
-/// Tail the MySQL or RabbitMQ log (the crash reason for a boot failure).
+/// Tail the MySQL log (the crash reason for a boot failure).
 #[tauri::command]
 pub async fn get_infra_log(name: String, lines: Option<usize>) -> Result<String, String> {
     crate::infra::read_log(&name, lines.unwrap_or(200))
@@ -4626,7 +4001,7 @@ pub async fn generate_nginx_https_config() -> Result<String, String> {
 
 // ── Process Explorer (Services tab panic-button) ─────────────────────────────
 
-/// List Puru-relevant processes (java / nginx / mysqld / rabbitmq / beam.smp).
+/// List Puru-relevant processes (java / nginx / mysqld).
 /// Used by the Services tab Port Tools panel to surface zombie JVMs holding
 /// ports that `stop_service` couldn't free.
 #[tauri::command]

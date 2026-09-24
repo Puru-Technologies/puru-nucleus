@@ -520,11 +520,10 @@ import { open } from '@tauri-apps/plugin-dialog';
                 <div class="seed-advanced-header">Advanced — seed individually</div>
                 <div class="toggle-row compact">
                   <label class="check"><input type="checkbox" [(ngModel)]="seedDb"><span>Databases (config, ref data, document master)</span></label>
-                  <label class="check"><input type="checkbox" [(ngModel)]="seedQueues"><span>RabbitMQ Queues</span></label>
                   <label class="check"><input type="checkbox" [(ngModel)]="seedTemplates"><span>Report Templates</span></label>
                 </div>
                 <button class="btn btn-stroked" (click)="seedSelected()"
-                        [disabled]="!!seeding || (!seedDb && !seedQueues && !seedTemplates)">
+                        [disabled]="!!seeding || (!seedDb && !seedTemplates)">
                   @if (seeding === 'selected') { <span class="spinner" style="width:14px;height:14px;border-width:2px"></span> }
                   <span class="material-icons">play_arrow</span> Seed Selected
                 </button>
@@ -1368,7 +1367,6 @@ export class SettingsComponent implements OnInit {
   // Data seeding
   seeding: 'all' | 'selected' | null = null;
   seedDb = true;
-  seedQueues = true;
   seedTemplates = true;
   seedReport: SeedReport | null = null;
 
@@ -1678,19 +1676,19 @@ export class SettingsComponent implements OnInit {
   // ── Data Seeding ───────────────────────────────────────────────────────────
 
   async seedAll(): Promise<void> {
-    await this.runSeed('all', true, true, true);
+    await this.runSeed('all', true, true);
   }
 
   async seedSelected(): Promise<void> {
-    if (!this.seedDb && !this.seedQueues && !this.seedTemplates) return;
-    await this.runSeed('selected', this.seedDb, this.seedQueues, this.seedTemplates);
+    if (!this.seedDb && !this.seedTemplates) return;
+    await this.runSeed('selected', this.seedDb, this.seedTemplates);
   }
 
-  private async runSeed(mode: 'all' | 'selected', db: boolean, queues: boolean, templates: boolean): Promise<void> {
+  private async runSeed(mode: 'all' | 'selected', db: boolean, templates: boolean): Promise<void> {
     this.seeding = mode;
     this.seedReport = null;
     try {
-      this.seedReport = await this.tauri.invoke<SeedReport>('seed_data', { db, queues, templates });
+      this.seedReport = await this.tauri.invoke<SeedReport>('seed_data', { db, templates });
       const totals = this.seedReport.sections.reduce(
         (acc, s) => ({ created: acc.created + s.created, errors: acc.errors + s.errors.length }),
         { created: 0, errors: 0 }

@@ -18,7 +18,6 @@ const ENV_FILES: &[&str] = &[
     "general.env",
     "database.env",
     "database-neon.env",
-    "rabbitmq.env",
     "has.env",
     "mail.env",
     "pacs.env",
@@ -69,7 +68,6 @@ pub struct TemplateVariables {
     pub barcode_prefix_return: String,
     pub server_ip: String,
     pub mysql_password: String,
-    pub rabbitmq_password: String,
     pub auth_tag: String,
     pub xenon_tag: String,
     pub has_tag: String,
@@ -84,7 +82,7 @@ pub struct TemplateVariables {
 }
 
 /// Which service modules are enabled.
-/// Core infra (database, rabbitmq, auth, fileserver) is always kept and not toggleable.
+/// Core infra (database, auth, fileserver) is always kept and not toggleable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceModules {
     pub auth: bool,
@@ -363,7 +361,6 @@ pub fn substitute_variables(content: &str, vars: &TemplateVariables) -> String {
         .replace("{{BARCODE_PREFIX_RETURN}}", &vars.barcode_prefix_return)
         .replace("{{SERVER_IP}}", &vars.server_ip)
         .replace("{{MYSQL_PASSWORD}}", &vars.mysql_password)
-        .replace("{{RABBITMQ_PASSWORD}}", &vars.rabbitmq_password)
         .replace("{{AUTH_TAG}}", &vars.auth_tag)
         .replace("{{XENON_TAG}}", &vars.xenon_tag)
         .replace("{{HAS_TAG}}", &vars.has_tag)
@@ -618,7 +615,6 @@ pub fn build_variables_from_config(cfg: &config::NucleusConfig) -> TemplateVaria
         barcode_prefix_return: "2526R".to_string(),
         server_ip: cfg.server_ip.clone(),
         mysql_password: cfg.mysql_password.clone(),
-        rabbitmq_password: "puru123".to_string(),
         auth_tag: "latest".to_string(),
         xenon_tag: "latest".to_string(),
         has_tag: "latest".to_string(),
@@ -649,7 +645,6 @@ services:
       HOSPITAL_CODE: {{HOSPITAL_CODE}}
       SERVER_IP: {{SERVER_IP}}
       MYSQL_PASSWORD: {{MYSQL_PASSWORD}}
-      RABBITMQ_PASSWORD: {{RABBITMQ_PASSWORD}}
   has:
     image: gcr.io/puru-255206/puru-has:{{HAS_TAG}}
   pacs:
@@ -683,7 +678,6 @@ services:
             barcode_prefix_return: "2526R".to_string(),
             server_ip: "192.168.1.100".to_string(),
             mysql_password: "secret123".to_string(),
-            rabbitmq_password: "rabbitpw".to_string(),
             auth_tag: "1.0.0".to_string(),
             xenon_tag: "2.3.5".to_string(),
             has_tag: "1.0.0".to_string(),
@@ -703,7 +697,6 @@ services:
         assert!(result.contains("HOSPITAL_CODE: BTCT"));
         assert!(result.contains("SERVER_IP: 192.168.1.100"));
         assert!(result.contains("MYSQL_PASSWORD: secret123"));
-        assert!(result.contains("RABBITMQ_PASSWORD: rabbitpw"));
         assert!(result.contains("puru-has:1.0.0"));
         assert!(result.contains("puru-pacs:1.2.0"));
         assert!(result.contains("puru-argon:1.1.0"));
@@ -730,7 +723,6 @@ services:
         assert_eq!(vars.hospital_code, "TEST");
         assert_eq!(vars.server_ip, "10.0.0.1");
         assert_eq!(vars.mysql_password, "mypass");
-        assert_eq!(vars.rabbitmq_password, "puru123");
         // All service tags default to "latest"
         assert_eq!(vars.xenon_tag, "latest");
         assert_eq!(vars.has_tag, "latest");
@@ -774,7 +766,6 @@ services:
             barcode_prefix_return: String::new(),
             server_ip: "1.2.3.4".to_string(),
             mysql_password: "p".to_string(),
-            rabbitmq_password: "r".to_string(),
             auth_tag: "latest".to_string(),
             xenon_tag: "2.0.0".to_string(),
             has_tag: "latest".to_string(),

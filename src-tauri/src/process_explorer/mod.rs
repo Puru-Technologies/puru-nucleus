@@ -1,8 +1,8 @@
 //! Puru-scoped process explorer
 //!
 //! Lists every running process whose binary name matches a Puru-relevant
-//! pattern (java, nginx, mysqld, rabbitmq/beam, etc.), enriches each with
-//! the TCP ports it's listening on, and exposes a kill action by PID.
+//! pattern (java, nginx, mysqld, etc.), enriches each with the TCP ports
+//! it's listening on, and exposes a kill action by PID.
 //!
 //! Used from the Services tab as a panic button when Nucleus's own
 //! `stop_service` can't free a port — e.g. a zombie auth/has JVM that
@@ -35,10 +35,6 @@ const PURU_BINARY_PATTERNS: &[&str] = &[
     "nginx",       // hydrogen frontend
     "mysqld",      // MySQL server (Linux/macOS)
     "mysql",       // some Windows installers register as `mysql.exe`
-    "rabbitmq",    // rabbitmq-server launcher
-    "beam.smp",    // erlang VM — what RabbitMQ actually runs as
-    "erl",         // erl / erl.exe
-    "epmd",        // erlang port mapper
 ];
 
 /// Heuristic: does this binary name look like something Puru cares about?
@@ -63,17 +59,10 @@ fn label_from_cmd(cmd: &str) -> String {
 
 /// Last-resort service name from the binary name alone, so infra/frontend
 /// processes (which have no `puru-*.jar` on their command line) still resolve
-/// to a friendly name. Mirrors the "Database" / "Message Broker" labels used in
-/// the Services list.
+/// to a friendly name. Mirrors the "Database" label used in the Services list.
 fn label_from_binary(name_lower: &str) -> String {
     if name_lower.contains("mysqld") || name_lower.contains("mysql") {
         "Database".to_string()
-    } else if name_lower.contains("rabbitmq")
-        || name_lower.contains("beam")
-        || name_lower.contains("erl")
-        || name_lower.contains("epmd")
-    {
-        "Message Broker".to_string()
     } else if name_lower.contains("nginx") {
         "puru-hydrogen".to_string()
     } else {

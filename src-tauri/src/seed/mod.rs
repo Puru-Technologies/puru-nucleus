@@ -1,5 +1,5 @@
-//! First-run seeding — populate service databases, RabbitMQ queues, and
-//! Jasper report templates so a fresh native deployment can boot and run.
+//! First-run seeding — populate service databases and Jasper report templates
+//! so a fresh native deployment can boot and run.
 //!
 //! Catalogs mirror the puru-has one-time setup code (HASOneTimeController,
 //! V5/V7 migrations) and the puru_config schema in puru_auth. Everything is
@@ -10,7 +10,6 @@ use crate::config::{self, NucleusConfig};
 use crate::error::NucleusError;
 use mysql_async::prelude::*;
 use serde::Serialize;
-use std::collections::HashMap;
 
 /// GCS prefix under which jrxml report templates are published. The bucket
 /// already uses `templates/` for other assets, so jrxml templates get their
@@ -62,22 +61,18 @@ fn service_data_root(config: &NucleusConfig) -> String {
 }
 
 /// Config keys nucleus fully owns and keeps correct for the current deployment
-/// (filesystem paths, server IP, RabbitMQ connection, hospital identity). These
-/// are UPSERTED — overwriting the service's own registry defaults — because a
-/// wrong-but-non-empty value (e.g. the container's `/data/puru` path on a
-/// native Windows box, or auth's registry default "localhost" for
-/// `puru.server.ip`) would otherwise never be corrected by a fill-when-blank
-/// update. Everything else is only filled when blank, so operator/UI edits
-/// through /auth-config are preserved on re-runs.
+/// (filesystem paths, server IP, hospital identity). These are UPSERTED —
+/// overwriting the service's own registry defaults — because a wrong-but-non-
+/// empty value (e.g. the container's `/data/puru` path on a native Windows box,
+/// or auth's registry default "localhost" for `puru.server.ip`) would
+/// otherwise never be corrected by a fill-when-blank update. Everything else
+/// is only filled when blank, so operator/UI edits through /auth-config are
+/// preserved on re-runs.
 const OVERRIDE_KEYS: &[&str] = &[
     "puru.data.root.dir",
     "service.pacs.storagePath",
     "puru.server.ip",
     "puru.ins.name",
-    "spring.rabbitmq.host",
-    "spring.rabbitmq.port",
-    "spring.rabbitmq.username",
-    "spring.rabbitmq.password",
 ];
 
 fn config_defaults(config: &NucleusConfig) -> Vec<(&'static str, String)> {
@@ -139,15 +134,6 @@ fn config_defaults(config: &NucleusConfig) -> Vec<(&'static str, String)> {
         ("feature.allowSelfAsConsultant", "true".into()),
         ("feature.zipUploadMandatory", "false".into()),
         ("feature.onlyOffline", "false".into()),
-        ("spring.rabbitmq.enabled", "true".into()),
-        ("spring.rabbitmq.host", "127.0.0.1".into()),
-        ("spring.rabbitmq.port", "5672".into()),
-        ("spring.rabbitmq.username", "puru".into()),
-        ("spring.rabbitmq.password", "puru123".into()),
-        ("spring.rabbitmq.listener.simple.retry.enabled", "true".into()),
-        ("spring.rabbitmq.listener.simple.concurrency", "2".into()),
-        ("spring.rabbitmq.listener.simple.prefetch", "10".into()),
-        ("spring.rabbitmq.listener.simple.max-concurrency", "5".into()),
         ("spring.mail.host", "".into()),
         ("spring.mail.port", "587".into()),
         ("spring.mail.username", "".into()),
@@ -274,80 +260,10 @@ const HAS_SERVICES: &[(&str, &str, u8, bool)] = &[
     ("Edit Patient", "Edit Patient", 8, false),
 ];
 
-// ── RabbitMQ queue catalog (vhost from rabbitmq.env) ─────────────────────────
-// Union of all @RabbitListener queues across services. Spring services do
-// passive declares and crash at boot when a queue is missing.
-
-// Retained for reference / easy revival, but no longer seeded — services
-// declare their own queues now (see run_seed). #[allow(dead_code)] keeps the
-// build warning-free without deleting the catalog.
-#[allow(dead_code)]
-const QUEUES: &[&str] = &[
-    // puru-auth
-    "puru_message_to_auth",
-    // puru-has listeners (RabbitConfigHAS)
-    "send_status_update_to_has",
-    "recalculate_ipd_financials",
-    "recalculate_visit_financial_info",
-    "assign_drug_to_consultant",
-    "prepare_document",
-    "save_text_suggestion",
-    "handle_radio_order",
-    "handle_patho_order",
-    "send_patho_order",
-    "send_radio_order",
-    "old_to_new_patient",
-    "handle_patient_communication",
-    "from_whatsapp_webhook",
-    "handle_whatsapp_api_response",
-    "upload_has_document_to_cloud",
-    "ack_to_has",
-    "to_rt_object_transfer",
-    "from_rt_object_transfer",
-    "intra_puru_master_data_transfer_to_has",
-    "intra_puru_master_data_transfer_to_pathology",
-    "intra_puru_master_data_transfer_to_radiology",
-    "intra_puru_master_data_transfer_to_medical",
-    "intra_puru_master_data_transfer_to_counter",
-    "handle_consultant_split",
-    // puru-pacs / puru-comm
-    "ack_report_register",
-    "download_report_for_study",
-    "has_to_pacs",
-    "insert_study_to_fb",
-    "insert_study_to_fb_ack",
-    "mail_statistics_file",
-    "notify_pacs_report_downloaded",
-    "pacs_to_has",
-    "process_http_entity_xml",
-    "q_ct_to_be_archived",
-    "q_ct_to_be_archived_dl",
-    "q_ct_to_be_uploaded_cloud",
-    "q_ct_to_be_uploaded_cloud_dl",
-    "q_dicom_to_be_deleted_from_cloud",
-    "q_dicom_to_be_deleted_from_cloud_dl",
-    "q_integration_inbound_order",
-    "q_integration_order_ack",
-    "q_integration_patient_sync",
-    "q_integration_report_completed",
-    "q_integration_scheduling",
-    "q_mail_bug",
-    "q_mail_pacs_bug",
-    "q_pacs_backup",
-    "send_notification_01",
-    "send_whatsapp_01",
-    "upload_dicom_image",
-    "upload_dicom_image_retry",
-    "upload_dicom_zip_to_cloud",
-    "upload_document_to_cloud",
-    "upload_document_to_cloud_ack",
-];
-
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 pub async fn run_seed(
     seed_db: bool,
-    seed_queues: bool,
     seed_templates: bool,
 ) -> Result<SeedReport, NucleusError> {
     let config = config::load_config()?;
@@ -361,18 +277,6 @@ pub async fn run_seed(
         report.sections.push(seed_document_master(&pool).await);
         report.sections.push(seed_has_services(&pool).await);
         let _ = pool.disconnect().await;
-    }
-
-    if seed_queues {
-        // Queue seeding is intentionally disabled. Each Spring Boot service
-        // declares its own queues via RabbitAdmin (@Bean Queue) with the exact
-        // arguments it needs. Nucleus pre-creating them "plain" caused
-        // arg-mismatch conflicts (e.g. PACS's dead-letter args → PRECONDITION_
-        // FAILED), so we let the services own their topology. Kept as a logged
-        // no-op so the setup step / run_seed API surface don't change.
-        tracing::info!(
-            "Seed: skipping RabbitMQ queue creation — each service declares its own queues"
-        );
     }
 
     if seed_templates {
@@ -826,151 +730,6 @@ async fn seed_has_services(pool: &mysql_async::Pool) -> SeedSection {
                 }
             }
             Err(e) => section.errors.push(format!("{}: {}", name, e)),
-        }
-    }
-
-    section
-}
-
-// ── RabbitMQ queue seeder ────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn load_rabbit_settings(config: &NucleusConfig) -> (String, String, String, String) {
-    let mut vars: HashMap<String, String> = HashMap::new();
-    let path = config.env_dir().join("rabbitmq.env");
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((key, value)) = line.split_once('=') {
-                vars.insert(key.trim().to_string(), value.trim().to_string());
-            }
-        }
-    }
-
-    let host = vars
-        .get("SPRING_RABBITMQ_HOST")
-        .cloned()
-        .unwrap_or_else(|| "127.0.0.1".into());
-    let vhost = vars
-        .get("SPRING_RABBITMQ_VIRTUAL_HOST")
-        .cloned()
-        .unwrap_or_else(|| "/".into());
-    let user = vars
-        .get("SPRING_RABBITMQ_USERNAME")
-        .cloned()
-        .unwrap_or_else(|| "puru".into());
-    let pass = vars
-        .get("SPRING_RABBITMQ_PASSWORD")
-        .cloned()
-        .unwrap_or_else(|| "puru123".into());
-    (host, vhost, user, pass)
-}
-
-#[allow(dead_code)]
-async fn seed_rabbitmq_queues(config: &NucleusConfig) -> SeedSection {
-    let mut section = SeedSection {
-        name: "rabbitmq queues".into(),
-        created: 0,
-        skipped: 0,
-        errors: Vec::new(),
-    };
-
-    let (host, vhost, user, pass) = load_rabbit_settings(config);
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            section.errors.push(format!("http client: {}", e));
-            return section;
-        }
-    };
-
-    // Wait for the management API to actually accept requests. `rabbitmq-plugins
-    // enable rabbitmq_management` activates the plugin, but its HTTP listener can
-    // take a moment to bind (and if the configure step failed, it may not be up at
-    // all) — poll so we fail with a clear cause rather than a per-queue error.
-    let overview = format!("http://{}:15672/api/overview", host);
-    let mut mgmt_ready = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        if let Ok(resp) = client.get(&overview).basic_auth(&user, Some(&pass)).send().await {
-            if resp.status().is_success() {
-                mgmt_ready = true;
-                break;
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-    if !mgmt_ready {
-        section.errors.push(format!(
-            "RabbitMQ management API not reachable on {}:15672 — is RabbitMQ running and the rabbitmq_management plugin enabled?",
-            host
-        ));
-        return section;
-    }
-
-    // Management plugin API (default port 15672). An existing queue may have
-    // been declared with different arguments (x-queue-type, delays, ...) and a
-    // blind PUT would 400 on it — so check existence first and never touch
-    // queues that already exist. Setup auto-enables rabbitmq_management so 15672
-    // is reachable on a fresh deploy.
-    let encoded_vhost = vhost.replace('/', "%2F");
-    for queue in QUEUES {
-        let url = format!(
-            "http://{}:15672/api/queues/{}/{}",
-            host, encoded_vhost, queue
-        );
-
-        let existing = client
-            .get(&url)
-            .basic_auth(&user, Some(&pass))
-            .send()
-            .await;
-        match existing {
-            Ok(resp) if resp.status().is_success() => {
-                section.skipped += 1;
-                continue;
-            }
-            Ok(resp) if resp.status().as_u16() == 404 => {} // create below
-            Ok(resp) => {
-                section
-                    .errors
-                    .push(format!("{}: HTTP {}", queue, resp.status()));
-                continue;
-            }
-            Err(e) => {
-                section.errors.push(format!(
-                    "{}: {} (is the RabbitMQ management plugin enabled on {}:15672?)",
-                    queue, e, host
-                ));
-                // Connection-level failure — no point hammering the rest
-                break;
-            }
-        }
-
-        let result = client
-            .put(&url)
-            .basic_auth(&user, Some(&pass))
-            .json(&serde_json::json!({ "durable": true }))
-            .send()
-            .await;
-        match result {
-            Ok(resp) if resp.status().is_success() => section.created += 1,
-            Ok(resp) => section
-                .errors
-                .push(format!("{}: HTTP {}", queue, resp.status())),
-            Err(e) => {
-                section.errors.push(format!("{}: {}", queue, e));
-                break;
-            }
         }
     }
 

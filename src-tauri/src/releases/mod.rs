@@ -449,7 +449,7 @@ pub(crate) struct InfraPlatformFile {
     pub sha256: Option<String>,
 }
 
-/// A prerequisite component (mysql, erlang, rabbitmq, …) in the infra manifest.
+/// A prerequisite component (mysql, …) in the infra manifest.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct InfraComponent {
     #[serde(default)]
@@ -744,7 +744,7 @@ pub async fn check_service_updates() -> Result<Vec<ServiceUpdateInfo>, NucleusEr
     for svc in &services {
         let service_name = match image_to_service_name(&svc.image) {
             Some(name) => name,
-            None => continue, // Not an updatable puru service (e.g. mysql, rabbitmq)
+            None => continue, // Not an updatable puru service (e.g. mysql)
         };
 
         let current_version = extract_docker_version(&svc.image);
@@ -1915,7 +1915,6 @@ mod tests {
         );
         // Third-party images should not match
         assert_eq!(image_to_service_name("mysql:8.0"), None);
-        assert_eq!(image_to_service_name("rabbitmq:3-management"), None);
         assert_eq!(image_to_service_name("redis:7"), None);
     }
 

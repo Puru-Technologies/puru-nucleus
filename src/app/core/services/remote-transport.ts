@@ -98,19 +98,17 @@ export const COMMAND_MAP: Record<string, HttpMapping> = {
   read_log_file: { method: 'GET', path: '/api/logs/file', query: ['path', 'tail', 'offset', 'limit'] },
 
   // ── Seed (already REST-exposed) ────────────────────────────────────────────
-  seed_data: { method: 'POST', path: '/api/seed', body: ['db', 'queues', 'templates'] },
+  seed_data: { method: 'POST', path: '/api/seed', body: ['db', 'templates'] },
 
   // ── Phase 2: setup pipeline, detection, templates, config, modules ─────────
   setup_check_prerequisites: { method: 'POST', path: '/api/setup/prerequisites/check' },
   setup_create_databases: { method: 'POST', path: '/api/setup/databases' },
-  setup_configure_rabbitmq: { method: 'POST', path: '/api/setup/rabbitmq' },
   setup_generate_config: { method: 'POST', path: '/api/setup/compose' },
   setup_pull_images: { method: 'POST', path: '/api/setup/images' },
   setup_start_services: { method: 'POST', path: '/api/setup/services/start' },
   setup_generate_env_files: { method: 'POST', path: '/api/setup/env-files' },
   setup_pull_jars: { method: 'POST', path: '/api/setup/jars' },
   setup_start_native_services: { method: 'POST', path: '/api/setup/native-services/start' },
-  setup_seed_queues: { method: 'POST', path: '/api/setup/seed-queues' },
   setup_seed_database: { method: 'POST', path: '/api/setup/seed-database' },
   setup_health_check: { method: 'POST', path: '/api/setup/health-check' },
   setup_configure_backups: { method: 'POST', path: '/api/setup/backups' },

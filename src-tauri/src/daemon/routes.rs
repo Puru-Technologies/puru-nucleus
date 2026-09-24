@@ -555,12 +555,10 @@ pub struct SeedRequest {
     #[serde(default)]
     pub db: Option<bool>,
     #[serde(default)]
-    pub queues: Option<bool>,
-    #[serde(default)]
     pub templates: Option<bool>,
 }
 
-/// POST /api/seed — seed databases, RabbitMQ queues, and report templates.
+/// POST /api/seed — seed databases and report templates.
 /// Idempotent: existing values are never overwritten. Omitting all flags
 /// (or an empty body) seeds everything.
 pub async fn run_seed(
@@ -568,15 +566,13 @@ pub async fn run_seed(
 ) -> Result<Json<crate::seed::SeedReport>, (StatusCode, String)> {
     let req = body.map(|Json(r)| r).unwrap_or(SeedRequest {
         db: None,
-        queues: None,
         templates: None,
     });
-    let all = req.db.is_none() && req.queues.is_none() && req.templates.is_none();
+    let all = req.db.is_none() && req.templates.is_none();
     let do_db = req.db.unwrap_or(all);
-    let do_queues = req.queues.unwrap_or(all);
     let do_templates = req.templates.unwrap_or(all);
 
-    crate::seed::run_seed(do_db, do_queues, do_templates)
+    crate::seed::run_seed(do_db, do_templates)
         .await
         .map(Json)
         .map_err(|e| internal_err(e.user_message()))
@@ -617,9 +613,6 @@ pub async fn setup_check_prerequisites() -> Result<Json<serde_json::Value>, (Sta
 pub async fn setup_create_databases() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     ok_json(crate::commands::setup_create_databases().await)
 }
-pub async fn setup_configure_rabbitmq() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    ok_json(crate::commands::setup_configure_rabbitmq().await)
-}
 pub async fn setup_generate_config() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     ok_json(crate::commands::setup_generate_config().await)
 }
@@ -637,9 +630,6 @@ pub async fn setup_pull_jars() -> Result<Json<serde_json::Value>, (StatusCode, S
 }
 pub async fn setup_start_native_services() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     to_value_json(crate::commands::sync_native_services(None).await)
-}
-pub async fn setup_seed_queues() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    ok_json(crate::commands::setup_seed_queues().await)
 }
 pub async fn setup_init_auth() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     ok_json(crate::commands::setup_init_auth().await)

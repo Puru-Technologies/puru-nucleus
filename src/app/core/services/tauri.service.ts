@@ -221,7 +221,7 @@ export interface ServiceInfo {
   uptime?: string;
   health_response_ms?: number;
   detail?: string;
-  /** True for infra rows (MySQL / RabbitMQ) — read-only with infra controls. */
+  /** True for infra rows (MySQL) — read-only with infra controls. */
   infra?: boolean;
 }
 
@@ -304,7 +304,6 @@ export interface ReserveConfig {
   os_mb: number;
   nucleus_mb: number;
   mysql_mb: number;
-  rabbitmq_mb: number;
   other_mb: number;
 }
 
@@ -539,7 +538,6 @@ export interface TemplateVariables {
   barcode_prefix_return: string;
   server_ip: string;
   mysql_password: string;
-  rabbitmq_password: string;
   auth_tag: string;
   xenon_tag: string;
   has_tag: string;

@@ -84,7 +84,7 @@ interface SetupStep {
                     </div>
                     <span class="mode-hint">
                       @if (config.deployment_mode === 'native') {
-                        Everything runs natively — no Docker. MySQL, RabbitMQ, Nginx &amp; Java must be pre-installed on the host.
+                        Everything runs natively — no Docker. MySQL, Nginx &amp; Java must be pre-installed on the host.
                       } @else {
                         All services run as Docker containers.
                       }
@@ -1342,7 +1342,6 @@ export class SetupComponent implements OnInit {
   private dockerSteps: SetupStep[] = [
     { label: 'Check prerequisites', status: 'pending' },
     { label: 'Create MySQL databases', status: 'pending' },
-    { label: 'Configure RabbitMQ', status: 'pending' },
     { label: 'Generate configuration files', status: 'pending' },
     { label: 'Pull Docker images', status: 'pending' },
     { label: 'Start services', status: 'pending' },
@@ -1356,7 +1355,6 @@ export class SetupComponent implements OnInit {
   private nativeSteps: SetupStep[] = [
     { label: 'Check prerequisites', status: 'pending' },
     { label: 'Create MySQL databases', status: 'pending' },
-    { label: 'Configure RabbitMQ', status: 'pending' },
     { label: 'Generate environment files', status: 'pending' },
     { label: 'Pull JARs & JRE from cloud', status: 'pending' },
     { label: 'Start native services', status: 'pending' },
@@ -1583,9 +1581,7 @@ export class SetupComponent implements OnInit {
         this.infraNotes.push('Native mode — all services run as host processes, no Docker');
       } else {
         const mysqlOnHost = this.prerequisites.some(p => p.name === 'MySQL' && p.installed);
-        const rmqOnHost = this.prerequisites.some(p => p.name === 'RabbitMQ' && p.installed);
         if (mysqlOnHost) this.infraNotes.push('MySQL detected on host — Docker container will be skipped');
-        if (rmqOnHost) this.infraNotes.push('RabbitMQ detected on host — Docker container will be skipped');
       }
     } catch {
       // Firestore not reachable or hospital code not set — use defaults
@@ -1785,12 +1781,11 @@ export class SetupComponent implements OnInit {
     // Skip all setup steps that would modify the existing installation:
     // 0: Check prerequisites — skip (already running)
     // 1: Create databases — skip (already exist)
-    // 2: Configure RabbitMQ — skip (already configured)
-    // 3: Generate config files — skip (already have env files)
-    // 4: Pull Docker images — skip (DO NOT pull/update)
-    // 5: Start services — skip (already running)
-    // 6: Health check — skip (already running)
-    for (let i = 0; i <= 6; i++) {
+    // 2: Generate config files — skip (already have env files)
+    // 3: Pull Docker images — skip (DO NOT pull/update)
+    // 4: Start services — skip (already running)
+    // 5: Health check — skip (already running)
+    for (let i = 0; i <= 5; i++) {
       this.steps[i].status = 'completed';
     }
     this.notification.success('Adopting existing setup — skipping pull/update steps');
@@ -1947,7 +1942,6 @@ export class SetupComponent implements OnInit {
     const dockerCommands = [
       'setup_check_prerequisites',
       'setup_create_databases',
-      'setup_configure_rabbitmq',
       'setup_generate_config',
       'setup_pull_images',
       'setup_start_services',
@@ -1961,7 +1955,6 @@ export class SetupComponent implements OnInit {
     const nativeCommands = [
       'setup_check_prerequisites',
       'setup_create_databases',
-      'setup_configure_rabbitmq',
       'setup_generate_env_files',
       'setup_pull_jars',
       'setup_start_native_services',

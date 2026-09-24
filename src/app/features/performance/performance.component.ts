@@ -18,7 +18,7 @@ import { NotificationService } from '../../core/services/notification.service';
  * believing they may take a quarter of the machine is what produces the slow
  * creep into swap that surfaces as an unexplained low-memory alert.
  *
- * This screen shows the budget: what is reserved for the OS, MySQL, RabbitMQ and
+ * This screen shows the budget: what is reserved for the OS, MySQL and
  * Nucleus, what is left for the JVMs, and how that remainder is split. Nucleus
  * computes the whole thing from the box's RAM; editing any value freezes the
  * computed plan into explicit numbers so nothing stays implicit.
@@ -86,7 +86,7 @@ import { NotificationService } from '../../core/services/notification.service';
 
           <div class="budget-bar">
             <div class="seg seg-reserved" [style.width.%]="pct(plan.reserved_total_mb)"
-                 title="Reserved for OS, MySQL, RabbitMQ, Nucleus"></div>
+                 title="Reserved for OS, MySQL, Nucleus"></div>
             <div class="seg seg-allocated" [style.width.%]="pct(plan.allocated_mb)"
                  title="Planned for Java services"></div>
             <div class="seg seg-free" [style.width.%]="pct(freeMb)" title="Unallocated"></div>
@@ -180,12 +180,6 @@ import { NotificationService } from '../../core/services/notification.service';
                   <input class="input" type="number" min="0" step="64"
                          [(ngModel)]="draft.reserves!.mysql_mb" [disabled]="!editing">
                   <span class="hint">Buffer pool + overhead. InnoDB's own default pool is 128 MB — too small here.</span>
-                </div>
-                <div class="field">
-                  <label>RabbitMQ</label>
-                  <input class="input" type="number" min="0" step="64"
-                         [(ngModel)]="draft.reserves!.rabbitmq_mb" [disabled]="!editing">
-                  <span class="hint">Pin the broker's vm_memory_high_watermark to match.</span>
                 </div>
                 <div class="field">
                   <label>nginx + backup headroom</label>
@@ -489,7 +483,7 @@ export class PerformanceComponent implements OnInit {
     if (!r) return 0;
     return (
       Number(r.os_mb) + Number(r.nucleus_mb) + Number(r.mysql_mb) +
-      Number(r.rabbitmq_mb) + Number(r.other_mb)
+      Number(r.other_mb)
     );
   }
 

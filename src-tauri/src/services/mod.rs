@@ -29,7 +29,7 @@ pub struct ServiceInfo {
     /// UI so an operator sees *why* a service isn't green.
     #[serde(default)]
     pub detail: Option<String>,
-    /// True for infrastructure rows (MySQL / RabbitMQ) — the UI shows these as
+    /// True for infrastructure rows (MySQL) — the UI shows these as
     /// read-only status with infra-specific controls, not JAR update actions.
     #[serde(default)]
     pub infra: bool,
@@ -84,7 +84,7 @@ pub struct PrerequisiteStatus {
     pub installed: bool,
     pub version: Option<String>,
     pub required_version: Option<String>,
-    /// Whether this prerequisite can be auto-installed (Windows only, MySQL/RabbitMQ)
+    /// Whether this prerequisite can be auto-installed (Windows only, MySQL)
     #[serde(default)]
     pub installable: bool,
 }
@@ -197,13 +197,6 @@ const PURU_SERVICE_REGISTRY: &[PuruServiceDef] = &[
         container_patterns: &["database", "purusql"],
         default_port: 3306,
         health_endpoint: None, // MySQL uses TCP probe, not HTTP
-    },
-    PuruServiceDef {
-        name: "RabbitMQ",
-        image_patterns: &["rabbitmq:"],
-        container_patterns: &["rabbitmq", "pururmq"],
-        default_port: 5672,
-        health_endpoint: None, // RabbitMQ management on 15672, but not always available
     },
     PuruServiceDef {
         name: "Metabase",
@@ -1003,16 +996,15 @@ pub async fn detect_existing_setup() -> Result<DetectionResult, crate::error::Nu
     })
 }
 
-/// Check all prerequisites (Docker, Docker Compose, MySQL, RabbitMQ)
+/// Check all prerequisites (Docker, Docker Compose, MySQL)
 pub async fn check_prerequisites() -> Result<Vec<PrerequisiteStatus>, crate::error::NucleusError> {
-    let (docker, compose, mysql, rabbitmq) = tokio::join!(
+    let (docker, compose, mysql) = tokio::join!(
         check_docker_prereq(),
         check_compose_prereq(),
         check_mysql_prereq(),
-        check_rabbitmq_prereq(),
     );
 
-    Ok(vec![docker, compose, mysql, rabbitmq])
+    Ok(vec![docker, compose, mysql])
 }
 
 async fn check_docker_prereq() -> PrerequisiteStatus {
@@ -1261,132 +1253,3 @@ pub(crate) async fn resolve_mysql_tool(tool: &str) -> Option<String> {
     None
 }
 
-async fn check_rabbitmq_prereq() -> PrerequisiteStatus {
-    // 1. Try rabbitmqctl on PATH
-    if let Ok(output) = crate::process::silent_cmd("rabbitmqctl")
-        .arg("version")
-        .output()
-        .await
-    {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            return PrerequisiteStatus {
-                name: "RabbitMQ".to_string(),
-                installed: true,
-                version: extract_version(&raw),
-                required_version: None,
-                installable: false,
-            };
-        }
-    }
-
-    // 2. Windows: check common install path (rabbitmqctl is often not on PATH)
-    #[cfg(target_os = "windows")]
-    {
-        let rabbitmq_base = r"C:\Program Files\RabbitMQ Server";
-        if let Ok(entries) = std::fs::read_dir(rabbitmq_base) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("rabbitmq_server-") {
-                    let ctl = format!(r"{}\{}\sbin\rabbitmqctl.bat", rabbitmq_base, name);
-                    if let Ok(output) = crate::process::silent_cmd(&ctl)
-                        .arg("version")
-                        .output()
-                        .await
-                    {
-                        if output.status.success() {
-                            let raw = String::from_utf8_lossy(&output.stdout);
-                            return PrerequisiteStatus {
-                                name: "RabbitMQ".to_string(),
-                                installed: true,
-                                version: extract_version(&raw),
-                                required_version: None,
-                                installable: false,
-                            };
-                        }
-                    }
-                    // Binaries present but rabbitmqctl couldn't reach the node —
-                    // present but not running. Report installable so setup starts +
-                    // configures it, rather than passing the gate and failing later.
-                    let version = name.strip_prefix("rabbitmq_server-").map(|v| v.to_string());
-                    return PrerequisiteStatus {
-                        name: "RabbitMQ".to_string(),
-                        installed: false,
-                        version,
-                        required_version: None,
-                        installable: true,
-                    };
-                }
-            }
-        }
-    }
-
-    // 3. Check management API (works regardless of PATH — just needs RabbitMQ running)
-    if let Ok(resp) = reqwest::Client::new()
-        .get("http://localhost:15672/api/overview")
-        .basic_auth("guest", Some("guest"))
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await
-    {
-        if resp.status().is_success() {
-            // Try to extract version from the API response
-            let version = resp
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|v| v.get("rabbitmq_version")?.as_str().map(|s| s.to_string()));
-            return PrerequisiteStatus {
-                name: "RabbitMQ".to_string(),
-                installed: true,
-                version,
-                required_version: None,
-                installable: false,
-            };
-        }
-    }
-
-    // 4. Fallback: detect RabbitMQ Docker container
-    if let Ok(docker) = Docker::connect_with_local_defaults() {
-        if let Ok(containers) = docker
-            .list_containers(Some(ListContainersOptions::<String> {
-                all: true,
-                ..Default::default()
-            }))
-            .await
-        {
-            for container in &containers {
-                let image = container.image.as_deref().unwrap_or("");
-                if image.contains("rabbitmq:") {
-                    let version = image.rsplit(':').next().and_then(|tag| {
-                        let v = tag.split('-').next().unwrap_or(tag);
-                        if v.chars()
-                            .next()
-                            .map(|c| c.is_ascii_digit())
-                            .unwrap_or(false)
-                        {
-                            Some(v.to_string())
-                        } else {
-                            None
-                        }
-                    });
-                    return PrerequisiteStatus {
-                        name: "RabbitMQ".to_string(),
-                        installed: true,
-                        version,
-                        required_version: None,
-                        installable: false,
-                    };
-                }
-            }
-        }
-    }
-
-    PrerequisiteStatus {
-        name: "RabbitMQ".to_string(),
-        installed: false,
-        version: None,
-        required_version: None,
-        installable: true,
-    }
-}

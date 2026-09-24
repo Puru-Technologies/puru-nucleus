@@ -150,15 +150,11 @@ pub enum Commands {
     /// Manage the per-service JAR history (list, prune)
     Jars(JarsArgs),
 
-    /// Seed databases, RabbitMQ queues, and report templates for a fresh install
+    /// Seed databases and report templates for a fresh install
     Seed {
         /// Seed only the databases (puru_config, ref_data, charge categories, document master)
         #[arg(long)]
         db: bool,
-
-        /// Seed only the RabbitMQ queues
-        #[arg(long)]
-        queues: bool,
 
         /// Seed only the Jasper report templates (download from GCS)
         #[arg(long)]
