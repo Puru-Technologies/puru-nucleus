@@ -292,6 +292,88 @@ pub(crate) async fn wait_for_ready(service: &str, max_secs: u64) -> bool {
     }
 }
 
+/// Find and force-kill any process listening on `port`. Used by the update
+/// flow to clear an orphan JVM — a service process that nucleus did NOT spawn
+/// (left over from a prior nucleus install, a crash recovery that never wrote
+/// a PID file, or an external manual start). Without this, `update_service_*`
+/// silently promotes the manifest but leaves the old JVM bound to the port
+/// serving requests off the OLD classpath, and the operator sees the new JAR
+/// on disk but the old behaviour live. Best-effort: logs and continues on
+/// failure — `start_service`'s own `wait_for_port_free` surfaces a clear
+/// error if the port stays held after this.
+async fn kill_orphan_on_port(service_name: &str, port: u16) {
+    #[cfg(windows)]
+    {
+        // netstat -ano output format (LISTENING rows):
+        //   TCP    0.0.0.0:8083    0.0.0.0:0    LISTENING    12345
+        // last whitespace-separated field is PID; second field is local addr.
+        let out = match crate::process::silent_std_cmd("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!("orphan sweep for {}: netstat failed: {}", service_name, e);
+                return;
+            }
+        };
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let needle = format!(":{}", port);
+        for line in text.lines() {
+            if !line.contains("LISTENING") {
+                continue;
+            }
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // need at least: proto, local, remote, state, pid
+            if fields.len() < 5 {
+                continue;
+            }
+            if !fields[1].ends_with(&needle) {
+                continue;
+            }
+            let Ok(pid) = fields[fields.len() - 1].parse::<u32>() else { continue };
+            if pid == 0 || pid == std::process::id() {
+                continue;
+            }
+            tracing::warn!(
+                "update {}: killing orphan on port {} (PID {}) — nucleus did not \
+                 own this PID; manifest-promoted-but-not-cycled recovery",
+                service_name, port, pid
+            );
+            let _ = crate::process::silent_cmd("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output()
+                .await;
+        }
+    }
+    #[cfg(unix)]
+    {
+        let out = match std::process::Command::new("lsof")
+            .args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!("orphan sweep for {}: lsof failed: {}", service_name, e);
+                return;
+            }
+        };
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        for line in text.lines() {
+            let Ok(pid) = line.trim().parse::<i32>() else { continue };
+            if pid <= 0 || pid as u32 == std::process::id() {
+                continue;
+            }
+            tracing::warn!(
+                "update {}: killing orphan on port {} (PID {}) — nucleus did not \
+                 own this PID; manifest-promoted-but-not-cycled recovery",
+                service_name, port, pid
+            );
+            unsafe { libc::kill(pid, libc::SIGKILL); }
+        }
+    }
+}
+
 /// Read PID from pid file, returns None if file doesn't exist or is invalid
 fn read_pid(config: &NucleusConfig, service: &str) -> Option<u32> {
     let path = pid_path(config, service);
@@ -891,13 +973,37 @@ where
     // new. start_service's recover_on_start does the manifest promotion. If any
     // of these steps fails, the pending manifest entry survives — the next
     // start-up promotes.
-    let was_running = read_pid(config, name)
+    //
+    // We need to cycle the JVM whenever ANY of these is true:
+    //   (a) nucleus's PID file points at a live process (the normal case), OR
+    //   (b) the service's app port is held by something nucleus didn't spawn
+    //       (orphan JVM from a prior nucleus install / crash recovery that
+    //       never wrote a PID file / external manual start). Pre-fix we only
+    //       checked (a) — on (b) the manifest promoted but the stop/start
+    //       phase was silently skipped, leaving the old JVM serving requests
+    //       off the pre-update classpath while the operator saw the new JAR
+    //       on disk.
+    let pid_was_running = read_pid(config, name)
         .map(is_process_alive)
         .unwrap_or(false);
+    let port_held = match service_port(name) {
+        Some(p) => !wait_for_port_free(p, 0).await,
+        None => false,
+    };
 
-    if was_running {
+    if pid_was_running || port_held {
         on("stopping", 0, 0);
-        stop_service(name, config).await?;
+        if pid_was_running {
+            stop_service(name, config).await?;
+        }
+        // Even if the PID-file path succeeded, re-sweep the port — an orphan
+        // JVM (not the one in our PID file) may ALSO be holding it. Idempotent:
+        // if the port is already free this is a no-op netstat/lsof call.
+        if let Some(p) = service_port(name) {
+            if !wait_for_port_free(p, 0).await {
+                kill_orphan_on_port(name, p).await;
+            }
+        }
         // Free the now-superseded JAR so any zombie holder is cleared. This is
         // best-effort: even if it times out the old JAR is just orphaned, not
         // an obstacle — the new JAR lives under a different filename.
@@ -944,11 +1050,26 @@ where
         ))
     })?;
 
-    let was_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
+    // See update_service_progress for why we also check port_held — nucleus's
+    // PID file alone misses orphan JVMs (prior-install leftovers, external
+    // manual starts, crash recoveries that never wrote a PID). On an orphan
+    // the pre-fix path promoted the manifest but skipped the restart.
+    let pid_was_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
+    let port_held = match service_port(name) {
+        Some(p) => !wait_for_port_free(p, 0).await,
+        None => false,
+    };
 
-    if was_running {
+    if pid_was_running || port_held {
         on("stopping", 0, 0);
-        stop_service(name, config).await?;
+        if pid_was_running {
+            stop_service(name, config).await?;
+        }
+        if let Some(p) = service_port(name) {
+            if !wait_for_port_free(p, 0).await {
+                kill_orphan_on_port(name, p).await;
+            }
+        }
     }
 
     // Fail-safe: kill any process still holding the *old* active JAR so it
