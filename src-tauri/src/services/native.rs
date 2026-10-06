@@ -639,7 +639,15 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
     Ok(())
 }
 
-/// Stop a running service. SIGTERM → 30s wait → SIGKILL.
+/// Stop a running service. Force-kills by PID if we have a PID file,
+/// and ALSO sweeps the service's app port in case an orphan JVM is holding
+/// it (started outside this nucleus install's tracking — prior install,
+/// external manual start, crash recovery that never wrote a PID file).
+/// Pre-fix, a missing/stale PID file would raise "No PID file" and the
+/// orphan on the port would survive stop + skip the whole runtime hand-off
+/// on the next update. Operators then saw a new JAR on disk but old code
+/// serving live. Both Restart and Stop now flow through this and are
+/// effectively "force" by default — port occupancy is authoritative.
 pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), NucleusError> {
     if name == "puru-hydrogen" {
         return crate::webserver::stop(config).await;
@@ -652,17 +660,19 @@ pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), Nucl
         return Ok(());
     }
 
-    let pid = read_pid(config, name).ok_or_else(|| {
-        NucleusError::NotFound(format!("No PID file for {}. Is it running?", name))
-    })?;
+    let tracked_pid = read_pid(config, name);
+    let tracked_alive = tracked_pid.map(is_process_alive).unwrap_or(false);
 
-    if !is_process_alive(pid) {
-        // Clean up stale PID file
+    // Even if the tracked PID is dead/missing, the service port may still be
+    // held by an orphan — so DON'T short-circuit here. Fall through to the
+    // port sweep below. Clean up a stale PID file in passing.
+    if tracked_pid.is_some() && !tracked_alive {
         let _ = std::fs::remove_file(pid_path(config, name));
-        return Ok(());
     }
 
-    tracing::info!("Stopping {} (PID {})...", name, pid);
+    if let Some(pid) = tracked_pid {
+        if tracked_alive {
+            tracing::info!("Stopping {} (PID {})...", name, pid);
 
     #[cfg(unix)]
     {
@@ -704,8 +714,24 @@ pub async fn stop_service(name: &str, config: &NucleusConfig) -> Result<(), Nucl
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    // Remove PID file
-    let _ = std::fs::remove_file(pid_path(config, name));
+            // Remove PID file
+            let _ = std::fs::remove_file(pid_path(config, name));
+            tracing::info!("Stopped {} (PID {})", name, pid);
+        }
+    }
+
+    // Final authoritative check: regardless of whether the PID-tracked path
+    // ran, sweep anything still bound to the service port. Idempotent — if
+    // the port is already free this is a no-op netstat/lsof call. Catches
+    // the orphan JVM case (bug seen 2026-10-03..06: pacs ran a Session 0
+    // Java child of a long-dead nucleus process, PID file pointed nowhere,
+    // and 10+ update attempts over 2 days all skipped the stop/start phase).
+    if let Some(p) = service_port(name) {
+        if !wait_for_port_free(p, 0).await {
+            kill_orphan_on_port(name, p).await;
+        }
+    }
+
     tracing::info!("Stopped {}", name);
     Ok(())
 }
@@ -974,16 +1000,15 @@ where
     // of these steps fails, the pending manifest entry survives — the next
     // start-up promotes.
     //
-    // We need to cycle the JVM whenever ANY of these is true:
-    //   (a) nucleus's PID file points at a live process (the normal case), OR
-    //   (b) the service's app port is held by something nucleus didn't spawn
-    //       (orphan JVM from a prior nucleus install / crash recovery that
-    //       never wrote a PID file / external manual start). Pre-fix we only
-    //       checked (a) — on (b) the manifest promoted but the stop/start
-    //       phase was silently skipped, leaving the old JVM serving requests
-    //       off the pre-update classpath while the operator saw the new JAR
-    //       on disk.
-    let pid_was_running = read_pid(config, name)
+    // Cycle the JVM whenever EITHER signal says something is up: nucleus's
+    // own PID file points at a live process (normal), OR the service's app
+    // port is held (orphan from prior nucleus install, external manual start,
+    // crash recovery that never wrote a PID). Pre-fix only checked the first,
+    // so an orphan on the port silently kept running the pre-update classpath
+    // while the manifest happily promoted the new JAR. `stop_service` itself
+    // now sweeps the port after the PID kill, so a single call authoritatively
+    // handles both cases.
+    let pid_running = read_pid(config, name)
         .map(is_process_alive)
         .unwrap_or(false);
     let port_held = match service_port(name) {
@@ -991,19 +1016,13 @@ where
         None => false,
     };
 
-    if pid_was_running || port_held {
+    if pid_running || port_held {
         on("stopping", 0, 0);
-        if pid_was_running {
-            stop_service(name, config).await?;
-        }
-        // Even if the PID-file path succeeded, re-sweep the port — an orphan
-        // JVM (not the one in our PID file) may ALSO be holding it. Idempotent:
-        // if the port is already free this is a no-op netstat/lsof call.
-        if let Some(p) = service_port(name) {
-            if !wait_for_port_free(p, 0).await {
-                kill_orphan_on_port(name, p).await;
-            }
-        }
+        // stop_service tolerates missing/stale PID files and sweeps the port
+        // itself, so this works for the orphan case too. Errors from the
+        // PID-tracked path are swallowed — the port sweep inside stop_service
+        // is the authoritative kill.
+        let _ = stop_service(name, config).await;
         // Free the now-superseded JAR so any zombie holder is cleared. This is
         // best-effort: even if it times out the old JAR is just orphaned, not
         // an obstacle — the new JAR lives under a different filename.
@@ -1050,26 +1069,17 @@ where
         ))
     })?;
 
-    // See update_service_progress for why we also check port_held — nucleus's
-    // PID file alone misses orphan JVMs (prior-install leftovers, external
-    // manual starts, crash recoveries that never wrote a PID). On an orphan
-    // the pre-fix path promoted the manifest but skipped the restart.
-    let pid_was_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
+    // See update_service_progress for the orphan-port rationale. stop_service
+    // handles both PID-tracked and port-held cases authoritatively.
+    let pid_running = read_pid(config, name).map(is_process_alive).unwrap_or(false);
     let port_held = match service_port(name) {
         Some(p) => !wait_for_port_free(p, 0).await,
         None => false,
     };
 
-    if pid_was_running || port_held {
+    if pid_running || port_held {
         on("stopping", 0, 0);
-        if pid_was_running {
-            stop_service(name, config).await?;
-        }
-        if let Some(p) = service_port(name) {
-            if !wait_for_port_free(p, 0).await {
-                kill_orphan_on_port(name, p).await;
-            }
-        }
+        let _ = stop_service(name, config).await;
     }
 
     // Fail-safe: kill any process still holding the *old* active JAR so it
