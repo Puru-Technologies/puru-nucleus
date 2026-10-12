@@ -374,6 +374,19 @@ pub fn substitute_variables(content: &str, vars: &TemplateVariables) -> String {
         .replace("{{HYDROGEN_TAG}}", &vars.hydrogen_tag)
 }
 
+/// Fill the daemon placeholders (`{{DAEMON_PORT}}`, `{{DAEMON_API_KEY}}`) from
+/// nucleus's own config, not the UI form, so the API key never round-trips
+/// through the frontend. The pacs, realtime and comm fragments use them for
+/// PURU_TOKEN_ENDPOINT / PURU_TOKEN_KEY — the same values native mode injects
+/// (services/native.rs) — so Docker containers can fetch GCP tokens too.
+pub fn substitute_daemon_variables(content: &str, daemon: Option<&config::DaemonConfig>) -> String {
+    let default = config::DaemonConfig::default();
+    let daemon = daemon.unwrap_or(&default);
+    content
+        .replace("{{DAEMON_PORT}}", &daemon.port.to_string())
+        .replace("{{DAEMON_API_KEY}}", &daemon.api_key)
+}
+
 /// Assemble a docker-compose.yml from fragment files based on enabled modules.
 ///
 /// 1. Read core.yml from fragments_dir()
@@ -786,6 +799,26 @@ services:
         assert!(result.contains("\"{value}\""));
         // Placeholder substituted
         assert!(result.contains("puru-xenon:2.0.0"));
+    }
+
+    #[test]
+    fn test_substitute_daemon_variables() {
+        let template = "      - \"PURU_TOKEN_ENDPOINT=http://127.0.0.1:{{DAEMON_PORT}}/api/gcp/token\"\n      - \"PURU_TOKEN_KEY={{DAEMON_API_KEY}}\"\n";
+
+        let daemon = config::DaemonConfig {
+            port: 9191,
+            api_key: "k123".to_string(),
+            ..Default::default()
+        };
+        let result = substitute_daemon_variables(template, Some(&daemon));
+        assert!(result.contains("http://127.0.0.1:9191/api/gcp/token"));
+        assert!(result.contains("PURU_TOKEN_KEY=k123\""));
+
+        // No [daemon] section: default port, empty key (services then send no X-API-Key).
+        let result = substitute_daemon_variables(template, None);
+        assert!(result.contains("http://127.0.0.1:9090/api/gcp/token"));
+        assert!(result.contains("PURU_TOKEN_KEY=\""));
+        assert!(!result.contains("{{"));
     }
 
     /// Helper: create a temp fragments directory with test fragment files

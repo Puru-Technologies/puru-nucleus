@@ -2026,7 +2026,8 @@ pub async fn setup_generate_config() -> Result<(), String> {
         Ok(content) => {
             tracing::info!("Setup: assembled docker-compose.yml from fragments");
             let vars = crate::compose_template::build_variables_from_config(&config);
-            crate::compose_template::substitute_variables(&content, &vars)
+            let content = crate::compose_template::substitute_variables(&content, &vars);
+            crate::compose_template::substitute_daemon_variables(&content, config.daemon.as_ref())
         }
         Err(_) => {
             tracing::info!("Setup: fragments not available, using inline template");
@@ -2148,6 +2149,19 @@ services:
             user = config.mysql_user,
             pw = config.mysql_password,
         );
+        // Services that fetch GCP tokens from the local daemon (host network → 127.0.0.1);
+        // same values native mode injects in services/native.rs.
+        if matches!(container, "pacs" | "realtime" | "comm_server") {
+            let (daemon_port, daemon_key) = config
+                .daemon
+                .as_ref()
+                .map(|d| (d.port, d.api_key.clone()))
+                .unwrap_or((9090, String::new()));
+            s.push_str(&format!(
+                "      PURU_TOKEN_ENDPOINT: \"http://127.0.0.1:{}/api/gcp/token\"\n      PURU_TOKEN_KEY: \"{}\"\n",
+                daemon_port, daemon_key,
+            ));
+        }
         let volumes = if host_data.is_empty() {
             String::new()
         } else {
@@ -3882,7 +3896,9 @@ pub async fn substitute_compose_variables(
     content: String,
     variables: TemplateVariables,
 ) -> Result<String, String> {
-    Ok(crate::compose_template::substitute_variables(&content, &variables))
+    let content = crate::compose_template::substitute_variables(&content, &variables);
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    Ok(crate::compose_template::substitute_daemon_variables(&content, config.daemon.as_ref()))
 }
 
 /// Save compose content to disk

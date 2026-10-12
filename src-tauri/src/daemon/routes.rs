@@ -760,9 +760,12 @@ pub struct GcpTokenRequest {
 /// OAuth scopes a given service is permitted to mint. Healthcare (PACS) and
 /// Firebase-Admin (realtime) both need `cloud-platform`; GCS resource scoping
 /// is handled separately by signed URLs / downscoped tokens.
+/// puru-comm only proves who it is to the puru_send_email Cloud Function, which
+/// checks the token's service-account email; `userinfo.email` grants no GCP access.
 fn scope_for_service(service: &str) -> Option<&'static str> {
     match service {
         "puru-pacs" | "puru-realtime" => "https://www.googleapis.com/auth/cloud-platform".into(),
+        "puru-comm" => "https://www.googleapis.com/auth/userinfo.email".into(),
         _ => None,
     }
 }
