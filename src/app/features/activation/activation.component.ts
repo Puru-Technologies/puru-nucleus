@@ -63,8 +63,9 @@ type RedeemErrorPayload =
                 <span class="clock-title">System clock is out of sync</span>
                 <span class="clock-detail">{{ clock.message }}</span>
                 <span class="clock-hint">
-                  Fix: Windows Settings → Time &amp; language → Date &amp; time →
-                  turn on “Set time automatically”, then “Sync now”. Timezone offset: {{ clock.timezone_offset }}.
+                  Fix — Windows: Settings → Time &amp; language → Date &amp; time →
+                  turn on “Set time automatically”, then “Sync now”. Ubuntu: run
+                  <code>sudo timedatectl set-ntp true</code>. Timezone offset: {{ clock.timezone_offset }}.
                 </span>
               </div>
               <button class="btn-icon" (click)="checkClock()" [disabled]="checkingClock" title="Re-check">

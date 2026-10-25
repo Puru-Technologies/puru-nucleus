@@ -1,10 +1,10 @@
-//! puru-dc - Control center for Puru hospital deployments
+//! puru-nucleus - Control center for Puru hospital deployments
 //!
 //! A Tauri desktop application that manages Docker-based hospital
 //! software deployments, backups, and telemetry.
 //!
 //! Three operating modes:
-//! - **GUI** (default): `puru` or `puru-dc` — launches Tauri window
+//! - **GUI** (default): `puru` or `puru-nucleus` — launches Tauri window
 //! - **CLI**: `puru status`, `puru backup`, etc. — terminal commands
 //! - **Daemon**: `puru daemon` — headless background service
 
@@ -53,12 +53,15 @@ fn main() {
     // Parse CLI args first
     let cli_args = cli::Cli::parse();
 
+    // Before anything reads config or opens the daemon log under it.
+    config::migrate_legacy_config_dir();
+
     // Route based on subcommand
     match cli_args.command {
         Some(cli::Commands::Daemon) => {
             // Daemon mode — headless background service, log to file
             init_daemon_logging();
-            tracing::info!("Starting puru-dc in daemon mode");
+            tracing::info!("Starting puru-nucleus in daemon mode");
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(daemon::run_daemon());
         }
@@ -71,7 +74,7 @@ fn main() {
         None => {
             // GUI mode — launch Tauri window (default when no subcommand)
             init_logging();
-            tracing::info!("Starting puru-dc");
+            tracing::info!("Starting puru-nucleus");
             run_gui(cli_args.minimized, cli_args.elevated_restart);
         }
     }
@@ -99,7 +102,7 @@ pub(crate) fn init_daemon_logging() {
     match file {
         Ok(file) => {
             tracing_subscriber::registry()
-                .with(fmt::layer().with_writer(std::sync::Mutex::new(file)))
+                .with(fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(file)))
                 .with(EnvFilter::from_default_env().add_directive("puru_nucleus=info".parse().unwrap()))
                 .init();
         }
@@ -192,7 +195,7 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let tray = TrayIconBuilder::with_id("health")
         .icon(dot_icon(0x9e, 0x9e, 0x9e)) // grey = unknown until first poll
-        .tooltip("Puru DC — checking…")
+        .tooltip("Puru Nucleus — checking…")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -235,12 +238,12 @@ fn setup_tray(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     let ver = body.get("version").and_then(|v| v.as_str()).unwrap_or("?");
                     (
                         dot_icon(0x4c, 0xaf, 0x50),
-                        format!("Puru DC — daemon up · v{}", ver),
+                        format!("Puru Nucleus — daemon up · v{}", ver),
                     )
                 }
                 _ => (
                     dot_icon(0xf4, 0x43, 0x36),
-                    "Puru DC — daemon DOWN".to_string(),
+                    "Puru Nucleus — daemon DOWN".to_string(),
                 ),
             };
             let _ = tray.set_icon(Some(icon));
@@ -280,6 +283,9 @@ fn ensure_login_autostart() {
         ])
         .output();
 
+    // Drop the pre-rename "Puru DC" tasks; they point at the removed puru-dc.exe.
+    crate::platform::windows::remove_legacy_tasks();
+
     // Always try to plant the per-user tray/GUI logon task — cheap, idempotent,
     // and the whole reason the tray comes back after login. If the daemon has
     // been running as SYSTEM it will already exist; this covers the "daemon
@@ -287,7 +293,7 @@ fn ensure_login_autostart() {
     crate::platform::ensure_gui_logon_task();
 
     // (Re)write the emergency stop-all script alongside the config, so an
-    // operator can kill every Puru JVM by hand if puru-dc itself is broken.
+    // operator can kill every Puru JVM by hand if puru-nucleus itself is broken.
     // The daemon also does this on boot; the GUI covers the "daemon never
     // ran" case (first launch, or daemon crashed on startup).
     if let Ok(cfg) = crate::config::load_config() {
@@ -427,7 +433,7 @@ fn run_gui(minimized: bool, elevated_restart: bool) {
     let _instance_lock = match acquire_gui_instance_lock(elevated_restart) {
         Some(lock) => Some(lock),
         None => {
-            tracing::warn!("Another puru-dc GUI holds the instance lock — deferring to it");
+            tracing::warn!("Another puru-nucleus GUI holds the instance lock — deferring to it");
             None
         }
     };
@@ -436,7 +442,7 @@ fn run_gui(minimized: bool, elevated_restart: bool) {
 
     tauri::Builder::default()
         // Single-instance: if the operator (or an autostart chain) launches
-        // puru-dc a second time, hand its args to the already-running instance
+        // puru-nucleus a second time, hand its args to the already-running instance
         // and exit this one. The `_argv` / `_cwd` callback fires *inside the
         // first* process, so we take that as our cue to reveal the existing
         // window instead of quietly ignoring it.

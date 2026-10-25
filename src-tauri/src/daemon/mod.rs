@@ -16,7 +16,7 @@ use tower_http::cors::CorsLayer;
 
 use scheduler::AppState;
 
-/// Run puru-dc in daemon mode (headless REST API server).
+/// Run puru-nucleus in daemon mode (headless REST API server).
 pub async fn run_daemon() {
     // 1. Load config
     let config = crate::config::load_config().unwrap_or_default();
@@ -34,7 +34,7 @@ pub async fn run_daemon() {
         Ok(g) => g,
         Err(e) => {
             tracing::error!(
-                "Another puru-dc daemon is already running ({}). Exiting without starting background tasks.",
+                "Another puru-nucleus daemon is already running ({}). Exiting without starting background tasks.",
                 e
             );
             return;
@@ -49,7 +49,7 @@ pub async fn run_daemon() {
         Ok(l) => l,
         Err(e) => {
             tracing::error!(
-                "Daemon port {} already in use ({}). Another puru-dc daemon is running — exiting without starting background tasks.",
+                "Daemon port {} already in use ({}). Another puru-nucleus daemon is running — exiting without starting background tasks.",
                 port, e
             );
             return;
@@ -62,7 +62,7 @@ pub async fn run_daemon() {
     crate::platform::ensure_gui_logon_task();
 
     // Plant / refresh the operator's emergency stop-all script. Cheap; lets
-    // an operator kill every Puru JVM by hand if puru-dc itself is broken.
+    // an operator kill every Puru JVM by hand if puru-nucleus itself is broken.
     crate::emergency::ensure_emergency_stop_script(&config);
 
     // 2. Build shared state

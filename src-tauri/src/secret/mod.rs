@@ -23,6 +23,8 @@ use crate::error::NucleusError;
 /// fingerprint alone is not enough to derive the key — an attacker also needs
 /// this binary. Changing it invalidates all existing ciphertext (the operator
 /// then re-enters credentials). Any length is fine; it is hashed.
+// Keeps the pre-rename "puru-dc" name on purpose: changing it would make every
+// key already encrypted on disk unreadable.
 const EMBEDDED_SALT: &[u8] = b"puru-dc::gcs-key-at-rest::v1::e7b1c9a4f2d6::do-not-share";
 
 const NONCE_LEN: usize = 12;

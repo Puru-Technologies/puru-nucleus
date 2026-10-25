@@ -272,10 +272,16 @@ pub async fn run_seed(
     if seed_db {
         let pool = create_mysql_pool(&config);
         report.sections.push(seed_puru_config(&pool, &config).await);
-        report.sections.push(seed_ref_data(&pool).await);
-        report.sections.push(seed_charge_categories(&pool).await);
-        report.sections.push(seed_document_master(&pool).await);
-        report.sections.push(seed_has_services(&pool).await);
+        // HAS creates these tables itself; on a site without HAS (e.g. a
+        // radiology-only clinic) seeding them is ~70 "table doesn't exist" errors.
+        if has_schema_present(&pool).await {
+            report.sections.push(seed_ref_data(&pool).await);
+            report.sections.push(seed_charge_categories(&pool).await);
+            report.sections.push(seed_document_master(&pool).await);
+            report.sections.push(seed_has_services(&pool).await);
+        } else {
+            tracing::info!("Seed: puru_has has no tables (HAS not installed) — skipping HAS defaults");
+        }
         let _ = pool.disconnect().await;
     }
 
@@ -354,6 +360,51 @@ pub async fn init_auth_roles() -> Result<String, NucleusError> {
     }
     tracing::info!("Auth init (/init1): {}", body);
     Ok(body)
+}
+
+/// True once HAS has created its schema (`puru_has.ref_data`).
+async fn has_schema_present(pool: &mysql_async::Pool) -> bool {
+    let Ok(mut conn) = pool.get_conn().await else { return false };
+    let n: Option<u64> = conn
+        .query_first(
+            "SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema = 'puru_has' AND table_name = 'ref_data'",
+        )
+        .await
+        .unwrap_or(None);
+    n.unwrap_or(0) > 0
+}
+
+/// Wait until auth has created `puru_auth.puru_config` on its first boot.
+///
+/// The puru_config seed inserts into that table, but on a fresh install it only
+/// exists once auth's Hibernate has run — which can be after the health check
+/// returns. Auth then can't finish booting until the seed lands (it needs
+/// `hospital.code`), so seeding too early leaves both stuck. Returns false on
+/// timeout; the caller seeds anyway and reports what failed.
+pub async fn wait_for_auth_schema(timeout: std::time::Duration) -> bool {
+    let Ok(config) = config::load_config() else { return false };
+    let pool = create_mysql_pool(&config);
+    let deadline = std::time::Instant::now() + timeout;
+    let mut found = false;
+    while std::time::Instant::now() < deadline {
+        if let Ok(mut conn) = pool.get_conn().await {
+            let n: Option<u64> = conn
+                .query_first(
+                    "SELECT COUNT(*) FROM information_schema.tables \
+                     WHERE table_schema = 'puru_auth' AND table_name = 'puru_config'",
+                )
+                .await
+                .unwrap_or(None);
+            if n.unwrap_or(0) > 0 {
+                found = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    let _ = pool.disconnect().await;
+    found
 }
 
 fn create_mysql_pool(config: &NucleusConfig) -> mysql_async::Pool {

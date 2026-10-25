@@ -5,28 +5,28 @@
     <!-- Custom actions to register/start/stop/remove the daemon service -->
     <CustomAction Id="RegisterService"
                   Directory="INSTALLDIR"
-                  ExeCommand="&quot;[INSTALLDIR]puru-dc.exe&quot; service install"
+                  ExeCommand="&quot;[INSTALLDIR]puru-nucleus.exe&quot; service install"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="StartService"
                   Directory="INSTALLDIR"
-                  ExeCommand="sc.exe start PuruDC"
+                  ExeCommand="sc.exe start PuruNucleus"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="StopService"
                   Directory="INSTALLDIR"
-                  ExeCommand="sc.exe stop PuruDC"
+                  ExeCommand="sc.exe stop PuruNucleus"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
 
     <CustomAction Id="RemoveService"
                   Directory="INSTALLDIR"
-                  ExeCommand="sc.exe delete PuruDC"
+                  ExeCommand="sc.exe delete PuruNucleus"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
@@ -47,7 +47,7 @@
     </InstallExecuteSequence>
 
     <!-- Empty component group to satisfy the componentGroupRefs -->
-    <ComponentGroup Id="PuruDCService" />
+    <ComponentGroup Id="PuruNucleusService" />
   </Fragment>
 
 </Wix>

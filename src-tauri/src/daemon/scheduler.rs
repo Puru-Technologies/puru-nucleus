@@ -646,7 +646,7 @@ async fn watchdog_loop() {
         // ── Boot task still there? ──────────────────────────────────────
         // We are running, so the task that starts us was registered at some
         // point. If it has since vanished, something external deleted it —
-        // in practice Defender quarantining puru-dc for Persistence.A!ml. The
+        // in practice Defender quarantining puru-nucleus for Persistence.A!ml. The
         // damage is invisible until the next reboot, when nothing starts at
         // all, so this is the one chance to report it while we can still
         // reach Firestore. Alert once; re-arm if it comes back.
@@ -655,7 +655,7 @@ async fn watchdog_loop() {
                 let detail = crate::platform::defender::recent_detection()
                     .await
                     .unwrap_or_else(|| {
-                        "The PuruDC boot task is no longer registered. The daemon will \
+                        "The PuruNucleus boot task is no longer registered. The daemon will \
                          not start after the next reboot. Re-run `puru service install` \
                          from an elevated prompt."
                             .to_string()
@@ -683,7 +683,7 @@ async fn watchdog_loop() {
                 Some((
                     "boot_task_missing",
                     "Resolved: daemon boot task is back",
-                    "The PuruDC boot task is registered again — the daemon will start \
+                    "The PuruNucleus boot task is registered again — the daemon will start \
                      after the next reboot.",
                 )),
             )
@@ -768,7 +768,10 @@ async fn watchdog_loop() {
 
                         tracing::warn!("Watchdog: {} — attempting restart", reason);
 
-                        if svc_id.is_empty() {
+                        // Linux only: there the daemon is root and can drive
+                        // systemd; the Windows path needs an interactive UAC prompt.
+                        let host_service = svc.infra && cfg!(target_os = "linux");
+                        if svc_id.is_empty() && !host_service {
                             tracing::warn!(
                                 "Watchdog: no restart identifier for {} — skipping",
                                 svc.name
@@ -778,7 +781,14 @@ async fn watchdog_loop() {
 
                         // Down → start it (no process yet). Alive-but-failing →
                         // restart it (stop+start) to actually cycle the process.
-                        let attempt = if is_down {
+                        // Infra rows (host MySQL) have no container; start the OS
+                        // service behind them instead.
+                        let attempt = if host_service {
+                            crate::infra::control(&svc.name, "start")
+                                .await
+                                .map(|_| ())
+                                .map_err(crate::error::NucleusError::Internal)
+                        } else if is_down {
                             crate::services::start_service(&svc_id).await
                         } else {
                             crate::services::restart_service(&svc_id).await

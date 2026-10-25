@@ -980,7 +980,7 @@ where
 
     let response = match client
         .get(&api_url)
-        .header("User-Agent", "puru-dc")
+        .header("User-Agent", "puru-nucleus")
         .send()
         .await
     {
@@ -1265,7 +1265,20 @@ pub(crate) fn mysql_service_name() -> Option<String> {
     None
 }
 
-#[cfg(not(target_os = "windows"))]
+/// systemd unit running MySQL on the host (`mysql` on Ubuntu, `mariadb`,
+/// `mysqld` elsewhere). None if none of them is installed.
+#[cfg(target_os = "linux")]
+pub(crate) fn mysql_service_name() -> Option<String> {
+    ["mysql", "mariadb", "mysqld"].into_iter().find_map(|unit| {
+        let out = crate::process::silent_std_cmd("systemctl")
+            .args(["list-unit-files", &format!("{}.service", unit), "--no-legend"])
+            .output()
+            .ok()?;
+        (!String::from_utf8_lossy(&out.stdout).trim().is_empty()).then(|| unit.to_string())
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub(crate) fn mysql_service_name() -> Option<String> {
     None
 }

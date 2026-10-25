@@ -1,9 +1,9 @@
 //! Emergency stop-all scripts.
 //!
 //! Writes a self-contained OS script into the config directory that operators
-//! can double-click when puru-dc itself is broken (won't launch, GUI crash,
+//! can double-click when puru-nucleus itself is broken (won't launch, GUI crash,
 //! CLI won't parse). The script kills every Puru JVM by PID file and, as a
-//! fallback, by listening port — nothing in it touches or depends on puru-dc.
+//! fallback, by listening port — nothing in it touches or depends on puru-nucleus.
 //!
 //! Regenerated on every daemon/GUI startup so the port list and paths stay
 //! current with the config. Landing location:
@@ -17,7 +17,7 @@ use crate::config::NucleusConfig;
 
 /// Every listening port a Puru JAR could hold. Matches the service registry;
 /// updated here rather than derived at runtime because this file needs to be
-/// runnable when puru-dc can't start (i.e. can't tell us the ports).
+/// runnable when puru-nucleus can't start (i.e. can't tell us the ports).
 const PURU_JVM_PORTS: &[u16] = &[
     8080, // auth
     8081, // xenon
@@ -83,10 +83,10 @@ fn windows_script(config: &NucleusConfig) -> String {
     format!(
         r#"@echo off
 setlocal EnableDelayedExpansion
-title Puru DC — Emergency Stop
+title Puru Nucleus — Emergency Stop
 echo ============================================================
-echo  Puru DC — Emergency Stop (native JAR services)
-echo  Runs independently of puru-dc.exe. Docker mode: use
+echo  Puru Nucleus — Emergency Stop (native JAR services)
+echo  Runs independently of puru-nucleus.exe. Docker mode: use
 echo  "docker compose stop" instead — this script won't touch
 echo  containers.
 echo ============================================================
@@ -151,8 +151,8 @@ fn unix_script(config: &NucleusConfig) -> String {
 
     format!(
         r#"#!/usr/bin/env bash
-# Puru DC — emergency stop-all for native JAR services.
-# Runs independently of puru-dc. Docker: use `docker compose stop` instead.
+# Puru Nucleus — emergency stop-all for native JAR services.
+# Runs independently of puru-nucleus. Docker: use `docker compose stop` instead.
 
 set -u
 PID_DIR="{pid_dir}"
@@ -160,7 +160,7 @@ PORTS=({ports})
 KILLED=0
 
 echo "============================================================"
-echo " Puru DC — Emergency Stop (native JAR services)"
+echo " Puru Nucleus — Emergency Stop (native JAR services)"
 echo "============================================================"
 echo
 

@@ -49,10 +49,10 @@ pub fn silent_std_cmd<S: AsRef<OsStr>>(program: S) -> std::process::Command {
 /// Tie a spawned child to this process's lifetime, so it cannot outlive us.
 ///
 /// Every service JVM must die with its supervisor. Without this, killing
-/// puru-dc — by `taskkill /F`, by a crash, or by Defender quarantining the exe
+/// puru-nucleus — by `taskkill /F`, by a crash, or by Defender quarantining the exe
 /// — leaves the JVMs running: still bound to their ports, still answering
 /// health checks, and no longer managed by anything. The box reads as healthy
-/// while nothing is actually supervising it, and the next puru-dc cannot start
+/// while nothing is actually supervising it, and the next puru-nucleus cannot start
 /// its own copies because the ports are taken.
 ///
 /// # Windows
@@ -84,7 +84,7 @@ pub fn tie_to_supervisor_lifetime(pid: u32) {
             // recoverable, a service that would not start is not.
             tracing::warn!(
                 "Could not tie PID {} to the supervisor job object: {} — it may \
-                 outlive puru-dc if we are force-killed",
+                 outlive puru-nucleus if we are force-killed",
                 pid,
                 e
             );
@@ -146,7 +146,7 @@ mod windows_job {
                 return None;
             }
 
-            tracing::info!("Supervisor job object created — children die with puru-dc");
+            tracing::info!("Supervisor job object created — children die with puru-nucleus");
             Some(JobHandle(handle as isize))
         })
     }
@@ -229,7 +229,7 @@ mod tests {
     /// A child handed to `tie_to_supervisor_lifetime` must land in a job that
     /// is configured to kill its members when the last handle closes. That flag
     /// is the whole guarantee: it is what makes an orphaned JVM impossible even
-    /// when puru-dc is `taskkill /F`-ed or quarantined mid-run.
+    /// when puru-nucleus is `taskkill /F`-ed or quarantined mid-run.
     #[test]
     fn child_is_assigned_to_a_kill_on_close_job() {
         // `ping` idles without a console, tolerates redirected stdio, and exits
@@ -292,7 +292,7 @@ mod tests {
     /// The guarantee that matters: `taskkill /F` on the supervisor — no unwind,
     /// no destructors, no chance to clean up — must still take its children
     /// down. This is the scenario that left five orphaned JVMs holding ports
-    /// after puru-dc was killed.
+    /// after puru-nucleus was killed.
     #[test]
     fn force_killing_the_supervisor_kills_its_children() {
         let pid_file = std::env::temp_dir()

@@ -1,4 +1,4 @@
-//! Firestore client facade for puru-dc.
+//! Firestore client facade for puru-nucleus.
 //!
 //! Provides a high-level API for hospital document operations
 //! against the `puru-255206` Firestore project.
@@ -53,7 +53,9 @@ impl FirestoreClient {
             .as_deref()
             .filter(|p| !p.is_empty())
             .ok_or_else(|| {
-                NucleusError::FirestoreAuth("GCS credentials path not configured. Set it in Settings.".into())
+                // InvalidConfig, not FirestoreAuth: its user message keeps this text,
+                // whereas FirestoreAuth reads "authentication failed".
+                NucleusError::InvalidConfig("GCS credentials not configured. Activate this machine or set them in Settings.".into())
             })?;
         Self::new(creds_path).await
     }
@@ -149,7 +151,7 @@ impl FirestoreClient {
         let now = chrono::Utc::now().to_rfc3339();
         let mut cred = serde_json::Map::new();
         cred.insert("mysql_root_password".to_string(), string_value(password));
-        cred.insert("mysql_set_by".to_string(), string_value("puru-dc"));
+        cred.insert("mysql_set_by".to_string(), string_value("puru-nucleus"));
         cred.insert("mysql_updated_at".to_string(), timestamp_value(&now));
         let fields = serde_json::json!({ "credentials": map_value(cred) });
         queries::patch_document(

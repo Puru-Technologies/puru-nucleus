@@ -1,5 +1,5 @@
 /**
- * License model for puru-dc
+ * License model for puru-nucleus
  * Matches Firestore schema at /hospitals/{hospitalId}/license
  */
 

@@ -107,6 +107,14 @@ const PURU_SERVICE_REGISTRY: &[PuruServiceDef] = &[
         default_port: 8081,
         health_endpoint: Some("/actuator/health"),
     },
+    // Must stay after Xenon: "gcp-puru-auth" also contains "puru-auth".
+    PuruServiceDef {
+        name: "Auth",
+        image_patterns: &["puru-auth"],
+        container_patterns: &["auth"],
+        default_port: 8080,
+        health_endpoint: Some("/actuator/health"),
+    },
     PuruServiceDef {
         name: "HAS",
         image_patterns: &["puru-has"],
@@ -189,6 +197,13 @@ const PURU_SERVICE_REGISTRY: &[PuruServiceDef] = &[
         image_patterns: &["puru-hydrogen"],
         container_patterns: &["frontend", "ui", "puruui"],
         default_port: 80,
+        health_endpoint: Some("/"),
+    },
+    PuruServiceDef {
+        name: "DViewer",
+        image_patterns: &["/dviewer:"],
+        container_patterns: &["dviewer"],
+        default_port: 3000,
         health_endpoint: Some("/"),
     },
     PuruServiceDef {
@@ -441,7 +456,15 @@ async fn probe_all_health(
 pub async fn get_services() -> Result<Vec<ServiceInfo>, crate::error::NucleusError> {
     let config = crate::config::load_config()?;
     match config.deployment_mode {
-        DeploymentMode::Docker => get_docker_services().await,
+        DeploymentMode::Docker => {
+            let mut services = get_docker_services().await?;
+            // MySQL on the host (the usual Linux layout) has no container, so it
+            // would otherwise be missing from status, the GUI and the watchdog.
+            if !services.iter().any(|s| s.name == "MySQL") {
+                services.insert(0, crate::infra::database_row(&config));
+            }
+            Ok(services)
+        }
         DeploymentMode::Native => native::get_services(&config).await,
     }
 }
@@ -935,7 +958,6 @@ pub async fn detect_existing_setup() -> Result<DetectionResult, crate::error::Nu
         .map_err(|e| crate::error::NucleusError::Docker(e.to_string()))?;
 
     let mut puru_containers = Vec::new();
-    let mut has_mysql = false;
 
     for container in &all_containers {
         let image = container.image.as_deref().unwrap_or("");
@@ -947,9 +969,6 @@ pub async fn detect_existing_setup() -> Result<DetectionResult, crate::error::Nu
             .unwrap_or("");
 
         if match_puru_service(image, raw_name).is_some() {
-            if image.contains("mysql:") {
-                has_mysql = true;
-            }
             puru_containers.push(ContainerInfo {
                 name: raw_name.to_string(),
                 image: image.to_string(),
@@ -964,27 +983,9 @@ pub async fn detect_existing_setup() -> Result<DetectionResult, crate::error::Nu
 
     let compose_path = find_compose_path().await;
 
-    // Infer known Puru databases if MySQL container is present
-    let databases = if has_mysql {
-        [
-            "puru_im",
-            "puru_has",
-            "puru_med",
-            "puru_dicom",
-            "puru_path",
-            "puru_bridge",
-            "puru_auth",
-            "puru_gh",
-        ]
-        .iter()
-        .map(|name| DatabaseInfo {
-            name: name.to_string(),
-            size_mb: 0, // would need MySQL connection to get actual size
-        })
-        .collect()
-    } else {
-        vec![]
-    };
+    // Real databases only — the old hard-coded list showed puru_* names that
+    // didn't exist. Needs MySQL credentials in config; otherwise empty.
+    let databases = list_puru_databases().await;
 
     let found = !puru_containers.is_empty();
 
@@ -994,6 +995,39 @@ pub async fn detect_existing_setup() -> Result<DetectionResult, crate::error::Nu
         compose_path,
         databases,
     })
+}
+
+/// `puru%` schemas on the configured MySQL with their sizes. Empty when no
+/// credentials are configured or the server can't be reached.
+async fn list_puru_databases() -> Vec<DatabaseInfo> {
+    use mysql_async::prelude::*;
+
+    let Ok(cfg) = crate::config::load_config() else { return vec![] };
+    if cfg.mysql_password.is_empty() {
+        return vec![];
+    }
+    let opts = mysql_async::OptsBuilder::default()
+        .ip_or_hostname(cfg.mysql_host.clone())
+        .tcp_port(cfg.mysql_port)
+        .user(Some(cfg.mysql_user.clone()))
+        .pass(Some(cfg.mysql_password.clone()));
+    let pool = mysql_async::Pool::new(opts);
+    let rows: Vec<(String, u64)> = match pool.get_conn().await {
+        Ok(mut conn) => conn
+            .query(
+                "SELECT s.schema_name, CAST(COALESCE(SUM(t.data_length + t.index_length), 0) / 1048576 AS UNSIGNED) \
+                 FROM information_schema.schemata s \
+                 LEFT JOIN information_schema.tables t ON t.table_schema = s.schema_name \
+                 WHERE s.schema_name LIKE 'puru%' GROUP BY s.schema_name ORDER BY s.schema_name",
+            )
+            .await
+            .unwrap_or_default(),
+        Err(_) => vec![],
+    };
+    let _ = pool.disconnect().await;
+    rows.into_iter()
+        .map(|(name, size_mb)| DatabaseInfo { name, size_mb })
+        .collect()
 }
 
 /// Check all prerequisites (Docker, Docker Compose, MySQL)
@@ -1253,3 +1287,32 @@ pub(crate) async fn resolve_mysql_tool(tool: &str) -> Option<String> {
     None
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::match_puru_service;
+
+    const REG: &str = "asia-south2-docker.pkg.dev/puru-255206/puru1";
+
+    fn matched(image: &str, container: &str) -> Option<&'static str> {
+        match_puru_service(image, container).map(|d| d.name)
+    }
+
+    #[test]
+    fn detects_auth_and_dviewer_from_compose_templates() {
+        assert_eq!(matched(&format!("{REG}/puru-auth:1.2"), "auth"), Some("Auth"));
+        assert_eq!(matched(&format!("{REG}/dviewer:1.2"), "dviewer"), Some("DViewer"));
+    }
+
+    #[test]
+    fn legacy_gcp_puru_auth_image_stays_xenon() {
+        assert_eq!(matched(&format!("{REG}/gcp-puru-auth:old"), "backend"), Some("Xenon (Backend)"));
+    }
+
+    #[test]
+    fn falls_back_to_container_name() {
+        assert_eq!(matched("some/custom-image:1", "auth"), Some("Auth"));
+        assert_eq!(matched("some/custom-image:1", "dviewer"), Some("DViewer"));
+        assert_eq!(matched("some/custom-image:1", "unrelated"), None);
+    }
+}

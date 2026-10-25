@@ -148,7 +148,7 @@ interface ActivityItem { icon: string; kind: 'ok' | 'warn' | 'info'; text: strin
           <!-- Backups -->
           <div class="panel">
             <div class="phead"><h3>Backups</h3><button class="gobtn" (click)="openBackups()">Open <span class="material-icons">arrow_forward</span></button></div>
-            <div class="bigrow"><span class="b">{{ lastBackupTime || 'No backups yet' }}</span>@if (lastBackupTime) {<span class="s">Full · uploaded to cloud</span>}</div>
+            <div class="bigrow"><span class="b">{{ lastBackupTime || 'No backups yet' }}</span>@if (lastBackup) {<span class="s">{{ backupSummary(lastBackup) }}</span>}</div>
             <div class="kv"><span>Backups kept</span><span>{{ backupHistory.length }}</span></div>
             <div class="pfoot"><button class="btn primary" [disabled]="busyBackup" (click)="backupNow()"><span class="material-icons">backup</span>{{ busyBackup ? 'Starting…' : 'Back up now' }}</button></div>
           </div>
@@ -427,6 +427,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
   daemonRunning = false;
   telemetry: { cpu_percent: number; ram_gb: number; disk_percent: number } | null = null;
   lastBackupTime: string | null = null;
+  lastBackup: BackupRecord | null = null;
   backupHistory: BackupRecord[] = [];
   alerts: HospitalAlert[] = [];
   networkStatus: NetworkStatus | null = null;
@@ -518,11 +519,17 @@ export class DashboardComponent implements OnInit, OnDestroy {
     if (h) return `${h}h ${m}m`;
     return `${m}m`;
   }
+  /** "Full · uploaded to cloud" — from the record, not assumed. */
+  backupSummary(b: BackupRecord): string {
+    const type = b.type === 'partial' ? 'Partial' : 'Full';
+    return `${type} · ${b.uploaded ? 'uploaded to cloud' : 'on this server only'}`;
+  }
+
   get activity(): ActivityItem[] {
     const items: ActivityItem[] = [];
     const lastDone = this.backupHistory.filter(b => b.status === 'completed')
       .sort((a, b) => this.toDate(b.created_at).getTime() - this.toDate(a.created_at).getTime())[0];
-    if (lastDone) items.push({ icon: 'check_circle', kind: 'ok', text: 'Backup completed — uploaded to cloud', time: this.timeAgo(this.toDate(lastDone.created_at)) });
+    if (lastDone) items.push({ icon: 'check_circle', kind: 'ok', text: `Backup completed — ${lastDone.uploaded ? 'uploaded to cloud' : 'kept on this server'}`, time: this.timeAgo(this.toDate(lastDone.created_at)) });
     for (const a of this.alerts.slice(0, 3)) {
       if (a.resolved) {
         items.push({ icon: 'task_alt', kind: 'ok', text: a.title, time: this.timeAgo(this.toDate(a.resolved_at || a.created_at)) });
@@ -651,7 +658,8 @@ export class DashboardComponent implements OnInit, OnDestroy {
     if (bak.status === 'fulfilled' && bak.value) {
       this.backupHistory = [...bak.value].sort((a, b) => this.toDate(b.created_at).getTime() - this.toDate(a.created_at).getTime());
       const done = this.backupHistory.filter(b => b.status === 'completed');
-      this.lastBackupTime = done.length ? this.timeAgo(this.toDate(done[0].created_at)) : null;
+      this.lastBackup = done[0] ?? null;
+      this.lastBackupTime = this.lastBackup ? this.timeAgo(this.toDate(this.lastBackup.created_at)) : null;
     }
     if (alr.status === 'fulfilled' && alr.value) this.alerts = alr.value;
   }

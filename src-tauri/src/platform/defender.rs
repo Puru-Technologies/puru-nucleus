@@ -2,12 +2,12 @@
 //!
 //! ## Why this exists
 //!
-//! puru-dc registers a SYSTEM boot task (`PuruDC`) and a logon task (`PuruDCGui`)
+//! puru-nucleus registers a SYSTEM boot task (`PuruNucleus`) and a logon task (`PuruNucleusGui`)
 //! via `schtasks`, then spawns a fleet of JVM children. To Defender's behaviour
 //! engine that is indistinguishable from malware establishing persistence, and an
 //! unsigned binary has no file reputation to offset it. On 2026-08-21 this fired
 //! for real on a hospital box: `Behavior:Win32/Persistence.A!ml` quarantined
-//! `puru-dc.exe`, **both** shortcuts and `System32\Tasks\PuruDC` — the tray icon
+//! `puru-nucleus.exe`, **both** shortcuts and `System32\Tasks\PuruNucleus` — the tray icon
 //! vanished a few minutes after boot, the daemon died, and PACS silently lost its
 //! token broker. The already-spawned JVMs kept running, so the box looked healthy.
 //!
@@ -36,7 +36,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Result of trying to register Defender exclusions for puru-dc.
+/// Result of trying to register Defender exclusions for puru-nucleus.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExclusionOutcome {
     /// Both exclusions are present (either we just added them, or they already were).
@@ -53,7 +53,7 @@ impl ExclusionOutcome {
     pub fn summary(&self) -> String {
         match self {
             ExclusionOutcome::Registered => {
-                "Defender exclusions registered for puru-dc.".to_string()
+                "Defender exclusions registered for puru-nucleus.".to_string()
             }
             ExclusionOutcome::Blocked(why) => format!("WARNING: {}", why),
             ExclusionOutcome::NotApplicable => {
@@ -62,7 +62,7 @@ impl ExclusionOutcome {
         }
     }
 
-    /// True when puru-dc is at risk of being quarantined and the operator must act.
+    /// True when puru-nucleus is at risk of being quarantined and the operator must act.
     pub fn needs_operator_action(&self) -> bool {
         matches!(self, ExclusionOutcome::Blocked(_))
     }
@@ -124,9 +124,9 @@ fn parse_exclusion_output(stdout: &str, exe: &str) -> ExclusionOutcome {
     }
     if stdout.contains("READBACK=DENIED") {
         return ExclusionOutcome::Blocked(
-            "Could not read Defender exclusions — puru-dc must be installed from an \
+            "Could not read Defender exclusions — puru-nucleus must be installed from an \
              elevated prompt. Without a process exclusion Defender may quarantine \
-             puru-dc.exe as Behavior:Win32/Persistence.A!ml."
+             puru-nucleus.exe as Behavior:Win32/Persistence.A!ml."
                 .to_string(),
         );
     }
@@ -159,12 +159,12 @@ fn parse_exclusion_output(stdout: &str, exe: &str) -> ExclusionOutcome {
 
     ExclusionOutcome::Blocked(format!(
         "Defender did not accept {missing} for {exe}. {hint} \
-         Until then Defender may quarantine puru-dc.exe and its boot task, which \
+         Until then Defender may quarantine puru-nucleus.exe and its boot task, which \
          silently stops the daemon."
     ))
 }
 
-/// Register Defender exclusions for the running puru-dc binary and its install
+/// Register Defender exclusions for the running puru-nucleus binary and its install
 /// directory, verifying the change actually took.
 ///
 /// Idempotent — `Add-MpPreference` on an already-excluded path is a no-op, so this
@@ -178,7 +178,7 @@ pub async fn ensure_exclusions() -> ExclusionOutcome {
         Ok(p) => p.to_string_lossy().to_string(),
         Err(e) => {
             return ExclusionOutcome::Blocked(format!(
-                "Cannot determine the puru-dc executable path ({e}), so no Defender \
+                "Cannot determine the puru-nucleus executable path ({e}), so no Defender \
                  exclusion could be registered."
             ));
         }
@@ -206,7 +206,7 @@ pub async fn ensure_exclusions() -> ExclusionOutcome {
     ExclusionOutcome::NotApplicable
 }
 
-/// Ask Defender whether it has a threat detection naming puru-dc.
+/// Ask Defender whether it has a threat detection naming puru-nucleus.
 ///
 /// Used to turn "the daemon is mysteriously gone" into a specific, actionable
 /// diagnosis. Returns the detection time and threat id when found.
@@ -217,7 +217,7 @@ pub async fn ensure_exclusions() -> ExclusionOutcome {
 pub async fn recent_detection() -> Option<String> {
     let script = r#"$ErrorActionPreference='SilentlyContinue'
 Get-MpThreatDetection |
-  Where-Object { ($_.Resources -join ';') -like '*puru-dc*' -or ($_.Resources -join ';') -like '*PuruDC*' } |
+  Where-Object { ($_.Resources -join ';') -like '*puru-nucleus*' -or ($_.Resources -join ';') -like '*PuruNucleus*' -or ($_.Resources -join ';') -like '*puru-dc*' } |
   Sort-Object InitialDetectionTime -Descending |
   Select-Object -First 1 |
   ForEach-Object { "DETECTED=$($_.InitialDetectionTime)|$($_.ThreatID)" }"#;
@@ -243,8 +243,8 @@ fn parse_detection_output(stdout: &str) -> Option<String> {
     let body = line.trim_start_matches("DETECTED=").trim();
     let (when, id) = body.split_once('|').unwrap_or((body, ""));
     Some(format!(
-        "Microsoft Defender quarantined puru-dc at {when} (threat id {id}). \
-         This removes puru-dc.exe, its shortcuts and the PuruDC boot task, which \
+        "Microsoft Defender quarantined puru-nucleus at {when} (threat id {id}). \
+         This removes puru-nucleus.exe, its shortcuts and the PuruNucleus boot task, which \
          stops the daemon without any error in the app's own logs. Restore the \
          binary and register a Defender process exclusion for it."
     ))
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn single_quotes_are_doubled_for_powershell() {
-        assert_eq!(ps_single_quote(r"C:\Program Files\puru-dc"), r"C:\Program Files\puru-dc");
+        assert_eq!(ps_single_quote(r"C:\Program Files\puru-nucleus"), r"C:\Program Files\puru-nucleus");
         assert_eq!(ps_single_quote("it's"), "it''s");
     }
 
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn tamper_protection_refusal_is_blocked_and_names_tamper() {
         let out = "TAMPER=True\nPROC=FAIL\nPATH=FAIL\n";
-        match parse_exclusion_output(out, "puru-dc.exe") {
+        match parse_exclusion_output(out, "puru-nucleus.exe") {
             ExclusionOutcome::Blocked(m) => {
                 assert!(m.contains("Tamper Protection"));
                 assert!(m.contains("process and folder exclusions"));
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn path_only_is_still_blocked() {
         let out = "TAMPER=False\nPROC=FAIL\nPATH=OK\n";
-        match parse_exclusion_output(out, "puru-dc.exe") {
+        match parse_exclusion_output(out, "puru-nucleus.exe") {
             ExclusionOutcome::Blocked(m) => assert!(m.contains("the process exclusion")),
             other => panic!("expected Blocked, got {other:?}"),
         }

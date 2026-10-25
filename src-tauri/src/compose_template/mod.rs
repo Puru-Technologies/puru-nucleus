@@ -68,6 +68,10 @@ pub struct TemplateVariables {
     pub barcode_prefix_return: String,
     pub server_ip: String,
     pub mysql_password: String,
+    /// Account the services log in as (`{{MYSQL_USER}}` in database.env).
+    /// Defaulted so older UI payloads without it still deserialize.
+    #[serde(default)]
+    pub mysql_user: String,
     pub auth_tag: String,
     pub xenon_tag: String,
     pub has_tag: String,
@@ -361,6 +365,7 @@ pub fn substitute_variables(content: &str, vars: &TemplateVariables) -> String {
         .replace("{{BARCODE_PREFIX_RETURN}}", &vars.barcode_prefix_return)
         .replace("{{SERVER_IP}}", &vars.server_ip)
         .replace("{{MYSQL_PASSWORD}}", &vars.mysql_password)
+        .replace("{{MYSQL_USER}}", &vars.mysql_user)
         .replace("{{AUTH_TAG}}", &vars.auth_tag)
         .replace("{{XENON_TAG}}", &vars.xenon_tag)
         .replace("{{HAS_TAG}}", &vars.has_tag)
@@ -536,6 +541,81 @@ pub async fn download_env_templates() -> Result<EnvDownloadResult, NucleusError>
     })
 }
 
+/// Fill the `{{PLACEHOLDERS}}` in every env file next to the compose file.
+///
+/// The env templates are downloaded verbatim, so without this a fresh Docker
+/// install boots every service with literal values such as
+/// `spring.datasource.password={{MYSQL_PASSWORD}}`. Placeholders we have no
+/// value for are blanked (a literal `{{X}}` is never a valid setting) and
+/// returned so the caller can log them. Idempotent: a filled file is left as is.
+pub fn fill_env_placeholders(vars: &TemplateVariables) -> Result<Vec<String>, NucleusError> {
+    let env_dir = env_dir_path();
+    let mut unknown = Vec::new();
+
+    let entries = match std::fs::read_dir(&env_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(unknown), // no env dir yet — nothing to fill
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("env") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)?;
+        if !content.contains("{{") {
+            continue;
+        }
+        let (filled, leftover) = blank_unknown_placeholders(&substitute_variables(&content, vars));
+        for name in leftover {
+            unknown.push(format!("{} in {}", name, entry.file_name().to_string_lossy()));
+        }
+        std::fs::write(&path, filled)?;
+    }
+    Ok(unknown)
+}
+
+/// Replace any remaining `{{NAME}}` with an empty string; returns the names.
+fn blank_unknown_placeholders(content: &str) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(content.len());
+    let mut names = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("{{") {
+        match rest[start + 2..].find("}}") {
+            Some(len) => {
+                out.push_str(&rest[..start]);
+                names.push(rest[start + 2..start + 2 + len].to_string());
+                rest = &rest[start + 2 + len + 2..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    (out, names)
+}
+
+/// Create an empty env file for every `./env/*.env` the compose file lists but
+/// that doesn't exist. `docker compose up` refuses to start when an `env_file`
+/// is missing — e.g. `rabbitmq.env`, which older fragments still reference
+/// after RabbitMQ was removed. Returns the files it had to create.
+pub fn ensure_compose_env_files(compose: &str) -> Result<Vec<String>, NucleusError> {
+    let env_dir = env_dir_path();
+    let mut created = Vec::new();
+    for line in compose.lines() {
+        let Some(name) = line.trim().strip_prefix("- ./env/") else { continue };
+        let name = name.trim().trim_matches('"');
+        if name.is_empty() || name.contains('/') {
+            continue;
+        }
+        let path = env_dir.join(name);
+        if !path.exists() {
+            std::fs::create_dir_all(&env_dir)?;
+            std::fs::write(&path, "")?;
+            created.push(name.to_string());
+        }
+    }
+    Ok(created)
+}
+
 /// List all env files with their content.
 pub async fn read_env_files() -> Result<Vec<EnvFileEntry>, NucleusError> {
     let env_dir = env_dir_path();
@@ -628,6 +708,7 @@ pub fn build_variables_from_config(cfg: &config::NucleusConfig) -> TemplateVaria
         barcode_prefix_return: "2526R".to_string(),
         server_ip: cfg.server_ip.clone(),
         mysql_password: cfg.mysql_password.clone(),
+        mysql_user: cfg.mysql_user.clone(),
         auth_tag: "latest".to_string(),
         xenon_tag: "latest".to_string(),
         has_tag: "latest".to_string(),
@@ -691,6 +772,7 @@ services:
             barcode_prefix_return: "2526R".to_string(),
             server_ip: "192.168.1.100".to_string(),
             mysql_password: "secret123".to_string(),
+            mysql_user: "puru".to_string(),
             auth_tag: "1.0.0".to_string(),
             xenon_tag: "2.3.5".to_string(),
             has_tag: "1.0.0".to_string(),
@@ -779,6 +861,7 @@ services:
             barcode_prefix_return: String::new(),
             server_ip: "1.2.3.4".to_string(),
             mysql_password: "p".to_string(),
+            mysql_user: String::new(),
             auth_tag: "latest".to_string(),
             xenon_tag: "2.0.0".to_string(),
             has_tag: "latest".to_string(),
@@ -999,5 +1082,32 @@ services:
         assert!(!result.contains("backend:"));
         assert!(!result.contains("has:"));
         assert!(!result.contains("frontend:"));
+    }
+
+    #[test]
+    fn test_env_template_filled_and_unknown_blanked() {
+        let cfg = config::NucleusConfig {
+            hospital_code: "PT3".to_string(),
+            server_ip: "10.0.0.5".to_string(),
+            mysql_user: "puru".to_string(),
+            mysql_password: "pw".to_string(),
+            ..Default::default()
+        };
+        let template = "spring.datasource.username={{MYSQL_USER}}\n\
+                        spring.datasource.password={{MYSQL_PASSWORD}}\n\
+                        hospital.short.code={{HOSPITAL_CODE}}\n\
+                        puru.server.ip={{SERVER_IP}}\n\
+                        future.key={{NOT_A_VARIABLE}}\n";
+
+        let substituted = substitute_variables(template, &build_variables_from_config(&cfg));
+        let (filled, unknown) = blank_unknown_placeholders(&substituted);
+
+        assert!(filled.contains("spring.datasource.username=puru\n"));
+        assert!(filled.contains("spring.datasource.password=pw\n"));
+        assert!(filled.contains("hospital.short.code=PT3\n"));
+        assert!(filled.contains("puru.server.ip=10.0.0.5\n"));
+        assert!(filled.contains("future.key=\n"));
+        assert!(!filled.contains("{{"));
+        assert_eq!(unknown, vec!["NOT_A_VARIABLE".to_string()]);
     }
 }

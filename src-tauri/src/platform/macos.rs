@@ -4,7 +4,7 @@ use super::{ServiceResult, ServiceStatus, get_exe_path};
 
 const LABEL: &str = "com.puru.nucleus";
 const PLIST_PATH: &str = "/Library/LaunchDaemons/com.puru.nucleus.plist";
-const LOG_DIR: &str = "/usr/local/var/log/puru-dc";
+const LOG_DIR: &str = "/usr/local/var/log/puru-nucleus";
 
 fn plist_content(exe_path: &str) -> String {
     format!(
@@ -24,11 +24,11 @@ fn plist_content(exe_path: &str) -> String {
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{LOG_DIR}/puru-dc.log</string>
+    <string>{LOG_DIR}/puru-nucleus.log</string>
     <key>StandardErrorPath</key>
-    <string>{LOG_DIR}/puru-dc.err</string>
+    <string>{LOG_DIR}/puru-nucleus.err</string>
     <key>WorkingDirectory</key>
-    <string>/usr/local/etc/puru-dc</string>
+    <string>/usr/local/etc/puru-nucleus</string>
 </dict>
 </plist>"#
     )

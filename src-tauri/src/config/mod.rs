@@ -238,12 +238,46 @@ pub fn config_dir() -> PathBuf {
 
     #[cfg(target_os = "linux")]
     {
-        PathBuf::from("/etc/puru-dc")
+        with_legacy_fallback("/etc/puru-nucleus", "/etc/puru-dc")
     }
 
     #[cfg(target_os = "macos")]
     {
-        PathBuf::from("/usr/local/etc/puru-dc")
+        with_legacy_fallback("/usr/local/etc/puru-nucleus", "/usr/local/etc/puru-dc")
+    }
+}
+
+/// Prefer the current config dir; fall back to the pre-rename ("puru-dc") dir
+/// only while it is the one that exists, so an upgraded box keeps its config
+/// and license until `migrate_legacy_config_dir` moves it.
+#[cfg(unix)]
+fn with_legacy_fallback(current: &str, legacy: &str) -> PathBuf {
+    let current = PathBuf::from(current);
+    let legacy = PathBuf::from(legacy);
+    if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
+/// Move the pre-rename config dir (`/etc/puru-dc`) to `/etc/puru-nucleus` once.
+/// Needs root; without it the fallback in `config_dir` keeps using the old
+/// dir. No-op on Windows, whose dir (`C:\PuruNucleus`) never changed.
+pub fn migrate_legacy_config_dir() {
+    #[cfg(target_os = "linux")]
+    let (current, legacy) = ("/etc/puru-nucleus", "/etc/puru-dc");
+    #[cfg(target_os = "macos")]
+    let (current, legacy) = ("/usr/local/etc/puru-nucleus", "/usr/local/etc/puru-dc");
+    #[cfg(unix)]
+    {
+        let (current, legacy) = (std::path::Path::new(current), std::path::Path::new(legacy));
+        if legacy.exists() && !current.exists() {
+            match std::fs::rename(legacy, current) {
+                Ok(()) => tracing::info!("Moved config dir {} → {}", legacy.display(), current.display()),
+                Err(e) => tracing::debug!("Config dir not moved ({}); using {}", e, legacy.display()),
+            }
+        }
     }
 }
 
@@ -261,7 +295,15 @@ fn default_docker_compose_path() -> String {
         "C:\\PuruDocker\\docker-compose.yml".to_string()
     }
 
-    #[cfg(unix)]
+    // The compose fragments mount /home/puru/data, so Linux sites live under
+    // /home/puru. Using $HOME instead put the compose file in /root/puru when
+    // nucleus runs as root, which it must on Linux.
+    #[cfg(target_os = "linux")]
+    {
+        "/home/puru/docker/docker-compose.yml".to_string()
+    }
+
+    #[cfg(target_os = "macos")]
     {
         home_puru_dir()
             .join("docker")
@@ -269,6 +311,23 @@ fn default_docker_compose_path() -> String {
             .to_string_lossy()
             .to_string()
     }
+}
+
+/// Give the daemon an API key if it has none. With an empty key the daemon
+/// skips auth entirely and its REST API (service control, shell, config with
+/// the MySQL password) is open to the whole LAN on 0.0.0.0. Returns true when a
+/// key was generated, so the caller knows to save the config.
+pub fn ensure_daemon_api_key(config: &mut NucleusConfig) -> bool {
+    use rand::Rng;
+    const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+    let daemon = config.daemon.get_or_insert_with(DaemonConfig::default);
+    if !daemon.api_key.is_empty() {
+        return false;
+    }
+    let mut rng = rand::thread_rng();
+    daemon.api_key = (0..32).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect();
+    true
 }
 
 /// Load configuration from file

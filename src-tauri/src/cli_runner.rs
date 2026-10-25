@@ -961,7 +961,7 @@ async fn cmd_service(args: ServiceArgs) {
     match args.command {
         ServiceCommands::Install => {
             println!(
-                "  Installing puru-dc as a system service ({})...",
+                "  Installing puru-nucleus as a system service ({})...",
                 platform::platform_name()
             );
             match platform::install_service().await {
@@ -975,7 +975,7 @@ async fn cmd_service(args: ServiceArgs) {
             }
         }
         ServiceCommands::Uninstall => {
-            println!("  Uninstalling puru-dc system service...");
+            println!("  Uninstalling puru-nucleus system service...");
             match platform::uninstall_service().await {
                 Ok(result) => {
                     println!("  {} {}", "✓".green().bold(), result.message);
@@ -987,7 +987,7 @@ async fn cmd_service(args: ServiceArgs) {
             }
         }
         ServiceCommands::Start => {
-            print!("  Starting puru-dc service... ");
+            print!("  Starting puru-nucleus service... ");
             match platform::start_service().await {
                 Ok(_) => println!("{}", "OK".green()),
                 Err(e) => {
@@ -998,7 +998,7 @@ async fn cmd_service(args: ServiceArgs) {
             }
         }
         ServiceCommands::Stop => {
-            print!("  Stopping puru-dc service... ");
+            print!("  Stopping puru-nucleus service... ");
             match platform::stop_service().await {
                 Ok(_) => println!("{}", "OK".green()),
                 Err(e) => {
@@ -1852,7 +1852,7 @@ async fn cmd_network(speed: bool, json: bool) {
                 println!(
                     "  {} Run {} for download/upload speeds.\n",
                     "Tip:".dimmed(),
-                    "puru network --speed".cyan()
+                    "puru-nucleus network --speed".cyan()
                 );
             }
             Err(e) => {
@@ -1866,7 +1866,7 @@ async fn cmd_network(speed: bool, json: bool) {
 
 fn cmd_version() {
     println!(
-        "puru-dc {}",
+        "puru-nucleus {}",
         env!("CARGO_PKG_VERSION")
     );
 }

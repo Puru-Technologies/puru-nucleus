@@ -1,5 +1,5 @@
 /**
- * Hospital model for puru-dc
+ * Hospital model for puru-nucleus
  * Matches Firestore schema at /hospital/{shortName}
  */
 
@@ -32,7 +32,7 @@ export interface Hospital {
   autoUploadModality: string[];
   onlineApproachType: string;
 
-  // License fields (for puru-dc)
+  // License fields (for puru-nucleus)
   license?: License;
 
   // Nucleus management fields

@@ -4133,8 +4133,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "puru-dc"
-version = "0.12.5"
+name = "puru-nucleus"
+version = "0.12.6"
 dependencies = [
  "aes-gcm",
  "anyhow",

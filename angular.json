@@ -3,7 +3,7 @@
   "version": 1,
   "newProjectRoot": "projects",
   "projects": {
-    "puru-dc": {
+    "puru-nucleus": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -18,7 +18,7 @@
         "build": {
           "builder": "@angular-devkit/build-angular:application",
           "options": {
-            "outputPath": "dist/puru-dc",
+            "outputPath": "dist/puru-nucleus",
             "index": "src/index.html",
             "browser": "src/main.ts",
             "polyfills": ["zone.js"],
@@ -56,10 +56,10 @@
           "builder": "@angular-devkit/build-angular:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "puru-dc:build:production"
+              "buildTarget": "puru-nucleus:build:production"
             },
             "development": {
-              "buildTarget": "puru-dc:build:development"
+              "buildTarget": "puru-nucleus:build:development"
             }
           },
           "defaultConfiguration": "development"

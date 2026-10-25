@@ -1347,6 +1347,8 @@ export class SetupComponent implements OnInit {
     { label: 'Start services', status: 'pending' },
     { label: 'Health check', status: 'pending' },
     { label: 'Configure local domain (puru.local)', status: 'pending' },
+    { label: 'Seed database & templates', status: 'pending' },
+    { label: 'Initialize roles & users', status: 'pending' },
     { label: 'Configure backups', status: 'pending' },
     { label: 'Install daemon service', status: 'pending' },
     { label: 'Configure HTTPS (TLS)', status: 'pending' }
@@ -1518,6 +1520,9 @@ export class SetupComponent implements OnInit {
 
     this.configSaving = true;
     this.configError = null;
+    // The field is bound to puruDataPath; only Browse copied it into config, so
+    // a typed path was silently dropped.
+    this.config.puru_data_path = this.puruDataPath.trim() || this.config.puru_data_path;
 
     try {
       await this.tauri.invoke('save_config', { config: this.config });
@@ -1785,7 +1790,8 @@ export class SetupComponent implements OnInit {
     // 3: Pull Docker images — skip (DO NOT pull/update)
     // 4: Start services — skip (already running)
     // 5: Health check — skip (already running)
-    for (let i = 0; i <= 5; i++) {
+    // 7, 8: Seed database / roles — skip (a live install already has its data)
+    for (const i of [0, 1, 2, 3, 4, 5, 7, 8]) {
       this.steps[i].status = 'completed';
     }
     this.notification.success('Adopting existing setup — skipping pull/update steps');
@@ -1947,6 +1953,8 @@ export class SetupComponent implements OnInit {
       'setup_start_services',
       'setup_health_check',
       'setup_local_domain',
+      'setup_seed_database',
+      'setup_init_auth',
       'setup_configure_backups',
       'setup_install_daemon',
       'setup_tls'

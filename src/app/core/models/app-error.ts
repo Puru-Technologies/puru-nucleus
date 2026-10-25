@@ -1,5 +1,5 @@
 /**
- * Custom error types for puru-dc
+ * Custom error types for puru-nucleus
  */
 
 export type ErrorSeverity = 'warning' | 'error' | 'critical';

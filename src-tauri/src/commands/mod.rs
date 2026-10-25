@@ -221,6 +221,13 @@ pub async fn activate_license(email: String, machine_name: String) -> Result<(),
         .and_then(|v| crate::firestore::convert::get_optional_string(v))
     {
         match mode_str.as_str() {
+            // Native mode isn't supported on Linux yet (no Linux Java 25 runtime
+            // or web server), so a cloud default of "native" would start setup
+            // on a path that can't finish.
+            "native" if cfg!(target_os = "linux") => {
+                tracing::warn!("Cloud deployment_mode is native; using docker on Linux");
+                config.deployment_mode = crate::config::DeploymentMode::Docker;
+            }
             "native" => config.deployment_mode = crate::config::DeploymentMode::Native,
             "docker" => config.deployment_mode = crate::config::DeploymentMode::Docker,
             _ => {}
@@ -248,6 +255,7 @@ pub async fn activate_license(email: String, machine_name: String) -> Result<(),
         }
     }
 
+    crate::config::ensure_daemon_api_key(&mut config);
     crate::config::save_config(&config).map_err(|e| e.user_message())?;
 
     tracing::info!(
@@ -917,7 +925,7 @@ pub async fn get_daemon_status() -> Result<DaemonStatus, String> {
     let port = daemon_cfg.port;
 
     // Probe the daemon API — this is the ONLY reliable liveness signal, because
-    // the daemon and the GUI share the `puru-dc.exe` image, so a tasklist /
+    // the daemon and the GUI share the `puru-nucleus.exe` image, so a tasklist /
     // image-name check would count the running GUI as "the daemon". The health
     // endpoint only answers when the daemon process is actually up.
     let api_url = format!("http://127.0.0.1:{}/api/health", port);
@@ -947,7 +955,7 @@ pub async fn get_daemon_status() -> Result<DaemonStatus, String> {
 
     Ok(DaemonStatus {
         // Daemon liveness = the API answered. Do NOT OR in svc_status.running:
-        // that is image-name based and matches the GUI's own puru-dc.exe.
+        // that is image-name based and matches the GUI's own puru-nucleus.exe.
         running,
         docker_connected,
         api_port: port,
@@ -1534,6 +1542,8 @@ const PURU_DATABASES: &[&str] = &[
     "puru_bridge",
     "puru_auth",
     "puru_gh",
+    // The integration compose fragment points at its own schema.
+    "puru_integration",
     // Fleet-shared queue store. Owned schema-wise by puru-auth at runtime,
     // but pre-creating here lets every backend boot even if the MySQL user
     // lacks CREATE-DATABASE privilege. Table DDL is applied below in
@@ -1984,7 +1994,13 @@ pub(crate) async fn ensure_mysql_running() -> Result<(), String> {
 pub async fn setup_generate_config() -> Result<(), String> {
     tracing::info!("Setup: generating configuration files");
 
-    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+    // Before the compose is filled: the fragments pass {{DAEMON_API_KEY}} to
+    // pacs/realtime/comm, so it must be the key the daemon will actually use.
+    if crate::config::ensure_daemon_api_key(&mut config) {
+        crate::config::save_config(&config).map_err(|e| e.user_message())?;
+        tracing::info!("Setup: generated a daemon API key");
+    }
     let compose_path = std::path::Path::new(&config.docker_compose_path);
 
     // Ensure parent directory exists
@@ -2022,10 +2038,13 @@ pub async fn setup_generate_config() -> Result<(), String> {
     // Try fragment-based assembly first (preferred), fallback to inline template.
     // Fragments contain {{PLACEHOLDERS}} that must be substituted before docker can
     // parse the file; the inline fallback has no placeholders so substitution is a no-op.
+    let mut vars = crate::compose_template::build_variables_from_config(&config);
+    if let Ok(Some(license)) = crate::licensing::load_license() {
+        vars.hospital_name = license.hospital_name;
+    }
     let compose_content = match crate::compose_template::assemble_compose(&modules) {
         Ok(content) => {
             tracing::info!("Setup: assembled docker-compose.yml from fragments");
-            let vars = crate::compose_template::build_variables_from_config(&config);
             let content = crate::compose_template::substitute_variables(&content, &vars);
             crate::compose_template::substitute_daemon_variables(&content, config.daemon.as_ref())
         }
@@ -2039,6 +2058,19 @@ pub async fn setup_generate_config() -> Result<(), String> {
         .map_err(|e| format!("Failed to write docker-compose.yml: {}", e))?;
 
     tracing::info!("Setup: wrote docker-compose.yml to {}", config.docker_compose_path);
+
+    // The env templates arrive with {{PLACEHOLDERS}}; fill them from the same
+    // values as the compose file, then make sure every env_file it lists exists.
+    let unknown = crate::compose_template::fill_env_placeholders(&vars)
+        .map_err(|e| format!("Failed to fill env files: {}", e.user_message()))?;
+    if !unknown.is_empty() {
+        tracing::warn!("Setup: no value for env placeholder(s), left blank: {}", unknown.join(", "));
+    }
+    let created = crate::compose_template::ensure_compose_env_files(&compose_content)
+        .map_err(|e| format!("Failed to create env files: {}", e.user_message()))?;
+    if !created.is_empty() {
+        tracing::warn!("Setup: compose lists env file(s) with no template, created empty: {}", created.join(", "));
+    }
     Ok(())
 }
 
@@ -2081,7 +2113,7 @@ fn generate_docker_compose(config: &NucleusConfig, modules: &ServiceModules, mys
         r#"version: "3.8"
 
 # Puru Labs Private Limited — Docker Compose
-# Generated by puru-dc
+# Generated by puru-nucleus
 # Hospital: {}
 
 services:
@@ -2332,6 +2364,13 @@ pub async fn setup_start_services() -> Result<(), String> {
 
     let result = match output {
         Ok(out) if out.status.success() => Ok(()),
+        // Compose V2 ran and failed (bad env_file, image, port…): report its own
+        // error. Falling through to V1 would replace it with "No such file or
+        // directory" on every box that has no docker-compose V1 installed.
+        Ok(out) if !compose_v2_missing(&out.stderr) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err(format!("Failed to start services: {}", stderr.trim()))
+        }
         _ => {
             // Fallback to V1
             let output = crate::process::silent_cmd("docker-compose")
@@ -2358,6 +2397,13 @@ pub async fn setup_start_services() -> Result<(), String> {
     Ok(())
 }
 
+/// True when `docker compose` failed because the V2 plugin isn't installed
+/// (as opposed to compose running and rejecting the file).
+fn compose_v2_missing(stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr);
+    stderr.contains("is not a docker command") || stderr.contains("unknown command")
+}
+
 // ── Native Setup Steps ──────────────────────────────────────────────────────
 
 /// Native Step 3: Generate env files for native JAR deployment
@@ -2374,7 +2420,7 @@ pub async fn setup_generate_env_files() -> Result<(), String> {
 
     // general.env
     let general = format!(
-        "# Generated by puru-dc\n\
+        "# Generated by puru-nucleus\n\
          HOSPITAL_CODE={}\n\
          SERVER_IP={}\n\
          PURU_DATA_PATH={}\n",
@@ -2389,7 +2435,7 @@ pub async fn setup_generate_env_files() -> Result<(), String> {
     // database.env
     let db_host = if config.mysql_host.is_empty() { "127.0.0.1" } else { &config.mysql_host };
     let database = format!(
-        "# Generated by puru-dc\n\
+        "# Generated by puru-nucleus\n\
          SPRING_DATASOURCE_URL=jdbc:mysql://{}:{{}}/{{}}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Kolkata\n\
          SPRING_DATASOURCE_USERNAME={}\n\
          SPRING_DATASOURCE_PASSWORD={}\n\
@@ -2912,7 +2958,7 @@ pub async fn seed_master_data(
         .map_err(|e| e.user_message())
 }
 
-/// Native setup step: initialize auth's roles, privileges, and the root user.
+/// Setup step (both modes): initialize auth's roles, privileges, and the root user.
 /// Calls auth's own unauthenticated `GET /init1` (the endpoint the front-end
 /// "init" flow uses) — runs AFTER auth has started for the first time; the
 /// function waits for auth to answer. Idempotent: skips when roles already
@@ -2921,26 +2967,41 @@ pub async fn seed_master_data(
 pub async fn setup_init_auth() -> Result<(), String> {
     crate::seed::init_auth_roles()
         .await
-        .map(|summary| tracing::info!("Setup (native): auth roles/root user — {}", summary))
+        .map(|summary| tracing::info!("Setup: auth roles/root user — {}", summary))
         .map_err(|e| e.user_message())
 }
 
-/// Native setup step: seed database defaults + Jasper report templates. Runs
+/// Setup step (both modes): seed database defaults + Jasper report templates. Runs
 /// AFTER services boot (their tables must exist first). Idempotent and
 /// supplementary — issues are logged but don't fail the whole setup.
 #[tauri::command]
 pub async fn setup_seed_database() -> Result<(), String> {
-    match crate::seed::run_seed(true, true).await {
+    if !crate::seed::wait_for_auth_schema(std::time::Duration::from_secs(180)).await {
+        tracing::warn!("Setup: puru_auth.puru_config not created yet — seeding anyway");
+    }
+    let result = crate::seed::run_seed(true, true).await;
+
+    // Docker: auth exits on first boot without `hospital.code` and then sits in
+    // restart back-off. Restart it now that the seed is in, so the next step
+    // (roles/root user) doesn't wait out the back-off.
+    let config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if config.deployment_mode == crate::config::DeploymentMode::Docker {
+        if let Err(e) = crate::services::restart_service("auth").await {
+            tracing::warn!("Setup: could not restart auth after seeding: {}", e.user_message());
+        }
+    }
+
+    match result {
         Ok(report) => {
             for s in &report.sections {
                 if s.errors.is_empty() {
                     tracing::info!(
-                        "Setup (native): seed '{}' — {} created, {} skipped",
+                        "Setup: seed '{}' — {} created, {} skipped",
                         s.name, s.created, s.skipped
                     );
                 } else {
                     tracing::warn!(
-                        "Setup (native): seed '{}' had {} issue(s): {}",
+                        "Setup: seed '{}' had {} issue(s): {}",
                         s.name,
                         s.errors.len(),
                         s.errors.join("; ")
@@ -2951,7 +3012,7 @@ pub async fn setup_seed_database() -> Result<(), String> {
         }
         Err(e) => {
             tracing::warn!(
-                "Setup (native): database/template seed skipped: {}",
+                "Setup: database/template seed skipped: {}",
                 e.user_message()
             );
             Ok(())
@@ -3100,13 +3161,28 @@ pub async fn setup_configure_backups() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 8: Register puru-dc as a system service (daemon)
+/// Step 8: Register puru-nucleus as a system service (daemon)
 #[tauri::command]
 pub async fn setup_install_daemon() -> Result<(), String> {
     tracing::info!("Setup: installing daemon service ({})", crate::platform::platform_name());
 
+    // Never leave an installed daemon listening on the LAN without a key.
+    let mut config = crate::config::load_config().map_err(|e| e.user_message())?;
+    if crate::config::ensure_daemon_api_key(&mut config) {
+        crate::config::save_config(&config).map_err(|e| e.user_message())?;
+        tracing::info!("Setup: generated a daemon API key");
+    }
+
     let result = crate::platform::install_service().await?;
     tracing::info!("Setup: {}", result.message);
+
+    // Installing only enables it; without a start the daemon (backups,
+    // watchdog, heartbeat) wouldn't run until the next reboot.
+    let running = crate::platform::service_status().await.map(|s| s.running).unwrap_or(false);
+    if !running {
+        let started = crate::platform::start_service().await?;
+        tracing::info!("Setup: {}", started.message);
+    }
 
     Ok(())
 }
@@ -3827,7 +3903,7 @@ pub async fn validate_lan_path(path: String) -> Result<(), String> {
 
     // Write + delete probe file to verify write access
     let probe = p.join(".puru-probe");
-    std::fs::write(&probe, b"puru-dc write test")
+    std::fs::write(&probe, b"puru-nucleus write test")
         .map_err(|e| format!("Path is not writable: {}", e))?;
     let _ = std::fs::remove_file(&probe);
 

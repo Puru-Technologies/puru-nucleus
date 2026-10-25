@@ -625,7 +625,7 @@ pub async fn start_service(name: &str, config: &NucleusConfig) -> Result<(), Nuc
 
     // Write PID file
     if let Some(pid) = child.id() {
-        // Bind the JVM to our lifetime before anything else. If puru-dc is
+        // Bind the JVM to our lifetime before anything else. If puru-nucleus is
         // force-killed or quarantined, this JVM goes with it instead of
         // lingering as an orphan that holds the port and answers health checks
         // with nothing supervising it.

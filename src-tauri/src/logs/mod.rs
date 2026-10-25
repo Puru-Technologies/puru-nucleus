@@ -180,6 +180,12 @@ pub fn get_known_log_paths() -> Vec<LogSource> {
     #[cfg(target_os = "linux")]
     {
         sources.push(LogSource {
+            name: "Puru Services".into(),
+            path: "/var/log/puru".into(),
+            source_type: "system".into(),
+            kind: "directory".into(),
+        });
+        sources.push(LogSource {
             name: "System Logs".into(),
             path: "/var/log".into(),
             source_type: "system".into(),

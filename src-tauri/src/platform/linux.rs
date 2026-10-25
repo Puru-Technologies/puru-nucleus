@@ -2,13 +2,26 @@
 
 use super::{ServiceResult, ServiceStatus, get_exe_path};
 
-const SERVICE_NAME: &str = "puru-dc";
-const UNIT_PATH: &str = "/etc/systemd/system/puru-dc.service";
+const SERVICE_NAME: &str = "puru-nucleus";
+const UNIT_PATH: &str = "/etc/systemd/system/puru-nucleus.service";
+/// Unit used while the product was called "Puru DC" (≤ 0.12.6).
+const LEGACY_SERVICE_NAME: &str = "puru-dc";
+const LEGACY_UNIT_PATH: &str = "/etc/systemd/system/puru-dc.service";
+
+/// Stop, disable and delete the pre-rename unit. Its ExecStart points at
+/// /usr/bin/puru-dc, which the puru-nucleus package removes.
+async fn remove_legacy_unit() {
+    if std::path::Path::new(LEGACY_UNIT_PATH).exists() {
+        let _ = run_systemctl(&["disable", "--now", LEGACY_SERVICE_NAME]).await;
+        let _ = std::fs::remove_file(LEGACY_UNIT_PATH);
+        let _ = run_systemctl(&["daemon-reload"]).await;
+    }
+}
 
 fn unit_file_content(exe_path: &str) -> String {
     format!(
         r#"[Unit]
-Description=Puru DC - Hospital Deployment Manager
+Description=Puru Nucleus - Hospital Deployment Manager
 After=network.target docker.service
 Requires=docker.service
 
@@ -18,7 +31,7 @@ ExecStart={exe_path} daemon
 Restart=on-failure
 RestartSec=10
 Environment=RUST_LOG=puru_nucleus=info
-WorkingDirectory=/etc/puru-dc
+WorkingDirectory=/etc/puru-nucleus
 
 [Install]
 WantedBy=multi-user.target
@@ -30,6 +43,8 @@ WantedBy=multi-user.target
 pub async fn install() -> Result<ServiceResult, String> {
     let exe_path = get_exe_path()?;
     let content = unit_file_content(&exe_path);
+
+    remove_legacy_unit().await;
 
     std::fs::write(UNIT_PATH, content)
         .map_err(|e| format!("Failed to write unit file (run as root?): {}", e))?;
@@ -48,6 +63,8 @@ pub async fn install() -> Result<ServiceResult, String> {
 
 /// Disable and remove the systemd service.
 pub async fn uninstall() -> Result<ServiceResult, String> {
+    remove_legacy_unit().await;
+
     // Stop if running (ignore errors)
     let _ = run_systemctl(&["stop", SERVICE_NAME]).await;
     let _ = run_systemctl(&["disable", SERVICE_NAME]).await;

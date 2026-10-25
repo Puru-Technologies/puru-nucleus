@@ -110,6 +110,7 @@ export const COMMAND_MAP: Record<string, HttpMapping> = {
   setup_pull_jars: { method: 'POST', path: '/api/setup/jars' },
   setup_start_native_services: { method: 'POST', path: '/api/setup/native-services/start' },
   setup_seed_database: { method: 'POST', path: '/api/setup/seed-database' },
+  setup_init_auth: { method: 'POST', path: '/api/setup/init-auth' },
   setup_health_check: { method: 'POST', path: '/api/setup/health-check' },
   setup_configure_backups: { method: 'POST', path: '/api/setup/backups' },
   setup_tls: { method: 'POST', path: '/api/setup/tls' },

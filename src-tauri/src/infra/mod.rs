@@ -42,7 +42,21 @@ fn service_state(svc: &str) -> String {
         Err(_) => "UNKNOWN".into(),
     }
 }
-#[cfg(not(target_os = "windows"))]
+/// systemd unit state mapped onto the same vocabulary as the Windows one.
+#[cfg(target_os = "linux")]
+fn service_state(svc: &str) -> String {
+    match crate::process::silent_std_cmd("systemctl").args(["is-active", svc]).output() {
+        Ok(o) => match String::from_utf8_lossy(&o.stdout).trim() {
+            "active" => "RUNNING".into(),
+            "activating" | "reloading" => "START_PENDING".into(),
+            "deactivating" => "STOP_PENDING".into(),
+            "inactive" | "failed" => "STOPPED".into(),
+            _ => "UNKNOWN".into(),
+        },
+        Err(_) => "UNKNOWN".into(),
+    }
+}
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn service_state(_svc: &str) -> String {
     "UNKNOWN".into()
 }
@@ -99,6 +113,12 @@ fn file_server_row(config: &NucleusConfig) -> Option<ServiceInfo> {
     })
 }
 
+/// Database (host MySQL) row. Also used by Docker mode, where Linux sites run
+/// MySQL on the host rather than in a container.
+pub fn database_row(config: &NucleusConfig) -> ServiceInfo {
+    mysql_row(config)
+}
+
 fn mysql_row(config: &NucleusConfig) -> ServiceInfo {
     let port = if config.mysql_port == 0 { 3306 } else { config.mysql_port };
     let up = port_open(port);
@@ -111,7 +131,7 @@ fn mysql_row(config: &NucleusConfig) -> ServiceInfo {
                 "START_PENDING" => format!("Database service '{}' is starting…", name),
                 _ => format!("Database service '{}' is not answering on port {}.", name, port),
             },
-            None => "Database is not installed (no Windows service found).".to_string(),
+            None => "Database is not installed (no MySQL service found).".to_string(),
         };
         (ServiceStatus::Stopped, Some(detail))
     };
@@ -163,7 +183,7 @@ pub async fn control(display: &str, action: &str) -> Result<String, String> {
     }
 
     let svc = infra_service_name(display)
-        .ok_or_else(|| format!("{} is not installed (no Windows service found).", display))?;
+        .ok_or_else(|| format!("{} is not installed (no MySQL service found).", display))?;
 
     #[cfg(target_os = "windows")]
     {
@@ -187,10 +207,31 @@ pub async fn control(display: &str, action: &str) -> Result<String, String> {
         }
         Ok(format!("{} {} requested for service '{}'.", display, action, svc))
     }
-    #[cfg(not(target_os = "windows"))]
+    // The daemon runs as root under systemd, so no elevation prompt is needed.
+    #[cfg(target_os = "linux")]
+    {
+        if !matches!(action, "start" | "stop" | "restart") {
+            return Err(format!("Unknown action '{}'.", action));
+        }
+        let out = crate::process::silent_cmd("systemctl")
+            .args([action, &svc])
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run systemctl: {}", e))?;
+        if !out.status.success() {
+            return Err(format!(
+                "{} {} failed: {}",
+                display,
+                action,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(format!("{} {} requested for service '{}'.", display, action, svc))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = svc;
-        Err("Infra service control is only implemented on Windows.".into())
+        Err("Infra service control is only implemented on Windows and Linux.".into())
     }
 }
 
@@ -243,7 +284,14 @@ fn mysql_error_log() -> Option<std::path::PathBuf> {
     }
     candidates.into_iter().find(|p| p.is_file())
 }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn mysql_error_log() -> Option<std::path::PathBuf> {
+    ["/var/log/mysql/error.log", "/var/log/mysqld.log", "/var/log/mariadb/mariadb.log"]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_file())
+}
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn mysql_error_log() -> Option<std::path::PathBuf> {
     None
 }
