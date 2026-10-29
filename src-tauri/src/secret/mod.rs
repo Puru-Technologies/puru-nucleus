@@ -11,6 +11,11 @@
 //! the box (local license, Firestore), so the embedded salt is the real secret
 //! and a determined attacker with disk + binary could recompute the key. This
 //! defeats casual file theft, not a determined on-box attacker.
+//!
+//! Decryption also tries the fingerprints of the box's other network cards and
+//! the one saved in the license at activation, so a changed or replaced card
+//! doesn't lock the token server out of the key; the file is then re-encrypted
+//! for the current hardware.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -33,13 +38,17 @@ const TAG_LEN: usize = 16;
 /// Derive the 32-byte AES key: `SHA-256(live_hardware_fingerprint || SALT)`.
 fn derive_key() -> Result<[u8; 32], NucleusError> {
     let fp = crate::licensing::fingerprint::get_cached_fingerprint()?;
+    Ok(key_for(&fp))
+}
+
+fn key_for(fp: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(fp.as_bytes());
     hasher.update(EMBEDDED_SALT);
     let digest = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&digest);
-    Ok(key)
+    key
 }
 
 fn cipher() -> Result<Aes256Gcm, NucleusError> {
@@ -66,14 +75,32 @@ pub fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>, NucleusError> {
 /// Decrypt `nonce(12) || ciphertext+tag(16)` → plaintext. Errors if the data
 /// isn't our ciphertext or the key (hardware) differs.
 pub fn decrypt(data: &[u8]) -> Result<Vec<u8>, NucleusError> {
+    decrypt_any(data).map(|(plain, _)| plain)
+}
+
+/// Try the live key, then the fallback fingerprints. The bool is true when a
+/// fallback matched (the file should be re-encrypted for this hardware).
+fn decrypt_any(data: &[u8]) -> Result<(Vec<u8>, bool), NucleusError> {
     if data.len() < NONCE_LEN + TAG_LEN {
         return Err(NucleusError::Internal("ciphertext too short".into()));
     }
-    let c = cipher()?;
     let (nonce_bytes, ct) = data.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
-    c.decrypt(nonce, ct)
-        .map_err(|e| NucleusError::Internal(format!("decrypt failed: {}", e)))
+    if let Ok(plain) = cipher()?.decrypt(nonce, ct) {
+        return Ok((plain, false));
+    }
+    for fp in crate::licensing::fingerprint::candidate_fingerprints().iter().skip(1) {
+        let c = Aes256Gcm::new_from_slice(&key_for(fp))
+            .map_err(|e| NucleusError::Internal(format!("cipher init failed: {}", e)))?;
+        if let Ok(plain) = c.decrypt(nonce, ct) {
+            return Ok((plain, true));
+        }
+    }
+    Err(NucleusError::Internal(
+        "the cloud key file can't be read on this machine (it was saved on different hardware, or is damaged). \
+         Run `sudo puru-nucleus setup` and enter a new onboarding code to download it again."
+            .into(),
+    ))
 }
 
 /// Encrypt `content` and write the ciphertext to `path` (creating parent dirs).
@@ -92,7 +119,15 @@ pub fn write_encrypted(path: &str, content: &[u8]) -> Result<(), NucleusError> {
 /// the file directly.
 pub fn read_decrypted(path: &str) -> Result<String, NucleusError> {
     let data = std::fs::read(path).map_err(NucleusError::Io)?;
-    let plain = decrypt(&data)?;
+    let (plain, fallback) = decrypt_any(&data)?;
+    if fallback {
+        // Best effort: bind the file to the current hardware so the next read
+        // takes the fast path. Readers still work if this fails.
+        match write_encrypted(path, &plain) {
+            Ok(()) => tracing::info!("Credentials at {} re-encrypted for this machine's current hardware", path),
+            Err(e) => tracing::warn!("Couldn't re-encrypt credentials at {}: {}", path, e),
+        }
+    }
     String::from_utf8(plain)
         .map_err(|e| NucleusError::Internal(format!("decrypted credentials not UTF-8: {}", e)))
 }

@@ -16,4 +16,13 @@ fi
 
 # Pick up the new binary if the daemon was already running.
 systemctl try-restart puru-nucleus >/dev/null 2>&1 || true
+
+# First install: tell the operator what to run next.
+if [ ! -f /etc/puru-nucleus/license.toml ]; then
+    echo ""
+    echo "  Puru Nucleus is installed. To activate and set up this server, run:"
+    echo ""
+    echo "      sudo puru-nucleus"
+    echo ""
+fi
 exit 0

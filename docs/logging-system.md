@@ -196,7 +196,7 @@ so nucleus log transport works for auth only.**
 - [x] `puru-auth`: `logback-spring.xml` ECS JSON appender + `spring.application.name`
 - [ ] Upgrade `puru-has`, `puru-pacs`, `puru-realtime` to Boot ≥ 3.4; apply the same template; rebuild via CI
 - [ ] Nucleus: inject `SPRING_APPLICATION_NAME` / `LOG_BASENAME` per service at launch (`services/native.rs`)
-- [ ] Nucleus: `fetch_logs` command handler (tail + level/time filter + gzip + inline/GCS deliver)
+- [~] Nucleus: `fetch_logs` command handler — built 2026-10-29: tail (Docker: container log; native: log file) + `since_minutes` + gzip, inline only (oldest lines dropped to stay under ~700 KB). Still to do: `level` filter, GCS delivery for large logs
 - [ ] Nucleus: auto-attach recent logs on service-down alerts (with cooldown)
 - [ ] Ops: create the GCS 7-day lifecycle rule for the log-blob prefix
-- [ ] Oxygen: "fetch logs" request UI + structured viewer (time/label filters, ungzip inline / download GCS)
+- [~] Oxygen: "fetch logs" request UI — built 2026-10-29 (hospital monitor Logs tab: service + lines, text filter, download). Still to do: structured viewer, GCS download

@@ -130,6 +130,61 @@ pub fn generate_fingerprint() -> Result<String, NucleusError> {
     Ok(format!("{:x}", hash))
 }
 
+/// Fingerprints the at-rest key may have been derived from, most likely first:
+/// the live one, then one per other network card on the box (the primary-NIC
+/// pick can change when interfaces are added or reordered), then the one saved
+/// in the local license at activation (the card was replaced, or a VM/container
+/// got a new MAC). Duplicates removed.
+pub fn candidate_fingerprints() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |fp: String| {
+        if !out.contains(&fp) {
+            out.push(fp);
+        }
+    };
+    if let Ok(fp) = get_cached_fingerprint() {
+        push(fp);
+    }
+    if let Ok(machine_id) = get_machine_id() {
+        for mac in other_mac_addresses() {
+            let input = format!("{}:{}:{}", mac, machine_id, get_os_name());
+            push(format!("{:x}", Sha256::digest(input.as_bytes())));
+        }
+    }
+    if let Ok(Some(license)) = crate::licensing::load_license() {
+        if let Some(fp) = license.machine_fingerprint.filter(|f| !f.is_empty()) {
+            push(fp);
+        }
+    }
+    out
+}
+
+/// Every non-zero MAC on the box (Linux: /sys/class/net), loopback excluded.
+fn other_mac_addresses() -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut macs = Vec::new();
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for e in entries.flatten() {
+                if e.file_name() == "lo" {
+                    continue;
+                }
+                if let Ok(addr) = std::fs::read_to_string(e.path().join("address")) {
+                    let addr = addr.trim().to_lowercase();
+                    if addr.len() == 17 && addr != "00:00:00:00:00:00" {
+                        macs.push(addr);
+                    }
+                }
+            }
+        }
+        macs
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Vec::new()
+    }
+}
+
 /// Get the hardware fingerprint with process-lifetime caching.
 ///
 /// The first call computes and caches the fingerprint; subsequent calls

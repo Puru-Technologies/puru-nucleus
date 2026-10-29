@@ -171,6 +171,17 @@ pub enum Commands {
 
     /// Run in daemon mode (background service)
     Daemon,
+
+    /// Interactive setup in the terminal: activate this machine, then install
+    /// or adopt the hospital deployment. Also what a bare `puru-nucleus` runs
+    /// on a server with no display.
+    Setup {
+        /// For a server that already runs Puru in Docker: activate, then only
+        /// start the token server, telemetry and remote logs. Never installs or
+        /// changes the deployment; stops if no existing setup is found.
+        #[arg(long)]
+        connect_only: bool,
+    },
 }
 
 #[derive(Args)]

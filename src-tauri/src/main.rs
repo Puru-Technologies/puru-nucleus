@@ -45,6 +45,7 @@ mod webserver;
 mod tls;
 mod installer;
 mod infra;
+mod onboard;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -65,11 +66,24 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(daemon::run_daemon());
         }
+        Some(cli::Commands::Setup { connect_only }) => {
+            // Interactive; no tracing subscriber so log lines don't break up
+            // the prompts and progress output.
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(onboard::run(true, connect_only));
+        }
         Some(command) => {
             // CLI mode — run command and exit
             init_logging();
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(cli_runner::run(command));
+        }
+        None if onboard::is_headless() => {
+            // No display (a typical hospital server over SSH): the GUI can't
+            // open, so walk the operator through activation/setup — or show
+            // status if that's already done — right in the terminal.
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(onboard::run(false, false));
         }
         None => {
             // GUI mode — launch Tauri window (default when no subcommand)

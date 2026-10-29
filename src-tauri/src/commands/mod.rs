@@ -1542,7 +1542,7 @@ const PURU_DATABASES: &[&str] = &[
     "puru_bridge",
     "puru_auth",
     "puru_gh",
-    // The integration compose fragment points at its own schema.
+    // puru-integration (HL7) keeps its own schema; puru_im is inventory (xenon).
     "puru_integration",
     // Fleet-shared queue store. Owned schema-wise by puru-auth at runtime,
     // but pre-creating here lets every backend boot even if the MySQL user
@@ -2246,7 +2246,7 @@ services:
         compose.push_str(&svc("Bridge", "puru-bridge", "bridge", "puru_bridge", 8094));
     }
     if modules.integration {
-        compose.push_str(&svc("Integration", "puru-integration", "integration", "puru_im", 8088));
+        compose.push_str(&svc("Integration", "puru-integration", "integration", "puru_integration", 8088));
     }
 
     if modules.hydrogen {

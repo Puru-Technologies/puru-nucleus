@@ -110,7 +110,7 @@ const SERVICE_DBS: &[(&str, &str)] = &[
     ("puru-mercury", "puru_im"),
     ("puru-counter", "puru_im"),
     ("puru-bridge", "puru_bridge"),
-    ("puru-integration", "puru_im"),
+    ("puru-integration", "puru_integration"),
 ];
 
 /// Aggregate health endpoint for Spring Boot services (liveness-ish).

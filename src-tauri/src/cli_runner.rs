@@ -39,6 +39,7 @@ pub async fn run(command: Commands) {
             // Handled in main.rs before we get here
             unreachable!("daemon mode is handled in main.rs");
         }
+        Commands::Setup { connect_only } => crate::onboard::run(true, connect_only).await,
     }
 }
 
@@ -231,6 +232,17 @@ async fn cmd_status() {
         hospital.cyan().bold()
     );
     println!("{}", "=".repeat(60));
+
+    if !cfg.hospital_code.is_empty() {
+        if let Err(why) = crate::onboard::cloud_key_status() {
+            println!();
+            println!("  {} {}", "CLOUD KEY UNREADABLE:".red().bold(), why);
+            println!(
+                "  {}",
+                "Token server, telemetry and Oxygen commands are down. Fix: sudo puru-nucleus setup".red()
+            );
+        }
+    }
 
     match services::get_services().await {
         Ok(svcs) => {
