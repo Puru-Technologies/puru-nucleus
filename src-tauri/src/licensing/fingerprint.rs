@@ -132,9 +132,11 @@ pub fn generate_fingerprint() -> Result<String, NucleusError> {
 
 /// Fingerprints the at-rest key may have been derived from, most likely first:
 /// the live one, then one per other network card on the box (the primary-NIC
-/// pick can change when interfaces are added or reordered), then the one saved
-/// in the local license at activation (the card was replaced, or a VM/container
-/// got a new MAC). Duplicates removed.
+/// pick can change when interfaces are added or reordered). Duplicates removed.
+///
+/// Deliberately NOT the fingerprint saved in the license: that file sits next
+/// to the key, so a copied nucleus folder would unlock the key on any machine.
+/// A replaced card needs a new onboarding code instead.
 pub fn candidate_fingerprints() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |fp: String| {
@@ -149,11 +151,6 @@ pub fn candidate_fingerprints() -> Vec<String> {
         for mac in other_mac_addresses() {
             let input = format!("{}:{}:{}", mac, machine_id, get_os_name());
             push(format!("{:x}", Sha256::digest(input.as_bytes())));
-        }
-    }
-    if let Ok(Some(license)) = crate::licensing::load_license() {
-        if let Some(fp) = license.machine_fingerprint.filter(|f| !f.is_empty()) {
-            push(fp);
         }
     }
     out

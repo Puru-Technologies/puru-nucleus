@@ -12,10 +12,11 @@
 //! and a determined attacker with disk + binary could recompute the key. This
 //! defeats casual file theft, not a determined on-box attacker.
 //!
-//! Decryption also tries the fingerprints of the box's other network cards and
-//! the one saved in the license at activation, so a changed or replaced card
-//! doesn't lock the token server out of the key; the file is then re-encrypted
-//! for the current hardware.
+//! Decryption also tries the fingerprints of the box's other network cards, so
+//! a change in which card counts as primary doesn't lock the token server out
+//! of the key; the file is then re-encrypted for the current hardware. The
+//! fingerprint saved in the license is never tried: a copied nucleus folder
+//! must not unlock the key on another machine.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
