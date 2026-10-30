@@ -40,6 +40,7 @@ pub async fn run(command: Commands) {
             unreachable!("daemon mode is handled in main.rs");
         }
         Commands::Setup { connect_only } => crate::onboard::run(true, connect_only).await,
+        Commands::Sync => crate::onboard::run_sync().await,
     }
 }
 

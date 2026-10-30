@@ -222,6 +222,8 @@ puru service stop           Stop system service
 puru service status         Show system service status
 puru info                   Show configuration (surfaces jar_history_keep in native mode)
 puru version                Show version
+puru setup [--connect-only] Terminal setup; connect-only = full Nucleus on an existing Docker site, deployment untouched
+puru sync                   Server vs cloud record, per property; env edits only after confirm; audited
 puru daemon                 Run daemon mode
 
 # Native-mode JAR management (available only when deployment_mode = "native")

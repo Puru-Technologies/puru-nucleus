@@ -8,8 +8,10 @@
 //! questions and shows progress.
 //!
 //! "Connect only" (`--connect-only`, or the first choice when a setup is found)
-//! is for sites already running Puru in Docker: it starts the daemon (token
-//! server, telemetry, remote logs) and changes nothing in the deployment.
+//! is for sites already running Puru in Docker: Nucleus runs in full (token
+//! server, telemetry, remote logs, backups) using the server's own values,
+//! and changes nothing in the deployment. `puru-nucleus sync` compares the
+//! server with the cloud record afterwards.
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -75,6 +77,166 @@ pub async fn run(explicit: bool, connect_only: bool) {
             std::process::exit(1);
         }
     }
+}
+
+/// `puru-nucleus sync`: compare this server with the hospital's cloud record
+/// and let the operator decide each property that differs.
+pub async fn run_sync() {
+    banner();
+    if !is_root() {
+        println!(
+            "  {} Sync reads the server's env files and can change them, so it needs root.\n\n      {}\n",
+            "!".yellow().bold(),
+            "sudo puru-nucleus sync".cyan().bold()
+        );
+        std::process::exit(1);
+    }
+    if !console::user_attended() {
+        println!("  {} Sync is interactive; run it from a terminal.\n", "!".yellow().bold());
+        std::process::exit(1);
+    }
+    if let Err(Abort(msg)) = sync_flow().await {
+        if !msg.is_empty() {
+            println!("\n  {} {}\n", "✖".red().bold(), msg);
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn sync_flow() -> Result<(), Abort> {
+    use crate::existing_site::{self as site, Store};
+    let theme = ColorfulTheme::default();
+
+    let mut config = load_config()?;
+    if config.hospital_code.is_empty() || config.docker_compose_path.is_empty() {
+        return Err(Abort(format!(
+            "This server isn't connected yet. Run {} first.",
+            "sudo puru-nucleus setup --connect-only"
+        )));
+    }
+    let facts = site::read_server(&config.docker_compose_path);
+
+    let spinner = spin("Reading the cloud record…");
+    let client = crate::firestore::FirestoreClient::new_from_config().await;
+    let client = client.map_err(|e| Abort(format!("Can't reach the cloud: {}", e.user_message())));
+    let doc = match &client {
+        Ok(c) => c.get_hospital(&config.hospital_code).await.map_err(|e| Abort(e.user_message())),
+        Err(Abort(m)) => Err(Abort(m.clone())),
+    };
+    spinner.finish_and_clear();
+    let (client, doc) = (client?, doc?);
+
+    section(&format!("{} — this server vs the cloud record", config.hospital_code));
+    let rows = site::compare(&facts, &doc);
+    let show = |v: &str| if v.is_empty() { "—".dimmed().to_string() } else { v.to_string() };
+    for r in &rows {
+        let mark = if r.server == r.firebase { "✔ same".green().to_string() } else { "≠ differs".yellow().to_string() };
+        println!("  {:<17} {}", r.prop.label.bold(), mark);
+        println!("      server  {}", show(&r.server));
+        println!("      cloud   {}", show(&r.firebase));
+    }
+    println!();
+
+    let mut to_cloud = 0;
+    let mut to_server = 0;
+    let mut env_changed = false;
+    for r in rows.iter().filter(|r| r.server != r.firebase) {
+        let take_server = !r.server.is_empty();
+        let take_cloud = !r.firebase.is_empty() && r.prop.can_take_firebase();
+        if !take_server && !take_cloud {
+            continue;
+        }
+        let mut items = Vec::new();
+        if take_server {
+            items.push(format!("Server value → write \"{}\" to the cloud record", r.server));
+        }
+        if take_cloud {
+            items.push(format!("Cloud value → write \"{}\" to this server", r.firebase));
+        }
+        items.push("Skip".to_string());
+        let pick = Select::with_theme(&theme)
+            .with_prompt(r.prop.label)
+            .items(&items)
+            .default(0)
+            .interact()?;
+        let choice = items[pick].as_str();
+
+        if choice.starts_with("Server value") {
+            match site::push_to_firebase(&client, &config.hospital_code, r, "sync").await {
+                Ok(()) => {
+                    println!("  {} Cloud record updated", "✔".green());
+                    to_cloud += 1;
+                }
+                Err(e) => println!("  {} Couldn't update the cloud record: {}", "✖".red(), e),
+            }
+        } else if choice.starts_with("Cloud value") {
+            if let (Some(key), Some(file)) = (r.prop.env_key, facts.general_env.as_deref()) {
+                let (old, new) = site::env_change_preview(file, key, &r.firebase);
+                println!("  {}", file.display().to_string().bold());
+                match &old {
+                    Some(line) => println!("    {} {}", "-".red(), line.red()),
+                    None => println!("    {}", "(key not in the file yet — it will be added)".dimmed()),
+                }
+                println!("    {} {}", "+".green(), new.green());
+                let ok = Confirm::with_theme(&theme)
+                    .with_prompt("Change this line in the env file?")
+                    .default(false)
+                    .interact()?;
+                if !ok {
+                    println!("  {} Left as it is", "·".dimmed());
+                    continue;
+                }
+                if let Err(e) = site::set_env_value(file, key, &r.firebase, "sync") {
+                    println!("  {} Couldn't change the env file: {}", "✖".red(), e);
+                    continue;
+                }
+                env_changed = true;
+            } else if r.prop.env_key.is_some() {
+                println!("  {} No general.env on this server to change.", "✖".red());
+                continue;
+            } else {
+                let ok = Confirm::with_theme(&theme)
+                    .with_prompt("Change nucleus.toml?")
+                    .default(false)
+                    .interact()?;
+                if !ok {
+                    continue;
+                }
+            }
+            if r.prop.store != Store::None {
+                let changes = site::apply_to_config(&mut config, r.prop.store, &r.firebase);
+                save_config(&config)?;
+                site::audit_config_changes("sync", &changes);
+            }
+            println!("  {} This server updated", "✔".green());
+            to_server += 1;
+        }
+    }
+
+    crate::audit::ship_pending().await;
+    println!();
+    if to_cloud + to_server == 0 {
+        println!("  {}", "Nothing changed.".dimmed());
+    } else {
+        println!(
+            "  {} {} written to the cloud, {} written to this server",
+            "✔".green().bold(),
+            to_cloud,
+            to_server
+        );
+    }
+    if env_changed {
+        println!(
+            "  {} The containers read env files when they start: restart them when it suits the hospital ({}).",
+            "i".cyan(),
+            "sudo puru-nucleus restart <service>".cyan()
+        );
+    }
+    println!(
+        "  {}\n",
+        format!("Audit log: {}", config::config_dir().join("audit.log").display()).dimmed()
+    );
+    Ok(())
 }
 
 /// Stop the flow with a message for the operator.
@@ -154,8 +316,8 @@ async fn flow(explicit: bool, connect_only: bool) -> Result<(), Abort> {
             let choice = Select::with_theme(&theme)
                 .with_prompt("What should Nucleus do?")
                 .items(&[
-                    "Connect only — token server, telemetry and logs; change nothing (recommended)",
-                    "Adopt — also set up local domain, backups and HTTPS",
+                    "Connect only — Nucleus in full (token server, telemetry, logs, backups); the deployment isn't changed (recommended)",
+                    "Adopt — also set up the puru.local domain and HTTPS (changes nginx and /etc/hosts)",
                     "Stop",
                 ])
                 .default(0)
@@ -244,7 +406,12 @@ async fn activate(theme: &ColorfulTheme) -> Result<(), Abort> {
     }
 
     let spinner = spin("Activating…");
-    let result = crate::commands::activate_license(redeemed.hospital_email, machine_name).await;
+    let result = crate::commands::activate_license(
+        redeemed.hospital_email,
+        machine_name,
+        Some(redeemed.hospital_code),
+    )
+    .await;
     spinner.finish_and_clear();
     result.map_err(|e| Abort(format!("Activation failed: {}", e)))?;
     println!("  {} Activated\n", "✔".green().bold());
@@ -378,10 +545,13 @@ struct Existing {
     token_port: Option<u16>,
 }
 
-/// Connect a server that already runs Puru in Docker: start the daemon (token
-/// server, telemetry, remote logs) and nothing else. Only nucleus's own files
-/// are written; containers, compose, env files, MySQL, nginx and hosts are not
-/// touched. Stops without changes if no existing setup is found.
+/// Connect a server that already runs Puru in Docker and run Nucleus in full:
+/// token server, telemetry, remote logs and daily backups (database plus the
+/// compose file, env files and nucleus.toml). The server's own values are the
+/// source of truth: they go into nucleus.toml and up to Firebase. Only
+/// nucleus's own files are written; containers, compose, env files, MySQL,
+/// nginx, hosts and any backup job already on the server are not touched.
+/// Stops without changes if no existing setup is found.
 async fn connect_existing(theme: &ColorfulTheme) -> Result<(), Abort> {
     section("Checking the existing Puru setup");
     let spinner = spin("Looking at Docker containers, compose and env files…");
@@ -426,12 +596,63 @@ async fn connect_existing(theme: &ColorfulTheme) -> Result<(), Abort> {
         }
     }
 
+    // What the server says about itself — the source of truth from here on.
+    let facts = found
+        .compose_path
+        .as_deref()
+        .map(crate::existing_site::read_server);
+    if let Some(f) = &facts {
+        println!();
+        kv("Env files", &f.env_files.len().to_string());
+        for e in &f.env_files {
+            println!("      {}", e.display().to_string().dimmed());
+        }
+        kv("Data folder", f.data_root.as_deref().unwrap_or("not found in the compose volumes"));
+        kv(
+            "Log folders",
+            &if f.log_dirs.is_empty() { "none mounted".to_string() } else { f.log_dirs.len().to_string() },
+        );
+        for d in &f.log_dirs {
+            println!("      {}", d.dimmed());
+        }
+        kv("MySQL user", f.db_user.as_deref().unwrap_or("not in the env files"));
+    }
+
+    // Nucleus's backup goes 30 minutes past any backup job already here.
+    let jobs = crate::existing_site::existing_backup_jobs();
+    let (backup_time, moved_for) = crate::existing_site::pick_backup_time(&jobs);
     println!();
-    println!("  Nucleus will only:");
+    for j in &jobs {
+        println!(
+            "  {} Existing backup job at {:02}:{:02} {} — left as it is",
+            "i".cyan(),
+            j.hour,
+            j.minute,
+            format!("({})", j.source).dimmed()
+        );
+    }
+    if let Some(j) = &moved_for {
+        println!(
+            "  {} Nucleus backs up at {} so it doesn't overlap the {:02}:{:02} job",
+            "i".cyan(),
+            backup_time.bold(),
+            j.hour,
+            j.minute
+        );
+    }
+
+    println!();
+    println!("  Nucleus will:");
+    let backup_line = format!(
+        "back up the database daily at {}, with the compose file, env files and its own config",
+        backup_time
+    );
     for line in [
         "start the token server for pacs, realtime and comm",
         "send telemetry and alerts to Puru Oxygen",
         "answer log requests from Puru Oxygen",
+        backup_line.as_str(),
+        "use this server's values and write them to the cloud record",
     ] {
         println!("    {} {}", "+".green(), line);
     }
@@ -440,10 +661,14 @@ async fn connect_existing(theme: &ColorfulTheme) -> Result<(), Abort> {
         "the containers (no pull, restart or recreate)",
         "docker-compose.yml or the env files",
         "MySQL, nginx, HTTPS or /etc/hosts",
-        "backups or updates (both stay off)",
+        "backup jobs already on this server",
     ] {
         println!("    {} {}", "·".dimmed(), line);
     }
+    println!(
+        "  {}",
+        format!("Every change is recorded in {}", config::config_dir().join("audit.log").display()).dimmed()
+    );
     println!();
     let ok = Confirm::with_theme(theme)
         .with_prompt("Connect this server?")
@@ -454,23 +679,66 @@ async fn connect_existing(theme: &ColorfulTheme) -> Result<(), Abort> {
     }
     println!();
 
+    // Config changes are audited only once they are saved below.
     let mut config = load_config()?;
-    config.deployment_mode = DeploymentMode::Docker;
-    if let Some(p) = &found.compose_path {
-        config.docker_compose_path = p.clone();
+    let mut changes = match &facts {
+        Some(f) => crate::existing_site::apply_server_to_config(&mut config, f),
+        None => Vec::new(),
+    };
+    if config.deployment_mode != DeploymentMode::Docker {
+        changes.push(crate::existing_site::Change {
+            key: "deployment_mode",
+            old: format!("{:?}", config.deployment_mode).to_lowercase(),
+            new: "docker".into(),
+        });
+        config.deployment_mode = DeploymentMode::Docker;
     }
-    config.backup_enabled = false;
-    config.auto_update_enabled = false;
+
+    // Backups need a MySQL login that works; the env files' one comes first.
+    if crate::backup::mysql_login_works(&config).await {
+        println!("  {} MySQL login from the env files works ({})", "✔".green(), config.mysql_user);
+    } else {
+        println!(
+            "  {} Couldn't log in to MySQL with {} — backups need a working login.",
+            "!".yellow().bold(),
+            if config.mysql_user.is_empty() { "no user".to_string() } else { format!("'{}'", config.mysql_user) }
+        );
+        let before = (config.mysql_user.clone(), config.mysql_password.clone());
+        ask_backup_login(theme, &mut config).await?;
+        for (key, old, new) in [
+            ("mysql_user", before.0, config.mysql_user.clone()),
+            ("mysql_password", before.1, config.mysql_password.clone()),
+        ] {
+            if old != new {
+                changes.retain(|c| c.key != key);
+                changes.push(crate::existing_site::Change { key, old, new });
+            }
+        }
+    }
+
+    config.backup_enabled = true;
     config.telemetry_enabled = true;
-    config.lan.enabled = false;
     let daemon = config.daemon.get_or_insert_with(Default::default);
-    daemon.backup_schedule.enabled = false;
+    let schedule = &mut daemon.backup_schedule;
+    let old_time = schedule.backup_time.clone().unwrap_or_default();
+    if !schedule.enabled || old_time != backup_time {
+        changes.push(crate::existing_site::Change {
+            key: "backup_schedule",
+            old: if schedule.enabled { old_time } else { "off".into() },
+            new: format!("daily {}", backup_time),
+        });
+    }
+    schedule.enabled = true;
+    schedule.backup_time = Some(backup_time.clone());
     if let Some(port) = found.token_port {
         daemon.port = port;
     }
     let port = daemon.port;
+    crate::config::ensure_daemon_api_key(&mut config);
     config.setup_completed = true;
     save_config(&config)?;
+    crate::existing_site::audit_config_changes("connect", &changes);
+    let _ = std::fs::create_dir_all(config::config_dir().join("backups"));
 
     // The watchdog starts services that are down; leave the ones that were
     // already stopped as they are.
@@ -478,13 +746,27 @@ async fn connect_existing(theme: &ColorfulTheme) -> Result<(), Abort> {
         crate::services::mark_manually_stopped(&c.name);
     }
 
+    if let Some(compose) = facts.map(|f| f.compose_path) {
+        let code = config.hospital_code.clone();
+        run_step(theme, "Write this server's values to the cloud record", || {
+            let code = code.clone();
+            let facts = crate::existing_site::read_server(&compose);
+            async move { crate::existing_site::push_all_to_firebase(&code, &facts, "connect").await }
+        })
+        .await?;
+    }
     run_step(theme, "Start the token server (daemon)", start_daemon).await?;
     run_step(theme, "Check the token server issues a token", || check_token(port)).await?;
+    crate::audit::ship_pending().await;
 
     println!();
     println!("  {}", "Connected".green().bold());
     println!();
     show_ready(&config).await;
+    println!(
+        "  Compare this server with the cloud record any time: {}\n",
+        "sudo puru-nucleus sync".cyan()
+    );
     Ok(())
 }
 
@@ -809,6 +1091,31 @@ async fn ask_mysql_login(theme: &ColorfulTheme, config: &mut NucleusConfig) -> R
         println!("  {} That login didn't work.", "✖".red());
     }
     Err(Abort("Couldn't log in to MySQL.".into()))
+}
+
+/// Ask for a MySQL login that backups can use (connect path). Checked the way
+/// backups connect, so it works whether MySQL runs on the host or in Docker.
+async fn ask_backup_login(theme: &ColorfulTheme, config: &mut NucleusConfig) -> Result<(), Abort> {
+    for _ in 0..3 {
+        let user: String = Input::with_theme(theme)
+            .with_prompt("MySQL user")
+            .default(if config.mysql_user.is_empty() { "root".into() } else { config.mysql_user.clone() })
+            .interact_text()?;
+        let pw = Password::with_theme(theme)
+            .with_prompt(format!("Password for {}", user))
+            .interact()?;
+        let mut trial = config.clone();
+        trial.mysql_user = user;
+        trial.mysql_password = pw;
+        if crate::backup::mysql_login_works(&trial).await {
+            config.mysql_user = trial.mysql_user;
+            config.mysql_password = trial.mysql_password;
+            println!("  {} MySQL login works", "✔".green());
+            return Ok(());
+        }
+        println!("  {} That login didn't work.", "✖".red());
+    }
+    Err(Abort("Couldn't log in to MySQL, so backups can't run. Nothing was changed.".into()))
 }
 
 fn ask_server_ip(theme: &ColorfulTheme, config: &mut NucleusConfig) -> Result<(), Abort> {

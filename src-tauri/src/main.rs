@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audit;
 mod auth_config;
 mod backup;
 mod cli;
@@ -46,6 +47,7 @@ mod tls;
 mod installer;
 mod infra;
 mod onboard;
+mod existing_site;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -71,6 +73,11 @@ fn main() {
             // the prompts and progress output.
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(onboard::run(true, connect_only));
+        }
+        Some(cli::Commands::Sync) => {
+            // Interactive, like setup: no log lines between the prompts.
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(onboard::run_sync());
         }
         Some(command) => {
             // CLI mode — run command and exit

@@ -35,6 +35,10 @@ pub struct BackupRecord {
     pub lan_copied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Exact zip size, for the size check against the previous backup
+    /// (`size_mb` rounds a small site's backup down to 0). 0 on older records.
+    #[serde(default)]
+    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,6 +62,9 @@ pub struct BackupManifest {
     pub total_objects: usize,
     pub failed_objects: usize,
     pub errors: Vec<String>,
+    /// Databases that have tables but whose dump came out empty.
+    #[serde(default)]
+    pub empty_databases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +169,76 @@ fn update_record_with_error(
     save_history(&records)
 }
 
+fn set_record_size_bytes(id: &str, size_bytes: u64) -> Result<(), NucleusError> {
+    let mut records = load_history()?;
+    if let Some(rec) = records.iter_mut().find(|r| r.id == id) {
+        rec.size_bytes = size_bytes;
+    }
+    save_history(&records)
+}
+
+// ── Backup size check ────────────────────────────────────────────────────────
+
+/// A backup under this share of the last good one is suspect.
+const MIN_SIZE_RATIO: f64 = 0.20;
+
+/// Size of the newest completed backup of the same type, if any.
+fn last_good_backup_bytes(backup_type: &BackupType) -> Option<u64> {
+    let records = load_history().ok()?;
+    records
+        .iter()
+        .filter(|r| r.status == BackupStatus::Completed && &r.backup_type == backup_type)
+        .max_by_key(|r| r.created_at)
+        .map(|r| if r.size_bytes > 0 { r.size_bytes } else { r.size_mb * 1024 * 1024 })
+        .filter(|&b| b > 0)
+}
+
+/// What's wrong with a finished backup, if anything.
+fn sanity_problem(size_bytes: u64, previous_bytes: Option<u64>, empty_dbs: &[String]) -> Option<String> {
+    let mut problems = Vec::new();
+    if let Some(prev) = previous_bytes {
+        if (size_bytes as f64) < (prev as f64) * MIN_SIZE_RATIO {
+            problems.push(format!(
+                "the zip is {} — under 20% of the last good backup ({})",
+                human_size(size_bytes),
+                human_size(prev)
+            ));
+        }
+    }
+    if !empty_dbs.is_empty() {
+        problems.push(format!("empty dump for {}", empty_dbs.join(", ")));
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    }
+}
+
+async fn raise_backup_alert(hospital_code: &str, backup_name: &str, problem: &str) {
+    let client = match crate::firestore::FirestoreClient::new_from_config().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Backup alert: Firestore unavailable: {}", e);
+            return;
+        }
+    };
+    let message = format!(
+        "Backup {} finished but {}. Check the MySQL login and the database before relying on it.",
+        backup_name, problem
+    );
+    if let Err(e) = client
+        .push_alert(hospital_code, "critical", "backup_suspect", "Backup looks incomplete", &message)
+        .await
+    {
+        tracing::warn!("Backup alert: failed to push: {}", e);
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Generate backup name: `BTCT-PURU-02-03-2026-02-15-AM`. The name only has
@@ -223,6 +300,66 @@ fn capitalize(s: &str) -> String {
 /// Escape backticks in MySQL identifiers
 fn escape_ident(name: &str) -> String {
     name.replace('`', "``")
+}
+
+/// Total size of the files under `dir` (0 if it doesn't exist).
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    total
+}
+
+/// Folder inside a backup that holds the server's own files (compose, env
+/// files, nucleus.toml). The leading `_` keeps restore from treating it as a
+/// database.
+const SERVER_FILES_DIR: &str = "_server_files";
+
+/// Copy what's needed to rebuild the server — the compose file, the env files
+/// next to it and nucleus.toml — into the backup. Best effort: a file that
+/// can't be read is skipped with a warning, never fails the backup.
+fn copy_server_files(cfg: &NucleusConfig, temp_dir: &Path) {
+    let dest = temp_dir.join(SERVER_FILES_DIR);
+    let copy = |src: &Path, rel: &str| {
+        let to = dest.join(rel);
+        if let Some(parent) = to.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::copy(src, &to) {
+            tracing::warn!("Backup: couldn't copy {}: {}", src.display(), e);
+        }
+    };
+
+    let nucleus_toml = config::config_dir().join("nucleus.toml");
+    if nucleus_toml.is_file() {
+        copy(&nucleus_toml, "nucleus/nucleus.toml");
+    }
+    let compose = Path::new(&cfg.docker_compose_path);
+    if cfg.docker_compose_path.is_empty() || !compose.is_file() {
+        return;
+    }
+    copy(compose, "docker/docker-compose.yml");
+    if let Some(env_dir) = compose.parent().map(|d| d.join("env")) {
+        if let Ok(entries) = std::fs::read_dir(&env_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    copy(&path, &format!("docker/env/{}", name));
+                }
+            }
+        }
+    }
 }
 
 /// Compress a directory tree into a zip file. All entries are prefixed with `root_name/`.
@@ -343,6 +480,24 @@ fn create_mysql_pool(config: &NucleusConfig) -> Result<mysql_async::Pool, Nucleu
         .pass(Some(config.mysql_password.clone()));
 
     Ok(mysql_async::Pool::new(opts))
+}
+
+/// True when the MySQL login in `config` connects — the same way backups do.
+pub async fn mysql_login_works(config: &NucleusConfig) -> bool {
+    if config.mysql_user.is_empty() {
+        return false;
+    }
+    let Ok(pool) = create_mysql_pool(config) else { return false };
+    let check = async {
+        let mut conn = pool.get_conn().await?;
+        conn.query_drop("SELECT 1").await
+    };
+    let ok = matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), check).await,
+        Ok(Ok(()))
+    );
+    let _ = pool.disconnect().await;
+    ok
 }
 
 // ── Metadata discovery ───────────────────────────────────────────────────────
@@ -739,6 +894,7 @@ async fn dump_all_databases(
         total_objects: 0,
         failed_objects: 0,
         errors: vec![],
+        empty_databases: vec![],
     };
 
     let databases = match discover_databases(&pool).await {
@@ -756,6 +912,7 @@ async fn dump_all_databases(
         let db_dir = temp_dir.join(db);
         std::fs::create_dir_all(&db_dir)?;
 
+        let had_tables;
         let mut db_info = DatabaseBackupInfo {
             name: db.clone(),
             tables: vec![],
@@ -768,6 +925,7 @@ async fn dump_all_databases(
         // ── Tables & Views ──
         match discover_tables_and_views(&pool, db).await {
             Ok((tables, views)) => {
+                had_tables = !tables.is_empty();
                 // Dump tables via mysqldump
                 if !tables.is_empty() {
                     let tables_dir = db_dir.join("tables");
@@ -917,6 +1075,13 @@ async fn dump_all_databases(
                 tracing::warn!("{}", msg);
                 manifest.errors.push(msg);
             }
+        }
+
+        // A database with tables whose dump holds no data is a failed backup
+        // even if every mysqldump call returned success.
+        let dumped_bytes = dir_size(&db_dir.join("tables"));
+        if had_tables && dumped_bytes == 0 {
+            manifest.empty_databases.push(db.clone());
         }
 
         // Remove empty subdirs
@@ -1116,6 +1281,11 @@ async fn restore_from_directory(
             .and_then(|n| n.to_str())
             .ok_or_else(|| NucleusError::Internal("Invalid directory name in backup".into()))?;
 
+        // `_server_files` (compose, env, nucleus.toml) is not a database.
+        if db_name.starts_with('_') {
+            continue;
+        }
+
         // CREATE DATABASE IF NOT EXISTS
         let create_sql = format!("CREATE DATABASE IF NOT EXISTS `{}`", escape_ident(db_name));
         run_mysql_command(config, &create_sql).await?;
@@ -1294,10 +1464,11 @@ pub async fn start_backup(
         uploaded: false,
         lan_copied: false,
         error: None,
+        size_bytes: 0,
     })?;
 
     // 5. Dump all databases into a structured temp directory
-    let (temp_dir, _manifest) =
+    let (temp_dir, manifest) =
         match dump_all_databases(&cfg, &backup_type, &backup_name).await {
             Ok(result) => result,
             Err(e) => {
@@ -1305,6 +1476,12 @@ pub async fn start_backup(
                 return Err(e);
             }
         };
+
+    // 5b. The server's own files, so the server can be rebuilt from the backup
+    copy_server_files(&cfg, &temp_dir);
+
+    // The last good backup, before this one is added to the comparison
+    let previous_bytes = last_good_backup_bytes(&backup_type);
 
     // 6. Compress temp directory → .zip, then remove temp dir
     let size_mb = match compress_directory_to_zip(&temp_dir, &zip_path, &backup_name) {
@@ -1352,6 +1529,15 @@ pub async fn start_backup(
 
     // 8. Update record to completed
     update_record(&backup_name, BackupStatus::Completed, size_mb, uploaded, lan_copied)?;
+    let size_bytes = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
+    let _ = set_record_size_bytes(&backup_name, size_bytes);
+
+    // 9. A backup that "succeeded" but is far smaller than the last good one,
+    //    or has an empty database dump, is raised as an alert.
+    if let Some(problem) = sanity_problem(size_bytes, previous_bytes, &manifest.empty_databases) {
+        tracing::error!("Backup {} looks wrong: {}", backup_name, problem);
+        raise_backup_alert(&cfg.hospital_code, &backup_name, &problem).await;
+    }
 
     let duration = start.elapsed().as_secs();
     tracing::info!(
@@ -1466,4 +1652,28 @@ pub async fn restore_backup(backup_id: &str) -> Result<(), NucleusError> {
 
     tracing::info!("Backup {} restored successfully", backup_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_check_flags_tiny_backup() {
+        // BTCT, Oct 2026: 866 MB nightly zips dropped to 32,594 bytes.
+        let p = sanity_problem(32_594, Some(866_647_221), &[]);
+        assert!(p.unwrap().contains("under 20%"));
+    }
+
+    #[test]
+    fn size_check_passes_normal_backup() {
+        assert_eq!(sanity_problem(860_000_000, Some(866_647_221), &[]), None);
+        assert_eq!(sanity_problem(1_000, None, &[]), None);
+    }
+
+    #[test]
+    fn size_check_flags_empty_database() {
+        let p = sanity_problem(900_000_000, Some(866_647_221), &["puru_has".into()]);
+        assert!(p.unwrap().contains("puru_has"));
+    }
 }

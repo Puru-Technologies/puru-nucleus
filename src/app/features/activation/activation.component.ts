@@ -911,7 +911,8 @@ export class ActivationComponent {
     try {
       await this.tauri.invoke('activate_license', {
         email: this.email,
-        machineName: this.machineName.trim()
+        machineName: this.machineName.trim(),
+        hospitalCode: this.hospitalCode || null
       });
       this.notification.success('Activation successful!');
       this.router.navigate(['/setup']);

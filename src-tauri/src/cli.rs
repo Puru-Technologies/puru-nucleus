@@ -176,12 +176,18 @@ pub enum Commands {
     /// or adopt the hospital deployment. Also what a bare `puru-nucleus` runs
     /// on a server with no display.
     Setup {
-        /// For a server that already runs Puru in Docker: activate, then only
-        /// start the token server, telemetry and remote logs. Never installs or
-        /// changes the deployment; stops if no existing setup is found.
+        /// For a server that already runs Puru in Docker: activate, read the
+        /// running setup and run Nucleus in full (token server, telemetry,
+        /// logs, backups) without changing the deployment. Stops if no
+        /// existing setup is found.
         #[arg(long)]
         connect_only: bool,
     },
+
+    /// Compare this server's settings with the hospital's cloud record and
+    /// decide, one property at a time, which value is right. Env files are
+    /// only changed after you confirm; every change goes to the audit log.
+    Sync,
 }
 
 #[derive(Args)]

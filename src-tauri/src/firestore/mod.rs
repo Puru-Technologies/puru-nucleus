@@ -137,6 +137,30 @@ impl FirestoreClient {
         queries::patch_document(&self.http, &token, &path, fields, &[field]).await
     }
 
+    /// Add one audit entry (a line of the local audit.log) to
+    /// `hospital/{code}/audit`, so config changes are visible without logging
+    /// in to the server.
+    pub async fn push_audit_entry(
+        &self,
+        code: &str,
+        entry: &crate::audit::AuditEntry,
+    ) -> Result<String, NucleusError> {
+        let token = self.token().await?;
+        let parent = format!("hospital/{}", code);
+        let fields = json!({
+            "at": timestamp_value(&entry.at),
+            "source": string_value(&entry.source),
+            "target": string_value(&entry.target),
+            "key": string_value(&entry.key),
+            "old": string_value(&entry.old),
+            "new": string_value(&entry.new),
+            "by": string_value(&entry.by),
+            "backup": string_value(&entry.backup),
+            "machine": string_value(&crate::audit::machine_name()),
+        });
+        queries::create_document(&self.http, &token, &parent, "audit", fields).await
+    }
+
     /// Store the MySQL root password in the hospital doc's nested `credentials`
     /// map (`credentials.mysql_root_password` + set_by + updated_at), merging
     /// without clobbering other `credentials.*` fields. This is the cloud sink of

@@ -279,6 +279,9 @@ async fn status_reporter(interval_minutes: u32, port: u16) {
         } else {
             tracing::debug!("Status reporter: status pushed");
         }
+
+        // Config changes recorded since the last push go up with it.
+        crate::audit::ship_pending().await;
     }
 }
 

@@ -46,6 +46,9 @@ pub struct NucleusConfig {
     #[serde(default = "default_jar_history_keep")]
     pub jar_history_keep: usize,
     pub puru_data_path: Option<String>,
+    /// Docker mode: host folders the containers write their logs to, read
+    /// from the compose volumes when an existing setup is connected.
+    pub docker_log_dirs: Vec<String>,
     pub daemon: Option<DaemonConfig>,
     pub lan: LanConfig,
     /// Set true when the setup wizard has completed at least once. Gates whether
@@ -145,6 +148,7 @@ impl Default for NucleusConfig {
             dviewer_dir: None,
             jar_history_keep: default_jar_history_keep(),
             puru_data_path: None,
+            docker_log_dirs: Vec::new(),
             daemon: None,
             lan: LanConfig::default(),
             setup_completed: false,

@@ -142,9 +142,15 @@ pub async fn get_machine_fingerprint() -> Result<String, String> {
     crate::licensing::fingerprint::get_cached_fingerprint().map_err(|e| e.to_string())
 }
 
-/// Activate license with email — queries Firestore, extracts license, saves locally
+/// Activate license — reads the hospital from Firestore, extracts license, saves locally.
+/// `hospital_code` (from the redeemed onboarding code) wins over `email`: several
+/// hospitals can share one email, and the email query returns whichever comes first.
 #[tauri::command]
-pub async fn activate_license(email: String, machine_name: String) -> Result<(), String> {
+pub async fn activate_license(
+    email: String,
+    machine_name: String,
+    hospital_code: Option<String>,
+) -> Result<(), String> {
     if email.trim().is_empty() {
         return Err("Email is required".to_string());
     }
@@ -165,14 +171,16 @@ pub async fn activate_license(email: String, machine_name: String) -> Result<(),
             e.user_message()
         })?;
 
-    // Query hospital by email
-    let doc = client
-        .find_hospital_by_email(email.trim())
-        .await
-        .map_err(|e| {
-            tracing::error!("Hospital query failed: {:?}", e);
-            format!("{} ({})", e.user_message(), e)
-        })?;
+    // Read the hospital by code when we have one, else query by email
+    let code = hospital_code.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let doc = match code {
+        Some(code) => client.get_hospital(code).await,
+        None => client.find_hospital_by_email(email.trim()).await,
+    }
+    .map_err(|e| {
+        tracing::error!("Hospital query failed: {:?}", e);
+        format!("{} ({})", e.user_message(), e)
+    })?;
 
     // Extract hospital_code from document name (last path segment)
     let hospital_code = doc

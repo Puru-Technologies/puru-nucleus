@@ -117,7 +117,7 @@ export interface TauriCommands {
 
   // License
   get_license: () => Promise<import('../models/license.model').License>;
-  activate_license: (args: { email: string }) => Promise<void>;
+  activate_license: (args: { email: string; machineName: string; hospitalCode?: string | null }) => Promise<void>;
 
   // Logs
   get_container_logs: (args: { containerName: string; tail?: number; since?: number; until?: number }) => Promise<string>;
