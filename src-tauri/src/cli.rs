@@ -188,6 +188,19 @@ pub enum Commands {
     /// decide, one property at a time, which value is right. Env files are
     /// only changed after you confirm; every change goes to the audit log.
     Sync,
+
+    /// Update Puru Nucleus itself to the latest release on this machine's
+    /// channel: download, check the SHA-256, install (.deb / .msi). The
+    /// background service restarts on the new version; config and licence stay.
+    SelfUpdate {
+        /// Only show whether an update is available
+        #[arg(long)]
+        check: bool,
+
+        /// Don't ask before installing
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 #[derive(Args)]

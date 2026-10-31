@@ -817,6 +817,22 @@ pub async fn download_nucleus_update(channel: &str) -> Result<DownloadResult, Nu
     let artifact_object = format!("nucleus/{}/{}", channel, artifact.file);
     let size_mb = download_gcs_to_file(&client, &artifact_object, &local_path).await?;
 
+    // Never install a file that doesn't match the manifest (truncated download, wrong object).
+    if !artifact.sha256.is_empty() {
+        use sha2::{Digest, Sha256};
+        let got: String = Sha256::digest(&tokio::fs::read(&local_path).await?)
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        if !got.eq_ignore_ascii_case(&artifact.sha256) {
+            let _ = tokio::fs::remove_file(&local_path).await;
+            return Err(NucleusError::Internal(format!(
+                "Downloaded {} does not match its SHA-256 (expected {}, got {})",
+                artifact.file, artifact.sha256, got
+            )));
+        }
+    }
+
     tracing::info!(
         "Downloaded nucleus update: {} ({:.1} MB)",
         artifact.file,

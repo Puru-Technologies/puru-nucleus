@@ -224,6 +224,7 @@ puru info                   Show configuration (surfaces jar_history_keep in nat
 puru version                Show version
 puru setup [--connect-only] Terminal setup; connect-only = full Nucleus on an existing Docker site, deployment untouched
 puru sync                   Server vs cloud record, per property; env edits only after confirm; audited
+puru self-update [--check] [-y]  Update Nucleus itself: latest.json on the channel → download → SHA-256 check → dpkg/msiexec (needs root on Linux)
 puru daemon                 Run daemon mode
 
 # Native-mode JAR management (available only when deployment_mode = "native")

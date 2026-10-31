@@ -381,12 +381,35 @@ async fn find_compose_path() -> Option<String> {
 
 // ── HTTP Health Probes ──────────────────────────────────────────────────────
 
-/// Probe a service's HTTP health endpoint.
-/// Returns (HealthStatus, response_time_ms) or None if no endpoint configured.
-async fn probe_http_health(
-    port: u16,
-    endpoint: &str,
-) -> Option<(HealthStatus, u64)> {
+/// Spring Boot services run actuator on a separate management port, app port
+/// + 1000 (`management.server.port`: auth 9080, has 9082, …), the same
+/// convention as native mode's SERVICE_MGMT_PORTS. The app port has no
+/// /actuator, so probing it only made every service log a "No static resource"
+/// error, and the 500 that came back was counted as healthy.
+const MGMT_PORT_OFFSET: u16 = 1000;
+
+/// One running container to probe.
+struct ProbeTarget {
+    container: String,
+    /// Port the HTTP probe goes to (the management port for actuator); None
+    /// when the management port isn't published (bridge mode).
+    port: Option<u16>,
+    endpoint: &'static str,
+    /// App port: when the management port doesn't answer, a TCP connect here
+    /// tells "running, health unknown" from "not answering at all".
+    app_port: u16,
+}
+
+/// Result of one probe. `health: None` means the service answered but gave no
+/// verdict; `detail` says why, for the services view.
+struct ProbeOutcome {
+    health: Option<HealthStatus>,
+    ms: u64,
+    detail: Option<String>,
+}
+
+/// Probe a service's HTTP health endpoint. None when nothing answers.
+async fn probe_http_health(port: u16, endpoint: &str) -> Option<ProbeOutcome> {
     let url = format!("http://127.0.0.1:{}{}", port, endpoint);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -394,56 +417,91 @@ async fn probe_http_health(
         .ok()?;
 
     let start = Instant::now();
-    match client.get(&url).send().await {
-        Ok(resp) => {
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-            let status = resp.status();
+    let resp = client.get(&url).send().await.ok()?;
+    let ms = start.elapsed().as_millis() as u64;
+    let code = resp.status();
 
-            if status.is_success() {
-                // For Spring Boot /actuator/health, check the body for "UP"
-                if endpoint.contains("actuator/health") {
-                    if let Ok(body) = resp.text().await {
-                        if body.contains("\"UP\"") || body.contains("\"status\":\"UP\"") {
-                            return Some((HealthStatus::Healthy, elapsed_ms));
-                        }
-                        // Service responded but reported DOWN
-                        return Some((HealthStatus::Unhealthy, elapsed_ms));
-                    }
-                }
-                Some((HealthStatus::Healthy, elapsed_ms))
-            } else if status.as_u16() == 503 {
-                Some((HealthStatus::Unhealthy, elapsed_ms))
+    if !endpoint.contains("actuator/health") {
+        // Web servers (hydrogen, dviewer, …): any answer but 503 means it serves.
+        let health = if code.as_u16() == 503 { HealthStatus::Unhealthy } else { HealthStatus::Healthy };
+        return Some(ProbeOutcome { health: Some(health), ms, detail: None });
+    }
+
+    // Actuator: its JSON status is the verdict (a 503 with {"status":"DOWN"} is real).
+    let body = resp.text().await.unwrap_or_default();
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(status) = json.get("status").and_then(|v| v.as_str()) {
+            return Some(if status == "UP" {
+                ProbeOutcome { health: Some(HealthStatus::Healthy), ms, detail: None }
             } else {
-                // Any HTTP response means the service is at least responding
-                Some((HealthStatus::Healthy, elapsed_ms))
-            }
+                ProbeOutcome {
+                    health: Some(HealthStatus::Unhealthy),
+                    ms,
+                    detail: Some(format!("Actuator on :{} reports {}. Check the service log.", port, status)),
+                }
+            });
         }
-        Err(_) => None, // Connection refused or timeout
+    }
+    Some(match code.as_u16() {
+        200..=299 => ProbeOutcome { health: Some(HealthStatus::Healthy), ms, detail: None },
+        401 | 403 | 404 | 405 => ProbeOutcome {
+            health: None,
+            ms,
+            detail: Some(format!("Actuator on :{} answers {}: health unknown.", port, code.as_u16())),
+        },
+        other => ProbeOutcome {
+            health: Some(HealthStatus::Unhealthy),
+            ms,
+            detail: Some(format!("Actuator on :{} answered {}.", port, other)),
+        },
+    })
+}
+
+/// Probe one target; for actuator, fall back to a TCP check of the app port.
+async fn probe_target(target: &ProbeTarget) -> Option<ProbeOutcome> {
+    if let Some(port) = target.port {
+        if let Some(outcome) = probe_http_health(port, target.endpoint).await {
+            return Some(outcome);
+        }
+    }
+    if !target.endpoint.contains("actuator/health") {
+        return None;
+    }
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], target.app_port));
+    let start = Instant::now();
+    let open = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::TcpStream::connect(addr),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+    if open {
+        Some(ProbeOutcome {
+            health: None,
+            ms: start.elapsed().as_millis() as u64,
+            detail: Some(match target.port {
+                Some(port) => format!(
+                    "Running on :{}, but its actuator on :{} doesn't answer: health unknown.",
+                    target.app_port, port
+                ),
+                None => format!(
+                    "Running on :{}; its actuator port isn't published: health unknown.",
+                    target.app_port
+                ),
+            }),
+        })
+    } else {
+        // Nothing listening yet: keep Docker's own status (starting, or crashed).
+        None
     }
 }
 
-/// Run HTTP health probes for all running services concurrently.
-/// Returns a map of container_name → (HealthStatus, response_ms).
-async fn probe_all_health(
-    services: &[(String, u16, Option<&'static str>)],
-) -> std::collections::HashMap<String, (HealthStatus, u64)> {
+/// Run health probes for all running services concurrently, keyed by container name.
+async fn probe_all_health(targets: &[ProbeTarget]) -> std::collections::HashMap<String, ProbeOutcome> {
     use futures_util::future::join_all;
 
-    let futures: Vec<_> = services
-        .iter()
-        .filter_map(|(name, port, endpoint)| {
-            let endpoint = (*endpoint)?;
-            let name = name.clone();
-            let port = *port;
-            Some(async move {
-                let result = probe_http_health(port, endpoint).await;
-                (name, result)
-            })
-        })
-        .collect();
-
-    let results = join_all(futures).await;
-
+    let results = join_all(targets.iter().map(|t| async move { (t.container.clone(), probe_target(t).await) })).await;
     results
         .into_iter()
         .filter_map(|(name, result)| result.map(|r| (name, r)))
@@ -767,7 +825,7 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
 
     let mut services: Vec<ServiceInfo> = Vec::new();
     // Collect running services for HTTP health probes
-    let mut probe_targets: Vec<(String, u16, Option<&'static str>)> = Vec::new();
+    let mut probe_targets: Vec<ProbeTarget> = Vec::new();
 
     for container in &containers {
         let image = container.image.as_deref().unwrap_or("");
@@ -789,18 +847,30 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
         // In bridge mode Docker maps public_port → private_port.
         // In host mode there are no port mappings — fall back to default_port.
         let mut host_port: u16 = def.default_port;
+        let default_mgmt = def.default_port.saturating_add(MGMT_PORT_OFFSET);
+        // Host mode: the management port is on the host as is. Bridge mode: only
+        // if it is published; otherwise the probe falls back to the app port.
+        let mut mgmt_port: Option<u16> = None;
+        let mut has_mappings = false;
         let ports = {
             let mut result = Vec::new();
             if let Some(ports) = &container.ports {
                 for p in ports {
                     if let Some(public) = p.public_port {
+                        has_mappings = true;
                         result.push(format!("{}:{}", public, p.private_port));
                         // Use the first public port that maps to the service's default port
                         if p.private_port == def.default_port {
                             host_port = public;
                         }
+                        if p.private_port == default_mgmt {
+                            mgmt_port = Some(public);
+                        }
                     }
                 }
+            }
+            if !has_mappings {
+                mgmt_port = Some(default_mgmt);
             }
             result.sort();
             result.dedup();
@@ -815,12 +885,16 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
 
         // Queue running services with HTTP health endpoints for probing
         // Uses the actual host-facing port from Docker, not the hardcoded default
-        if state == "running" && def.health_endpoint.is_some() {
-            probe_targets.push((
-                raw_name.to_string(),
-                host_port,
-                def.health_endpoint,
-            ));
+        if state == "running" {
+            if let Some(endpoint) = def.health_endpoint {
+                let port = if endpoint.contains("actuator/health") { mgmt_port } else { Some(host_port) };
+                probe_targets.push(ProbeTarget {
+                    container: raw_name.to_string(),
+                    port,
+                    endpoint,
+                    app_port: host_port,
+                });
+            }
         }
 
         services.push(ServiceInfo {
@@ -842,10 +916,11 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
         let health_results = probe_all_health(&probe_targets).await;
 
         for service in &mut services {
-            if let Some((health, ms)) = health_results.get(&service.container_name) {
+            if let Some(outcome) = health_results.get(&service.container_name) {
                 // HTTP probe result overrides Docker health status
-                service.health = Some(health.clone());
-                service.health_response_ms = Some(*ms);
+                service.health = outcome.health.clone();
+                service.health_response_ms = Some(outcome.ms);
+                service.detail = outcome.detail.clone();
             }
         }
     }

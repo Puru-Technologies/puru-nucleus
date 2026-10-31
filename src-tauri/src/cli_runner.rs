@@ -41,6 +41,7 @@ pub async fn run(command: Commands) {
         }
         Commands::Setup { connect_only } => crate::onboard::run(true, connect_only).await,
         Commands::Sync => crate::onboard::run_sync().await,
+        Commands::SelfUpdate { check, yes } => cmd_self_update(check, yes).await,
     }
 }
 
@@ -1876,6 +1877,87 @@ async fn cmd_network(speed: bool, json: bool) {
 }
 
 // ── Version ──────────────────────────────────────────────────────────────────
+
+// ── Self-update ──────────────────────────────────────────────────────────────
+
+async fn cmd_self_update(check_only: bool, yes: bool) {
+    let channel = config::load_config()
+        .map(|c| c.release_channel)
+        .unwrap_or_else(|_| "stable".to_string());
+
+    println!();
+    println!("  Checking for a Nucleus update ({} channel) ...", channel.cyan());
+    let info = match releases::check_nucleus_update(&channel).await {
+        Ok(info) => info,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
+    println!("  Installed: {}", info.current_version.cyan());
+    println!("  Latest:    {} ({})", info.latest_version.cyan(), info.release_date);
+    if !info.update_available {
+        println!("\n  {} Nucleus is up to date.\n", "✓".green().bold());
+        return;
+    }
+    if !info.release_notes.is_empty() {
+        println!("  Notes:     {}", info.release_notes);
+    }
+    if check_only {
+        println!("\n  Install it with: {}\n", "sudo puru-nucleus self-update".cyan().bold());
+        return;
+    }
+
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!(
+            "\n  {} Installing needs root:\n\n      {}\n",
+            "!".yellow().bold(),
+            "sudo puru-nucleus self-update".cyan().bold()
+        );
+        std::process::exit(1);
+    }
+
+    if !yes {
+        let go = dialoguer::Confirm::new()
+            .with_prompt(format!("  Update {} → {}?", info.current_version, info.latest_version))
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+        if !go {
+            println!("  Cancelled.\n");
+            return;
+        }
+    }
+
+    println!("  Downloading{} ...", info.download_size_mb.map(|mb| format!(" ({:.1} MB)", mb)).unwrap_or_default());
+    let download = match releases::download_nucleus_update(&channel).await {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
+    println!("  Installing {} ...", download.file_path);
+    match releases::install_nucleus_update(&download.file_path).await {
+        Ok(_) => {
+            // The GUI message ("application will close") doesn't fit here: the
+            // package restarts the background service itself.
+            println!(
+                "\n  {} Nucleus {} installed. The background service restarts on it; check with {}\n",
+                "✓".green().bold(),
+                info.latest_version,
+                "puru-nucleus version".cyan()
+            );
+        }
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    }
+}
 
 fn cmd_version() {
     println!(
