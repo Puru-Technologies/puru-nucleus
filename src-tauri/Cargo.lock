@@ -850,6 +850,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
+name = "clap_mangen"
+version = "0.2.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e30ffc187e2e3aeafcd1c6e2aa416e29739454c0ccaa419226d5ecd181f2d78"
+dependencies = [
+ "clap",
+ "roff",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4191,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "puru-nucleus"
-version = "0.12.9"
+version = "0.12.10"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4200,6 +4210,7 @@ dependencies = [
  "bollard",
  "chrono",
  "clap",
+ "clap_mangen",
  "colored",
  "comfy-table",
  "console",
@@ -4613,6 +4624,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rust_decimal"

@@ -63,7 +63,10 @@
         "replaces": [
           "puru-dc"
         ],
-        "postInstallScript": "deb/postinst.sh"
+        "postInstallScript": "deb/postinst.sh",
+        "files": {
+          "/usr/share/man/man1": "man/"
+        }
       }
     }
   }

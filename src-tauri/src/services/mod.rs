@@ -826,6 +826,12 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
     let mut services: Vec<ServiceInfo> = Vec::new();
     // Collect running services for HTTP health probes
     let mut probe_targets: Vec<ProbeTarget> = Vec::new();
+    // Services still in the compose file. A service commented out there keeps
+    // its old stopped container, which would otherwise show as "down".
+    let compose_services = crate::config::load_config()
+        .ok()
+        .and_then(|c| std::fs::read_to_string(&c.docker_compose_path).ok())
+        .map(|text| compose_service_names(&text));
 
     for container in &containers {
         let image = container.image.as_deref().unwrap_or("");
@@ -842,6 +848,19 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
 
         let state = container.state.as_deref().unwrap_or("");
         let status_str = container.status.as_deref().unwrap_or("");
+
+        // Stopped leftover of a service no longer in the compose file: not part of the deployment.
+        if state != "running" {
+            let compose_service = container
+                .labels
+                .as_ref()
+                .and_then(|l| l.get("com.docker.compose.service"));
+            if let (Some(listed), Some(service)) = (&compose_services, compose_service) {
+                if !listed.contains(service) {
+                    continue;
+                }
+            }
+        }
 
         // Extract the host-facing port for health probes.
         // In bridge mode Docker maps public_port → private_port.
@@ -927,6 +946,37 @@ async fn get_docker_services() -> Result<Vec<ServiceInfo>, crate::error::Nucleus
 
     services.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(services)
+}
+
+/// Top-level service names in a compose file (the keys directly under
+/// `services:`). Commented-out services don't count. Line-based, like the rest
+/// of nucleus's compose reading.
+fn compose_service_names(compose: &str) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    let mut in_services = false;
+    let mut child_indent: Option<usize> = None;
+    for line in compose.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if indent == 0 {
+            in_services = trimmed.trim_end() == "services:";
+            child_indent = None;
+            continue;
+        }
+        if !in_services {
+            continue;
+        }
+        let indent_of_child = *child_indent.get_or_insert(indent);
+        if indent == indent_of_child {
+            if let Some(name) = trimmed.trim_end().strip_suffix(':') {
+                names.insert(name.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Start a Docker container by name
@@ -1365,6 +1415,14 @@ pub(crate) async fn resolve_mysql_tool(tool: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compose_service_names_skips_commented_services() {
+        let compose = "version: '3'\nservices:\n  auth:\n    image: a\n    ports:\n      - 80:80\n#  metabase:\n#    image: m\n  has:\n    image: h\nvolumes:\n  data:\n";
+        let names = super::compose_service_names(compose);
+        assert!(names.contains("auth") && names.contains("has"));
+        assert!(!names.contains("metabase") && !names.contains("data") && !names.contains("ports"));
+    }
+
     use super::match_puru_service;
 
     const REG: &str = "asia-south2-docker.pkg.dev/puru-255206/puru1";
